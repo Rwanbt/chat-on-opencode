@@ -13,7 +13,7 @@ on:
       - 'package.json'
       - 'test/provider-packaging.test.ts'
   push:
-    branches: [feat/opencode-v2-provider-bridge]
+    branches: [main, feat/opencode-v2-provider-bridge]
     paths:
       - 'packages/opencode-provider/**'
       - '.github/workflows/chat-on-opencode-provider.yml'
