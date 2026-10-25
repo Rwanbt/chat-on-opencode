@@ -113,7 +113,7 @@ import { setUpdateProgressStep, showUpdateProgress, untilInstallerTakesOver } fr
 import { resumeUpdateRefresh } from './update-all.js';
 import { UI_BASE_ZOOM, windowLayoutForDisplays, windowPlacementWasMaximized, titleBarOverlayForTheme, windowBackgroundForTheme } from './window-layout.js';
 import { openInPreferredBrowser } from './browser.js';
-import { loadedCosBrowser, onCosBrowserLoaded, syncCosBrowser } from './cos-browser/selection.js';
+import { loadedCosBrowser, loadCosBrowser, onCosBrowserLoaded, syncCosBrowser } from './cos-browser/selection.js';
 import {
   applyLoginStartup,
   isBackgroundLaunch,
@@ -129,7 +129,7 @@ import { browserWindowIconPath } from './window-icon.js';
 import { approvedChatGptImageRequest, RENDERER_CONTENT_SECURITY_POLICY } from './renderer-csp.js';
 import { editContextMenuTemplate } from './edit-context-menu.js';
 import { connectionLossLine, showConnectionLossNotice } from './connection-loss-notice.js';
-import { providerServiceProfile, providerServiceReady, providerServiceOwner, providerServiceOwnerAlive, PROVIDER_SERVICE_SWITCH } from './provider-service.js';
+import { providerServiceProfile, providerServiceReady, providerServiceOwner, providerServiceOwnerAlive, PROVIDER_SERVICE_SWITCH, PROVIDER_SIGN_IN_SWITCH } from './provider-service.js';
 
 /** Durable state file holding the multi-agent run. Hashes only, never credentials. */
 const SWARM_STATE = 'swarm';
@@ -140,14 +140,22 @@ const MAIN_TEXTS_STATE = 'main-texts';
 
 // A provider helper cannot share the original application's instance lock, settings, or cookies.
 // This is checked BEFORE app.requestSingleInstanceLock() or any normal userData writes.
-const providerService = process.argv.includes(PROVIDER_SERVICE_SWITCH);
-const providerOwner = providerService ? providerServiceOwner(process.env.CHAT_ON_OPENCODE_OWNER_PID) : null;
+const providerSignIn = process.argv.includes(PROVIDER_SIGN_IN_SWITCH);
+const providerService = process.argv.includes(PROVIDER_SERVICE_SWITCH) || providerSignIn;
+const providerOwner = providerService && !providerSignIn ? providerServiceOwner(process.env.CHAT_ON_OPENCODE_OWNER_PID) : null;
 let providerUserData: string | null = null;
 try {
   providerUserData = providerServiceProfile(process.argv, process.env.CHAT_ON_OPENCODE_USERDATA_DIR, app.getPath('userData'));
   if (providerUserData) app.setPath('userData', providerUserData);
 } catch (error) {
   // No normal-mode fallback when an isolated provider profile is malformed.
+  // Electron shows a blocking JavaScript error dialog for an uncaught exception
+  // before ready. Provider helpers must fail closed as OS processes instead of
+  // keeping that dialog and its inaccessible Chromium parent alive.
+  if (providerService) {
+    process.stderr.write('Provider service refused: invalid isolated profile\n');
+    process.exit(1);
+  }
   throw new Error(`Provider service refused: ${error instanceof Error ? error.message : String(error)}`);
 }
 
@@ -770,15 +778,25 @@ void app.whenReady().then(async () => {
   // ipc.ts uses the same eligibility rule when settings change.
   // The CoS browser starts once the bridge listens: its extension looks for the app as soon as it
   // loads, and a miss would leave it waiting for its next retry.
+  const startSelectedBrowser = async (): Promise<void> => {
+    await syncCosBrowser();
+    if (providerSignIn) {
+      // Only this explicit launch may bring up ChatGPT's sign-in window. The service
+      // process always remains hidden and never imports credentials by itself.
+      await (await loadCosBrowser()).showSignIn();
+    }
+  };
   if (browserExtensionRequired(getConfig())) {
-    void startBridge().finally(() => void syncCosBrowser());
-  } else void syncCosBrowser();
+    void startBridge().finally(() => void startSelectedBrowser().catch(error => logWarn(`provider sign-in: ${String(error)}`)));
+  } else void startSelectedBrowser().catch(error => logWarn(`provider sign-in: ${String(error)}`));
   // Opt-in, and only once every fact it projects has been restored. ipc.ts starts and stops it
   // when the setting changes; a failed bind is logged and leaves the rest of the app untouched.
   if (getConfig().controlApi.enabled) {
     startControlApi().catch((error: Error) => logWarn(`control API did not start: ${error.message}`));
   }
-  if (getConfig().ui.autoConnect) void connect();
+  // This isolated login and its hidden service never auto-connect MCP surfaces;
+  // the provider's own bridge and local control API have independent lifecycles.
+  if (!providerService && getConfig().ui.autoConnect) void connect();
   void resumeUpdateRefresh().catch((error: Error) => logWarn(`update refresh did not resume: ${error.message}`));
 
   // Never awaited: an unreachable GitHub, a slow download or a broken release must not delay a

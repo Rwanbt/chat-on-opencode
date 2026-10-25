@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { providerServiceProfile, providerServiceReady, PROVIDER_SERVICE_SWITCH } from '../src/main/provider-service.js';
+import { providerServiceProfile, providerServiceReady, providerReadinessStatus, PROVIDER_SERVICE_SWITCH, PROVIDER_SIGN_IN_SWITCH } from '../src/main/provider-service.js';
 
 const dirs: string[] = [];
 function fixture() {
@@ -39,5 +39,23 @@ describe('Chat On OpenCode provider-mode preflight', () => {
     expect(allowed('chrome', true, true)).toBe(false);
     expect(allowed('cos', false, true)).toBe(false);
     expect(allowed('cos', true, false)).toBe(false);
+  });
+
+  it('allows only the explicitly selected isolated profile to enter one-time sign-in mode', () => {
+    const { personal, isolated } = fixture();
+    expect(providerServiceProfile(['app', PROVIDER_SIGN_IN_SWITCH], isolated, personal)).toBe(realpathSync(isolated));
+    expect(() => providerServiceProfile(['app', PROVIDER_SIGN_IN_SWITCH], personal, personal)).toThrow(/overlaps_personal/);
+    expect(() => providerServiceProfile(['app', PROVIDER_SIGN_IN_SWITCH, PROVIDER_SERVICE_SWITCH], isolated, personal))
+      .toThrow(/conflicting_modes/);
+  });
+
+  it('does not confuse mere cookie presence with verified account authorization', () => {
+    const bridge = { running: true, paired: true, cosExtension: { present: true } };
+    expect(providerReadinessStatus(null, bridge)).toEqual({
+      sessionCookie: 'unknown', extension: 'connected', paired: true, canAttempt: false
+    });
+    expect(providerReadinessStatus(false, bridge).canAttempt).toBe(false);
+    expect(providerReadinessStatus(true, { ...bridge, cosExtension: { present: false } }).canAttempt).toBe(false);
+    expect(providerReadinessStatus(true, bridge).canAttempt).toBe(true);
   });
 });

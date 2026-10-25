@@ -60,6 +60,27 @@ export class CoSControl {
     catch (error) { if (error instanceof BridgeError && error.status === 404) return false; throw error }
   }
 
+  /** Categorical, private local readiness hint. ChatGPT may still reject a stale cookie. */
+  async readiness() {
+    const state = await this.json('GET', '/v1/provider/readiness')
+    if (!state || !['present', 'absent', 'unknown'].includes(state.sessionCookie) ||
+        !['connected', 'disconnected'].includes(state.extension) ||
+        typeof state.paired !== 'boolean' || typeof state.canAttempt !== 'boolean') {
+      throw new BridgeError('cos_provider_readiness_invalid', 503)
+    }
+    return state
+  }
+
+  async assertReady() {
+    const state = await this.readiness()
+    if (state.sessionCookie !== 'present') throw new BridgeError(
+      state.sessionCookie === 'absent' ? 'chatgpt_sign_in_required' : 'chatgpt_session_unobserved', 503)
+    if (!state.paired) throw new BridgeError('cos_companion_unpaired', 503)
+    if (state.extension !== 'connected' || !state.canAttempt) {
+      throw new BridgeError('cos_companion_not_connected', 503)
+    }
+  }
+
   async send(body) {
     const result = await this.json('POST', '/v1/inputs', body)
     if (!result?.input || !['sent', 'pending'].includes(result.input.delivery)) {

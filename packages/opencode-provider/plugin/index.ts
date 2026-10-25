@@ -2,6 +2,7 @@ import { Plugin } from '@opencode/plugin'
 import { fileURLToPath } from 'node:url'
 import { GatewayLifecycle } from '../src/lifecycle.mjs'
 import { MessageIdentity } from './message-identity.mjs'
+import { enforceTextOnlyContext } from './text-only.mjs'
 
 // OpenCode V2 is the only frontend/session owner. The helper starts on the first *selected*
 // model request, not on plugin import, so other providers remain completely unaffected.
@@ -20,6 +21,10 @@ export default Plugin.define({
       key,
       port,
     })
+    // The first provider version explicitly does NOT implement native tool calls.
+    // OpenCode 2 still supplies default agent tools for tools:false models, so suppress
+    // them for this provider alone; the gateway retains its hard 501 rejection guard.
+    await ctx.session.hook('context', enforceTextOnlyContext, { providerID: 'chat-on-opencode' })
     await ctx.session.hook('prompt', event => {
       identities.remember(event.sessionID, event.messageID)
     })

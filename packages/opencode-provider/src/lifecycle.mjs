@@ -31,8 +31,10 @@ export class GatewayLifecycle {
       !Number.isInteger(port) || port < 1 || port > 65535) throw new Error('provider_runtime_not_configured')
     if (this.child && this.child.exitCode === null && !this.child.killed) return
     this.child = null
-    const child = this.launcher(node, [entry], {
-      shell: false, windowsHide: true, detached: false, stdio: 'ignore',
+    // An OS kill of OpenCode skips JS cleanup hooks. The IPC channel is the
+    // ownership lease: closing it forces the gateway to stop its CoS child.
+    const child = this.launcher(node, [entry, '--owned-ipc'], {
+      shell: false, windowsHide: true, detached: false, stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       env: {
         ...process.env,
         CHAT_ON_OPENCODE_RUNTIME_EXE: runtimeExecutable,

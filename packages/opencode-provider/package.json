@@ -1,7 +1,12 @@
 {
   "name": "chat-on-opencode-provider",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "chat-on-opencode-config": "bin/generate-config.mjs"
+  },
+  "files": ["bin", "plugin", "src", "README.md", "opencode.example.jsonc"],
   "scripts": {
     "test": "node --test test/*.test.mjs",
     "start": "node src/server.mjs"

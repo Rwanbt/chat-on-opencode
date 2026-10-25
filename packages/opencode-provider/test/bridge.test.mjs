@@ -10,12 +10,16 @@ import { CoSControl, BridgeError } from '../src/control.mjs'
 import { createGateway, requestText, runTurn, stableUUID } from '../src/gateway.mjs'
 import { CoSRuntime, validateRuntime, validateProfileConsent } from '../src/runtime.mjs'
 import { GatewayLifecycle } from '../src/lifecycle.mjs'
+import { startService } from '../src/service.mjs'
 import { MessageIdentity } from '../plugin/message-identity.mjs'
+import { enforceTextOnlyContext } from '../plugin/text-only.mjs'
 
 const request = { model: 'chatgpt-default', messages: [{ role: 'user', content: 'Bonjour' }] }
 
 class FakeCoS {
   constructor(events = ['Bon', 'Bonjour']) { this.sent = []; this.exists = false; this.outputs = events }
+  async assertReady() {}
+  async readiness() { return { sessionCookie: 'present', extension: 'connected', paired: true, canAttempt: true } }
   async hasSession() { return this.exists }
   async send(payload) { this.sent.push(payload); this.exists = true; return { delivery: 'pending' } }
   async *events(id) {
@@ -86,6 +90,58 @@ test('refuse tools instead of silently dropping OpenCode tool contracts', async 
   await assert.rejects(runTurn(cos, { ...request, tools: [{ type: 'function', function: { name: 'bash' } }] },
     { sessionKey: 'ses_123', messageKey: 'msg_tests_0001', emit: () => undefined }), /native_tool_calls_not_yet_supported/)
   assert.equal(cos.sent.length, 0)
+})
+
+test('refuse delivery while the isolated browser has no authenticated-session hint or companion', async () => {
+  const cos = new FakeCoS()
+  cos.assertReady = async () => { throw new BridgeError('chatgpt_sign_in_required', 503) }
+  await assert.rejects(runTurn(cos, request, {
+    sessionKey: 'no_login', messageKey: 'msg_no_login_1', emit: () => undefined,
+  }), error => error instanceof BridgeError && error.code === 'chatgpt_sign_in_required')
+  assert.equal(cos.sent.length, 0)
+})
+
+test('readiness endpoint distinguishes cookie, pairing and extension without exposing account data', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'cos-auth-'))
+  try {
+    const requests = []
+    const control = new CoSControl({ directory: dir, fetcher: async url => {
+      requests.push(url)
+      return new Response(JSON.stringify({ sessionCookie: 'absent', extension: 'disconnected',
+        paired: false, canAttempt: false }), { status: 200 })
+    } })
+    control.base = 'http://127.0.0.1:47898'
+    control.token = 't'.repeat(40)
+    await assert.rejects(control.assertReady(), /chatgpt_sign_in_required/)
+    assert.deepEqual(requests, ['http://127.0.0.1:47898/v1/provider/readiness'])
+    control.fetcher = async () => new Response(JSON.stringify({
+      sessionCookie: 'present', extension: 'disconnected', paired: true, canAttempt: false,
+    }), { status: 200 })
+    await assert.rejects(control.assertReady(), /cos_companion_not_connected/)
+    control.fetcher = async () => new Response(JSON.stringify({
+      sessionCookie: 'present', extension: 'connected', paired: true, canAttempt: true,
+    }), { status: 200 })
+    await control.assertReady()
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})
+
+test('text-only context gate is provider-scoped, never modifies another provider tools', () => {
+  const tools = { bash: { description: 'exec' }, read: { description: 'read' } }
+  const other = { model: { providerID: 'anthropic' }, tools: { ...tools } }
+  assert.equal(enforceTextOnlyContext(other), false)
+  assert.deepEqual(other.tools, tools)
+  const ours = { model: { providerID: 'chat-on-opencode' }, tools: { ...tools } }
+  assert.equal(enforceTextOnlyContext(ours), true)
+  assert.deepEqual(ours.tools, {})
+})
+
+test('OpenAI compatible automatic tool choice without tool schemas is text-only', async () => {
+  const cos = new FakeCoS()
+  const text = await runTurn(cos, { ...request, tool_choice: 'auto', tools: [] }, {
+    sessionKey: 'ses_text_only', messageKey: 'msg_textonly_1', emit: () => undefined,
+  })
+  assert.equal(text, 'Bonjour')
+  assert.equal(cos.sent.length, 1)
 })
 
 test('refuse clipped or rewritten CoS output, never invent a complete reply', async () => {
@@ -292,10 +348,80 @@ test('selected-provider lifecycle starts only one gateway, with private env, and
   assert.equal(launches.length, 1)
   assert.equal(launches[0].options.windowsHide, true)
   assert.equal(launches[0].options.shell, false)
+  assert.deepEqual(launches[0].args, ['fixture.mjs', '--owned-ipc'])
+  assert.deepEqual(launches[0].options.stdio, ['ignore', 'ignore', 'ignore', 'ipc'])
   assert.equal(launches[0].options.env.CHAT_ON_OPENCODE_RUNTIME_EXE, 'fixture-fork.exe')
   assert.equal(launches[0].options.env.CHAT_ON_OPENCODE_RUNTIME_DATA, 'fixture-isolated')
   gateway.stop()
   assert.equal(child.killed, true)
+})
+
+test('owned gateway refuses startup without an actual live parent IPC channel', async () => {
+  let started = false
+  const owner = Object.assign(new EventEmitter(), { connected: false, exit: () => {} })
+  await assert.rejects(startService({
+    runtime: { start() { started = true }, stop() {} }, owner, owned: true, key: 'k'.repeat(40), port: 45861,
+  }), /provider_parent_ipc_required/)
+  assert.equal(started, false)
+})
+
+test('parent IPC disconnect during pending runtime.start kills it and forbids late listener', async () => {
+  const exits = []
+  const owner = Object.assign(new EventEmitter(), {
+    channel: {}, connected: true, exit: code => exits.push(code),
+  })
+  let finishStartup
+  let stopped = 0
+  let listeners = 0
+  const runtime = {
+    start: () => new Promise(resolve => { finishStartup = resolve }),
+    stop: () => { stopped++ },
+  }
+  const pending = startService({
+    runtime, key: 'k'.repeat(40), port: 45861, owner, owned: true,
+    gatewayFactory: () => { listeners++; throw new Error('late_listener_created') },
+  })
+  owner.connected = false
+  owner.emit('disconnect')
+  owner.emit('disconnect')
+  assert.equal(stopped, 1)
+  assert.deepEqual(exits, [0])
+  finishStartup({})
+  await pending
+  assert.equal(listeners, 0)
+})
+
+test('parent IPC disconnect after listen closes sockets and stops the CoS runtime once', async () => {
+  const owner = Object.assign(new EventEmitter(), { channel: {}, connected: true })
+  const activity = []
+  const server = Object.assign(new EventEmitter(), {
+    listen: () => activity.push('listen'),
+    closeAllConnections: () => activity.push('connections_closed'),
+    close: () => activity.push('server_closed'),
+  })
+  const runtime = {
+    start: async () => ({}),
+    stop: () => activity.push('runtime_stopped'),
+  }
+  await startService({
+    runtime, owner, owned: true, port: 45861, key: 'a'.repeat(40),
+    gatewayFactory: () => server, exit: code => activity.push('exit_' + code),
+  })
+  owner.connected = false
+  owner.emit('disconnect')
+  owner.emit('SIGTERM')
+  assert.deepEqual(activity, ['listen', 'connections_closed', 'server_closed', 'runtime_stopped', 'exit_0'])
+})
+
+test('legacy direct offline service still starts without IPC', async () => {
+  const owner = new EventEmitter()
+  let listening = false
+  const server = Object.assign(new EventEmitter(), { listen() { listening = true }, close() {} })
+  await startService({
+    runtime: { start: async () => ({}), stop() {} }, owner, key: 'q'.repeat(40),
+    port: 45861, gatewayFactory: () => server, exit() {},
+  })
+  assert.equal(listening, true)
 })
 
 test('gateway rejects an authenticated, stale listener with the wrong process owner', async () => {

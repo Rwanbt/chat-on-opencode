@@ -5,11 +5,29 @@ on:
     paths:
       - 'packages/opencode-provider/**'
       - '.github/workflows/chat-on-opencode-provider.yml'
+      - 'electron-builder.provider.yml'
+      - 'scripts/package.mjs'
+      - 'scripts/smoke-packaged-runtime.mjs'
+      - 'scripts/provider-isolated-profile.ts'
+      - 'scripts/verify-provider-packaged-electron.mjs'
+      - 'scripts/verify-provider-packaged-sign-in.mjs'
+      - 'scripts/provider-windows-window-probe.ps1'
+      - 'package.json'
+      - 'test/provider-packaging.test.ts'
   push:
-    branches: [feat/opencode-v2-provider-bridge]
+    branches: [main, feat/opencode-v2-provider-bridge]
     paths:
       - 'packages/opencode-provider/**'
       - '.github/workflows/chat-on-opencode-provider.yml'
+      - 'electron-builder.provider.yml'
+      - 'scripts/package.mjs'
+      - 'scripts/smoke-packaged-runtime.mjs'
+      - 'scripts/provider-isolated-profile.ts'
+      - 'scripts/verify-provider-packaged-electron.mjs'
+      - 'scripts/verify-provider-packaged-sign-in.mjs'
+      - 'scripts/provider-windows-window-probe.ps1'
+      - 'package.json'
+      - 'test/provider-packaging.test.ts'
 
 permissions:
   contents: read
@@ -67,5 +85,54 @@ jobs:
         with:
           node-version: '22'
       - uses: oven-sh/setup-bun@v2
-      - name: Launch real isolated processes, exchange two turns, and verify cleanup
-        run: node --test packages/opencode-provider/test/native-process.e2e.mjs
+      - name: Launch isolated processes, prove native turns and parent-death cleanup
+        run: node --test packages/opencode-provider/test/native-process.e2e.mjs packages/opencode-provider/test/parent-death.e2e.mjs
+
+  portable-electron:
+    name: Native Electron provider service (Windows x64)
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+      - name: Install exact CoS build dependencies
+        run: npm ci
+      - name: Build independent unpacked provider runtime and probe native modules
+        run: npm run dist:provider:win:x64
+      - name: Qualify hidden service and explicit isolated sign-in against packaged Electron
+        run: node scripts/verify-provider-packaged-sign-in.mjs
+      - name: Publish portable provider bundle after runtime smoke
+        uses: actions/upload-artifact@v4
+        with:
+          name: chat-on-opencode-provider-win-x64-${{ github.sha }}
+          path: release/provider/
+          if-no-files-found: error
+          retention-days: 14
+
+  native-opencode-v2:
+    name: Actual OpenCode V2 provider turn (Windows x64 offline)
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+      - name: Install OpenCode CLI 2.0.29 in runner temp only
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:RUNNER_TEMP 'chat-on-opencode-cli'
+          npm install --prefix $prefix --no-save --no-audit --no-fund @opencode/cli@2.0.29
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Execute native plugin, gateway and two-process CoS transport
+        shell: pwsh
+        run: |
+          $env:CHAT_ON_OPENCODE_TEST_CLI = Join-Path $env:RUNNER_TEMP 'chat-on-opencode-cli/node_modules/@opencode/cli/bin/opencode.exe'
+          if (-not (Test-Path -LiteralPath $env:CHAT_ON_OPENCODE_TEST_CLI)) { throw 'Pinned OpenCode CLI was not installed' }
+          node --test packages/opencode-provider/test/opencode-v2-cli.e2e.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
