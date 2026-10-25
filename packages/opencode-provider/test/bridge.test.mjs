@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { createServer } from 'node:http'
+import { createServer, request as httpRequest } from 'node:http'
 import { EventEmitter } from 'node:events'
 import { once } from 'node:events'
 import { mkdtemp, writeFile, rm, mkdir, realpath } from 'node:fs/promises'
@@ -203,6 +203,62 @@ test('gateway authenticates, binds to local host and yields Chat Completions SSE
   assert.match(body, /"content":"Bon"/)
   assert.match(body, /"content":"jour"/)
   assert.match(body, /data: \[DONE\]/)
+})
+
+test('gateway preserves split UTF-8 and rejects malformed or oversized byte bodies before dispatch', async t => {
+  const control = new FakeCoS()
+  const server = createGateway({ control, key: 'z'.repeat(40) })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  t.after(() => server.close())
+  let n = 0
+  async function send(chunks) {
+    const messageID = `msg_utf8_${++n}00001`
+    return new Promise((resolve, reject) => {
+      const req = httpRequest({
+        hostname: '127.0.0.1', port: server.address().port,
+        method: 'POST', path: '/v1/chat/completions', headers: {
+          authorization: `Bearer ${'z'.repeat(40)}`,
+          'x-opencode-session-id': 'ses_utf8',
+          'x-opencode-message-id': messageID,
+          'content-type': 'application/json',
+        },
+      }, response => {
+        let body = ''
+        response.setEncoding('utf8')
+        response.on('data', part => { body += part })
+        response.on('end', () => resolve({ status: response.statusCode, body }))
+      })
+      req.on('error', reject)
+      void (async () => {
+        for (const [i, part] of chunks.entries()) {
+          req.write(part)
+          if (i !== chunks.length - 1) await new Promise(done => setTimeout(done, 30))
+        }
+        req.end()
+      })().catch(reject)
+    })
+  }
+  const prompt = 'Français é / emoji 😀 / accents à'
+  const bytes = Buffer.from(JSON.stringify({ ...request, messages: [{ role: 'user', content: prompt }] }))
+  const cut = bytes.indexOf(Buffer.from('😀')) + 1
+  assert(cut > 0)
+  const valid = await send([bytes.subarray(0, cut), bytes.subarray(cut)])
+  assert.equal(valid.status, 200)
+  assert.equal(control.sent.at(-1).text.includes(prompt), true)
+  assert.equal(control.sent.length, 1)
+
+  const malformed = Buffer.from(JSON.stringify(request).replace('Bonjour', 'BAD'))
+  malformed[malformed.indexOf(Buffer.from('BAD'))] = 0xff
+  const rejected = await send([malformed])
+  assert.equal(rejected.status, 400)
+  assert.match(rejected.body, /invalid_utf8/)
+  assert.equal(control.sent.length, 1)
+
+  const large = Buffer.from(JSON.stringify({ ...request, padding: '😀'.repeat(70000) }))
+  assert(large.byteLength > 262144)
+  assert.equal((await send([large])).status, 413)
+  assert.equal(control.sent.length, 1)
 })
 
 test('control API discovers only a private local protocol-1 endpoint', async t => {
