@@ -5,11 +5,25 @@ on:
     paths:
       - 'packages/opencode-provider/**'
       - '.github/workflows/chat-on-opencode-provider.yml'
+      - 'electron-builder.provider.yml'
+      - 'scripts/package.mjs'
+      - 'scripts/smoke-packaged-runtime.mjs'
+      - 'scripts/provider-isolated-profile.ts'
+      - 'scripts/verify-provider-packaged-electron.mjs'
+      - 'package.json'
+      - 'test/provider-packaging.test.ts'
   push:
     branches: [feat/opencode-v2-provider-bridge]
     paths:
       - 'packages/opencode-provider/**'
       - '.github/workflows/chat-on-opencode-provider.yml'
+      - 'electron-builder.provider.yml'
+      - 'scripts/package.mjs'
+      - 'scripts/smoke-packaged-runtime.mjs'
+      - 'scripts/provider-isolated-profile.ts'
+      - 'scripts/verify-provider-packaged-electron.mjs'
+      - 'package.json'
+      - 'test/provider-packaging.test.ts'
 
 permissions:
   contents: read
@@ -69,3 +83,21 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Launch real isolated processes, exchange two turns, and verify cleanup
         run: node --test packages/opencode-provider/test/native-process.e2e.mjs
+
+  portable-electron:
+    name: Native Electron provider service (Windows x64)
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+      - name: Install exact CoS build dependencies
+        run: npm ci
+      - name: Build independent unpacked provider runtime and probe native modules
+        run: npm run dist:provider:win:x64
+      - name: Boot packaged Electron service with a fresh isolated profile
+        run: node scripts/verify-provider-packaged-electron.mjs

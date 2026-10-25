@@ -6,7 +6,8 @@ import { RIPGREP, TUNNEL_CLIENT } from './packaging-versions.mjs';
 import { normalizeArch, normalizePlatform, PLATFORM_INFO } from './packaging-targets.mjs';
 
 const repository = path.resolve(import.meta.dirname, '..');
-const releaseDir = path.join(repository, 'release');
+const providerOnly = process.argv.includes('--provider');
+const releaseDir = path.join(repository, 'release', ...(providerOnly ? ['provider'] : []));
 
 function argValue(name, fallback) {
   const direct = process.argv.find((arg) => arg.startsWith(`--${name}=`));
@@ -51,13 +52,16 @@ const nativeDir = `${targetPlatform}-${targetArch}`;
 let resourcesDir;
 let appExecutable;
 if (targetPlatform === 'darwin') {
-  const appBundle = path.join(packageRoot, 'Chat On Steroids.app');
+  const appBundle = path.join(packageRoot, providerOnly ? 'Chat On OpenCode Provider.app' : 'Chat On Steroids.app');
   resourcesDir = path.join(appBundle, 'Contents', 'Resources');
-  appExecutable = path.join(appBundle, 'Contents', 'MacOS', 'Chat On Steroids');
+  appExecutable = path.join(appBundle, 'Contents', 'MacOS', providerOnly ? 'Chat On OpenCode Provider' : 'Chat On Steroids');
 } else {
   resourcesDir = path.join(packageRoot, 'resources');
-  appExecutable = path.join(packageRoot, targetPlatform === 'win32' ? 'Chat On Steroids.exe' : 'chat-on-steroids');
+  appExecutable = path.join(packageRoot, targetPlatform === 'win32'
+    ? (providerOnly ? 'Chat On OpenCode Provider.exe' : 'Chat On Steroids.exe')
+    : (providerOnly ? 'chat-on-opencode-provider' : 'chat-on-steroids'));
 }
+if (!existsSync(appExecutable)) throw new Error(`Packaged executable missing: ${appExecutable}`);
 
 function required(relative) {
   const target = path.join(resourcesDir, ...relative.split('/'));

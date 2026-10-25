@@ -16,6 +16,7 @@ function value(name, fallback) {
 const platform = normalizePlatform(value('platform', process.platform));
 const arches = value('arch', process.arch).split(',').map((item) => normalizeArch(item.trim()));
 const dirOnly = args.includes('--dir');
+const providerOnly = args.includes('--provider');
 
 function run(command, commandArgs, env = process.env) {
   const result = spawnSync(command, commandArgs, { cwd: root, stdio: 'inherit', env });
@@ -50,11 +51,14 @@ for (const arch of arches) {
     '--publish',
     'never'
   ];
-  if (dirOnly) builderArgs.push('--dir');
+  if (providerOnly) {
+    builderArgs.push('--config', 'electron-builder.provider.yml');
+  }
+  if (dirOnly || providerOnly) builderArgs.push('--dir');
   run(node, builderArgs, { ...process.env, COS_PACKAGE_ARCH: arch });
   // A successful electron-builder exit only proves that an artifact was assembled. Exercise the
   // unpacked artifact immediately so missing transitive runtime modules (for example when the
   // checkout's node_modules was linked to another tree) fail this same packaging command instead
   // of producing an installer that crashes before the first BrowserWindow exists.
-  run(node, ['scripts/smoke-packaged-runtime.mjs', ...targetArgs]);
+  run(node, ['scripts/smoke-packaged-runtime.mjs', ...targetArgs, ...(providerOnly ? ['--provider'] : [])]);
 }

@@ -1,0 +1,12 @@
+# Independent, unpacked helper payload for the native OpenCode provider.
+# Inherit upstream native resources and license manifests; do not build an installer.
+extends: ./electron-builder.yml
+appId: dev.chatonopencode.provider
+productName: Chat On OpenCode Provider
+directories:
+  output: release/provider
+  buildResources: build
+win:
+  executableName: Chat On OpenCode Provider
+linux:
+  executableName: chat-on-opencode-provider

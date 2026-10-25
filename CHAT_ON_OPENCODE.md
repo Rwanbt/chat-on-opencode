@@ -63,3 +63,10 @@ normal 30-minute SSE expiry by sequence number, without re-sending a prompt. Thi
 evidence of full tool-call parity or a live ChatGPT inference test.
 
 No installation or replacement of the user's main OpenCode configuration is performed.
+
+The portable-Electron worktree adds a **separate, unpacked** Chat On OpenCode Provider
+distribution with its own application ID, product name and output directory. It does
+not build an installer or replace Chat On Steroids. It reuses upstream's native-module
+smoke but points it at the provider-specific executable. A Windows CI gate runs the
+actual packaged Electron process from a disposable profile (no real login or inference)
+and verifies its loopback control API and hidden window state.

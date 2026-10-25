@@ -68,6 +68,16 @@ node --test test/native-process.e2e.mjs
 
 ## Next integration milestones
 
+The **fork-only** portable Electron distribution is built with
+`npm run dist:provider:win:x64` on Windows. Its output is under
+`release/provider/win-unpacked/Chat On OpenCode Provider.exe`, and the separately
+named product ID does not install/replace CoS. The packaging step runs the inherited
+native-runtime/license smoke gate against the provider payload. A Windows CI job then
+boots this actual Electron executable in provider-service mode using a generated isolated
+profile with all local tool permissions off, with no real ChatGPT login, to verify the
+private control API and absence of a visible CoS window. **This is not yet ChatGPT inference.**
+
+
 1. Package the fork's Electron runtime as a noninteractive helper, prove true UI-free launch,
    connect on provider selection, and implement a consent-based initial ChatGPT login.
 2. Map actual CoS model IDs/efforts, tool results and long-form assistant content without the

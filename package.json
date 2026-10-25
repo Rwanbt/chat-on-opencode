@@ -27,6 +27,8 @@
     "packaging:prepare": "node scripts/prepare-packaging-native.mjs",
     "desktop:mac": "node scripts/prepare-macos-desktop-helper.mjs --platform darwin",
     "dist": "node scripts/package.mjs --arch x64,arm64",
+    "dist:provider:win:x64": "node scripts/package.mjs --provider --platform win32 --arch x64",
+    "dist:provider:linux:x64": "node scripts/package.mjs --provider --platform linux --arch x64",
     "dist:win": "node scripts/package.mjs --platform win32 --arch x64,arm64",
     "dist:x64": "node scripts/package.mjs --platform win32 --arch x64",
     "dist:arm64": "node scripts/package.mjs --platform win32 --arch arm64",
