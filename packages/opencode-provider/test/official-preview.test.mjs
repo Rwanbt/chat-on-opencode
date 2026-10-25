@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { test } from 'node:test'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
 import os from 'node:os'
@@ -79,7 +80,8 @@ test('process-only candidate model check preserves live byte hashes and never im
   assert.equal(captured.opts.env.TEMP, captured.opts.env.TMP)
   const injected = JSON.parse(captured.opts.env.OPENCODE_CONFIG_CONTENT)
   assert.equal(injected.plugins.length, 1)
-  assert.ok(injected.plugins[0].package.endsWith(path.join('opencode-provider', 'plugin')))
+  assert.ok(injected.plugins[0].package.endsWith(path.join('bundle', 'plugin')))
+  assert.equal(existsSync(injected.plugins[0].package), false, 'temporary plugin bundle was removed on exit')
   assert.deepEqual(Object.keys(injected.providers), ['chat-on-opencode'])
   assert.doesNotMatch(JSON.stringify(injected), /DO_NOT_COPY_THIS_SECRET|"goal"|"loop"/)
 })
@@ -118,6 +120,52 @@ test('standalone CLI partial final model line terminates without waiting for EOF
   })
   assert.equal(terminated, 1)
   assert.equal(result.status, 'PREVIEW_MODEL_AVAILABLE')
+})
+
+test('decorated model identifier split across native stdout chunks is recognized', async t => {
+  const { options } = await fixture(t)
+  const plan = planOfficialPreview(options, { runner: mockedVersion })
+  let killed = 0
+  const result = await previewOfficialModel(plan, {
+    timeoutMs: 1500,
+    launcher: () => {
+      const child = new EventEmitter()
+      child.stdout = new PassThrough()
+      child.stderr = new PassThrough()
+      child.pid = 123456
+      child.exitCode = null
+      queueMicrotask(() => {
+        child.stdout.write('\x1b[32m  chat-on-opencode/chatgpt-')
+        child.stdout.write('default   (local model)\x1b[0m')
+      })
+      return child
+    },
+    terminator: child => {
+      killed++
+      child.exitCode = 0
+      child.emit('close', 0)
+    },
+  })
+  assert.equal(killed, 1)
+  assert.equal(result.modelPresent, true)
+})
+
+test('native subprocess timeout reports only categorical no-output, never account data', async t => {
+  const { options } = await fixture(t)
+  const plan = planOfficialPreview(options, { runner: mockedVersion })
+  let killed = 0
+  const launcher = () => {
+    const child = new EventEmitter()
+    child.stdout = new PassThrough()
+    child.stderr = new PassThrough()
+    child.pid = 123456
+    child.exitCode = null
+    return child
+  }
+  await assert.rejects(previewOfficialModel(plan, {
+    timeoutMs: 1000, launcher, terminator: () => { killed++ },
+  }), /preview_cli_timeout_no_output/)
+  assert.equal(killed, 1)
 })
 
 test('changed active config and changed candidate fail closed before launching a child', async t => {

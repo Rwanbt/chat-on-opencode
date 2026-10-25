@@ -1,12 +1,13 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, readFileSync } from 'node:fs'
-import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { cp, copyFile, mkdtemp, mkdir, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { createOpenCodeConfig } from './config.mjs'
 import { classifyGatewayPlugin, extractOwnedEntry } from './official-doctor.mjs'
 import { inspectInstalledProvider, payloadDigest, validateBundle } from './official-install.mjs'
+import { candidateDigest } from './official-upgrade.mjs'
 
 const sha = source => createHash('sha256').update(source).digest('hex')
 const MODEL = 'chat-on-opencode/chatgpt-default'
@@ -48,7 +49,7 @@ export function planOfficialPreview({ configFile, bundleDir, officialCli }, { ru
   })
   return {
     cli, generated, config, managed, configDigest: sha(current),
-    managedDigest: payloadDigest(managed), bundleDigest: payloadDigest(source),
+    managedDigest: payloadDigest(managed), bundleDigest: candidateDigest(source),
     source, version: VERSION,
   }
 }
@@ -77,18 +78,34 @@ export async function previewOfficialModel(plan, {
   }
   if (sha(readFileSync(plan.config)) !== plan.configDigest ||
       payloadDigest(plan.managed) !== plan.managedDigest ||
-      payloadDigest(plan.source) !== plan.bundleDigest) throw Error('preview_source_changed')
+      candidateDigest(plan.source) !== plan.bundleDigest) throw Error('preview_source_changed')
   const root = await mkdtemp(path.join(os.tmpdir(), 'coo-preview-'))
   let child
   try {
-    for (const name of ['home','appdata','localappdata','config','data','cache','workspace','tmp']) {
+    for (const name of ['home','appdata','localappdata','config','data','cache','workspace','tmp','bundle']) {
       await mkdir(path.join(root, name))
     }
+    const staged = path.join(root, 'bundle')
+    for (const folder of ['bin', 'plugin', 'src']) {
+      await cp(path.join(plan.source, folder), path.join(staged, folder), { recursive: true })
+    }
+    for (const filename of ['package.json', 'README.md', 'opencode.example.jsonc']) {
+      const sourceFile = path.join(plan.source, filename)
+      if (existsSync(sourceFile)) await copyFile(sourceFile, path.join(staged, filename))
+    }
+    if (payloadDigest(staged) !== plan.bundleDigest ||
+        candidateDigest(plan.source) !== plan.bundleDigest) throw Error('preview_candidate_copy_drift')
+    validateBundle(staged)
+    // The CLI sees only the self-contained immutable candidate copy, not a
+    // mutable development worktree or the currently managed plugin folder.
+    const configuration = structuredClone(plan.generated)
+    configuration.plugins[0].package = path.join(staged, 'plugin')
     child = launcher(plan.cli, ['models', '--standalone'], {
-      cwd: path.join(root, 'workspace'), env: minimalEnvironment(root, plan.generated),
+      cwd: path.join(root, 'workspace'), env: minimalEnvironment(root, configuration),
       windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'],
     })
-    let total = 0, line = '', found = false, childClosed = false, killIssued = false
+    let total = 0, stdoutBytes = 0, stderrBytes = 0
+    let line = '', outputTail = '', found = false, childClosed = false, killIssued = false
     const terminate = () => {
       if (killIssued || childClosed || !child?.pid) return
       killIssued = true
@@ -102,7 +119,8 @@ export async function previewOfficialModel(plan, {
     const outcome = await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         terminate()
-        reject(Error('preview_cli_timeout'))
+        reject(Error(stdoutBytes ? 'preview_cli_timeout_model_unlisted' :
+          stderrBytes ? 'preview_cli_timeout_with_stderr' : 'preview_cli_timeout_no_output'))
       }, timeoutMs)
       const finish = (error, code) => {
         clearTimeout(timer)
@@ -112,19 +130,27 @@ export async function previewOfficialModel(plan, {
       }
       child.stdout?.on('data', chunk => {
         total += chunk.byteLength
+        stdoutBytes += chunk.byteLength
         if (total > 262144) { terminate(); finish(Error('preview_cli_output_excess')); return }
-        const lines = (line + chunk.toString('utf8')).split(/\r?\n/)
+        const raw = chunk.toString('utf8')
+        // The official CLI can decorate a model row, and transports can split
+        // its exact ID between writes. Accept the literal registered ID
+        // anywhere in its bounded output, as the existing real CLI E2E does.
+        outputTail = (outputTail + raw).slice(-1024)
+        const lines = (line + raw).split(/\r?\n/)
         line = (lines.pop() ?? '').slice(-256)
         // OpenCode can hold its last model entry without a terminal newline
         // while its standalone process stays alive. Admit the exact pending
         // token as soon as it arrives; waiting for EOF would deadlock.
-        if (lines.some(value => value.trim() === MODEL) || line.trim() === MODEL) {
+        if (outputTail.includes(MODEL) ||
+            lines.some(value => value.trim() === MODEL) || line.trim() === MODEL) {
           found = true
           terminate()
         }
       })
       child.stderr?.on('data', chunk => {
         total += chunk.byteLength
+        stderrBytes += chunk.byteLength
         if (total > 262144) { terminate(); finish(Error('preview_cli_output_excess')) }
       })
       child.once('error', () => finish(Error('preview_cli_failed')))

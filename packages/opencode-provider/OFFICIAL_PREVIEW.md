@@ -19,7 +19,10 @@ Use an existing, trusted local candidate path for `--bundle`; no package
 downloads are performed. The preview verifies the active config/backup
 manifest and candidate payload, reads only the provider-owned registration
 and required local runtime paths, then constructs a **minimal** OpenCode
-configuration containing exactly one provider and one plugin. Other
+configuration containing exactly one provider and one plugin. Before
+launch, the candidate's production files are copied into the disposable
+directory and verified against the original payload digest; a development
+worktree is never loaded directly by the official CLI. Other
 configured providers, Goal, Loop, Daemon, account settings and chat history
 are **not copied** into the process. It sets `OPENCODE_CONFIG_CONTENT` with
 new `HOME`, `APPDATA`, `LOCALAPPDATA` and `XDG_*` directories, disables
