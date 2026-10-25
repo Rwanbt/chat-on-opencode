@@ -83,7 +83,7 @@ function versionOf(cli, runner) {
 }
 const journalFor = info => path.join(path.dirname(info.config), JOB)
 const safeDigest = dir => { walkSafe(dir); return payloadDigest(dir) }
-function candidateDigest(source) {
+export function candidateDigest(source) {
   const digest = createHash('sha256')
   const walk = (dir, prefix = '') => {
     for (const name of readdirSync(dir).sort()) {

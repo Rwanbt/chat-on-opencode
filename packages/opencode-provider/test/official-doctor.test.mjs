@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -71,6 +71,24 @@ test('without a socket probe doctor makes no network calls and never claims auth
   assert.equal(report.gatewayListening, null)
   assert.equal(report.inferenceAuthenticated, false)
   assert.equal(report.nativeReadRequested, false)
+})
+
+test('candidate matching covers source gateway implementation, not only plugin index', async t => {
+  const ctx = await fixture(t)
+  const candidate = path.join(ctx.root, 'candidate')
+  await mkdir(candidate)
+  for (const folder of ['bin', 'plugin', 'src']) {
+    await cp(path.join(bundleDir, folder), path.join(candidate, folder), { recursive: true })
+  }
+  for (const name of ['package.json', 'README.md', 'opencode.example.jsonc']) {
+    await copyFile(path.join(bundleDir, name), path.join(candidate, name))
+  }
+  const gateway = path.join(candidate, 'src', 'gateway.mjs')
+  await writeFile(gateway, (await readFile(gateway, 'utf8')) + '\n// stale gateway fixture\n')
+  const report = await diagnoseInstalledProvider(ctx.args.configFile, { bundleDir: candidate })
+  assert.equal(report.keyMode, 'ephemeral')
+  assert.equal(report.candidateMatches, false)
+  assert.ok(report.blockers.includes('installed_bundle_outdated'))
 })
 
 test('tampered user configuration refuses inspection and never exposes private content', async t => {

@@ -1,11 +1,10 @@
-import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, readFileSync } from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
-import { inspectInstalledProvider } from './official-install.mjs'
+import { inspectInstalledProvider, payloadDigest, validateBundle } from './official-install.mjs'
+import { candidateDigest } from './official-upgrade.mjs'
 import { readJSONC } from './jsonc-scoped.mjs'
 
-const hash = data => createHash('sha256').update(data).digest('hex')
 const child = (node, key) => node?.type === 'object' ? node.members.find(m => m.key === key)?.node : undefined
 const scalar = (source, node) => {
   if (node?.type !== 'scalar') return undefined
@@ -70,9 +69,10 @@ export async function diagnoseInstalledProvider(configFile, {
   const own = extractOwnedEntry(readFileSync(config, 'utf8'), managed)
   const source = readFileSync(path.join(managed, 'plugin', 'index.ts'), 'utf8')
   const keyMode = classifyGatewayPlugin(source)
-  const candidate = bundleDir && file(path.join(bundleDir, 'plugin', 'index.ts'))
-    ? readFileSync(path.join(bundleDir, 'plugin', 'index.ts')) : null
-  const candidateMatches = candidate === null ? null : hash(candidate) === hash(source)
+  // Compare the exact payload inventory (bin/plugin/src plus packaged root files),
+  // not just index.ts: a fixed entrypoint with stale gateway code also fails.
+  const candidateMatches = bundleDir ? candidateDigest(validateBundle(bundleDir)) ===
+    payloadDigest(managed) : null
   const runtimeAvailable = file(own.runtimeExecutable) && file(own.nodeExecutable) && folder(own.runtimeData)
   let isolatedConsent = false
   if (runtimeAvailable && file(path.join(own.runtimeData, 'config.json'))) {
