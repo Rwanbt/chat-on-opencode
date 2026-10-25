@@ -7,8 +7,20 @@ import http from 'node:http'
 import path from 'node:path'
 import { appendFile, mkdir, writeFile, rm } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
+import { realpathSync } from 'node:fs'
 
 const folder = process.env.CHAT_ON_OPENCODE_USERDATA_DIR
+// Windows CI can launch under an 8.3 RUNNER~1 temp alias, while the runtime
+// canonicalizes the provider-data directory to its long path before spawn.
+const traceRoot = process.env.CHAT_ON_OPENCODE_TEST_TRACE_DIR
+const traceAllowed = (() => {
+  try {
+    const observed = realpathSync(path.dirname(folder!))
+    const permitted = realpathSync(traceRoot!)
+    return process.platform === 'win32'
+      ? observed.toLowerCase() === permitted.toLowerCase() : observed === permitted
+  } catch { return false }
+})()
 const ready = process.argv.includes('--chat-on-opencode-provider-service')
 const parentPID = Number(process.env.CHAT_ON_OPENCODE_OWNER_PID)
 if (!ready || !folder || !path.isAbsolute(folder) || !Number.isSafeInteger(parentPID) || parentPID < 2 || parentPID === process.pid) process.exit(20)
@@ -18,7 +30,7 @@ const token = randomBytes(32).toString('base64url')
 const sessions = new Set<string>()
 const events = new Map<string, Array<Record<string, unknown>>>()
 const server = http.createServer(async (req, res) => {
-  if (process.env.CHAT_ON_OPENCODE_TEST_TRACE_DIR === path.dirname(folder)) {
+  if (traceAllowed) {
     await appendFile(path.join(folder, 'fixture-routes.txt'), `${req.method} ${req.url?.split('?')[0]}\n`).catch(() => undefined)
   }
   const json = (status: number, obj: unknown) => {
