@@ -2,13 +2,13 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { cpSync, symlinkSync } from 'node:fs'
+import { cpSync, renameSync, symlinkSync } from 'node:fs'
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { inspectInstalledProvider, installProvider } from '../src/official-install.mjs'
-import { inspectUpgrade, stageUpgrade, recoverStagedUpgrade } from '../src/official-upgrade.mjs'
+import { inspectUpgrade, stageUpgrade, publishVersionedCandidate, inspectPublishedCandidate, recoverStagedUpgrade } from '../src/official-upgrade.mjs'
 
 const rootBundle = fileURLToPath(new URL('..', import.meta.url))
 const runner = () => ({ status: 0, stdout: 'opencode v2.1.4\n' })
@@ -167,10 +167,97 @@ test('CLI recovery reports no private paths; altered journal fails closed', asyn
   assert.equal(invoke(['--recover', '--config', c.configFile]).status, 2)
   assert.equal((await readdir(jobFor(c.configFile))).includes('candidate'), true)
   await writeFile(journal, prior)
+  const publication = invoke(['--publish-candidate', '--config', c.configFile])
+  assert.equal(publication.status, 0, publication.stderr)
+  assert.equal(JSON.parse(publication.stdout).promotionAllowed, false)
+  assert.equal(publication.stdout.includes(c.root), false)
   const ok = invoke(['--recover', '--config', c.configFile])
   assert.equal(ok.status, 0, ok.stderr)
   assert.deepEqual(JSON.parse(ok.stdout), {
     recovered: true, originalInstallUnchanged: true, promotionAllowed: false,
   })
   assert.equal(ok.stdout.includes(c.root), false)
+})
+
+test('config drift after staging refuses immutable publication without overwriting edits', async t => {
+  const c = await setup(t)
+  stageUpgrade(c.options, { runner })
+  const changed = Buffer.concat([await readFile(c.configFile), Buffer.from('\n// external edit')])
+  await writeFile(c.configFile, changed)
+  assert.throws(() => publishVersionedCandidate(c.configFile), /provider_config_modified_refuse_rollback/)
+  assert.deepEqual(await readFile(c.configFile), changed)
+  assert.ok((await readdir(jobFor(c.configFile))).includes('candidate'))
+})
+
+test('versioned candidate publication keeps exact config, original managed and backup bytes', async t => {
+  const c = await setup(t), prior = await snapshot(c.configFile)
+  const { stagedDigest } = stageUpgrade(c.options, { runner })
+  const result = publishVersionedCandidate(c.configFile)
+  assert.deepEqual(result, { publishedForOfflineReview: true, promotionAllowed: false,
+    status: 'NO_GO_CONFIG_CAS_UNPROVEN', publishedSha256: stagedDigest })
+  const target = path.join(path.dirname(c.configFile), '.chat-on-opencode-version-' + stagedDigest)
+  assert.ok((await readdir(target)).includes('plugin'))
+  assert.ok((await readdir(target)).includes('src'))
+  unchanged(prior, await snapshot(c.configFile))
+  assert.throws(() => publishVersionedCandidate(c.configFile), /upgrade_candidate_not_ready_to_publish/)
+  assert.throws(() => stageUpgrade(c.options, { runner }), /upgrade_pending_recovery_required/)
+  assert.equal(recoverStagedUpgrade(c.configFile).originalInstallUnchanged, true)
+  unchanged(prior, await snapshot(c.configFile))
+  assert.equal((await readdir(path.dirname(c.configFile))).includes(path.basename(target)), true)
+  assert.equal((await readdir(path.dirname(c.configFile))).includes('.chat-on-opencode-upgrade'), false)
+  assert.deepEqual(inspectPublishedCandidate(c.configFile, stagedDigest), {
+    publishedSha256: stagedDigest, candidateAvailable: true, promotionAllowed: false,
+  })
+  assert.throws(() => inspectPublishedCandidate(c.configFile, '../escape'), /upgrade_published_digest_invalid/)
+})
+
+test('crash at publication boundary recovers only owned staging and never changes old config', async t => {
+  for (const point of ['publication_intent_durable', 'before_publish_rename', 'published_directory', 'published_verified']) {
+    const c = await setup(t), prior = await snapshot(c.configFile)
+    const { stagedDigest } = stageUpgrade(c.options, { runner })
+    assert.throws(() => publishVersionedCandidate(c.configFile, { checkpoint(at) {
+      if (at === point) throw new Error('synthetic_crash_' + point)
+    } }), /synthetic_crash_/)
+    unchanged(prior, await snapshot(c.configFile))
+    assert.equal(recoverStagedUpgrade(c.configFile).originalInstallUnchanged, true)
+    unchanged(prior, await snapshot(c.configFile))
+    const target = path.join(path.dirname(c.configFile), '.chat-on-opencode-version-' + stagedDigest)
+    assert.equal((await readdir(path.dirname(c.configFile))).includes(path.basename(target)),
+      ['published_directory', 'published_verified'].includes(point))
+  }
+})
+
+test('published candidate mutation and symlink block recovery; never delete versioned data', async t => {
+  const c = await setup(t), old = await snapshot(c.configFile)
+  const { stagedDigest } = stageUpgrade(c.options, { runner })
+  publishVersionedCandidate(c.configFile)
+  const target = path.join(path.dirname(c.configFile), '.chat-on-opencode-version-' + stagedDigest)
+  const artifact = path.join(target, 'plugin', 'index.ts')
+  const original = await readFile(artifact)
+  await writeFile(artifact, 'corrupted')
+  assert.throws(() => recoverStagedUpgrade(c.configFile), /upgrade_published_candidate_invalid/)
+  assert.throws(() => inspectPublishedCandidate(c.configFile, stagedDigest), /upgrade_published_candidate_invalid/)
+  unchanged(old, await snapshot(c.configFile))
+  await writeFile(artifact, original)
+  const link = path.join(target, 'linked')
+  symlinkSync(c.bundleDir, link, process.platform === 'win32' ? 'junction' : 'dir')
+  assert.throws(() => recoverStagedUpgrade(c.configFile), /upgrade_unsafe_entry|upgrade_unsafe_path/)
+  await rm(link)
+  assert.equal(recoverStagedUpgrade(c.configFile).originalInstallUnchanged, true)
+  assert.ok((await readdir(target)).includes('plugin'))
+})
+
+test('native rename is not a CAS: stale hash can overwrite intervening config edits', async t => {
+  const c = await setup(t)
+  const folder = path.join(c.root, 'rename-proof')
+  await mkdir(folder)
+  const active = path.join(folder, 'opencode.jsonc'), incoming = path.join(folder, 'new.jsonc')
+  await writeFile(active, '{"goal":true}')
+  const stale = sha(await readFile(active))
+  await writeFile(incoming, '{"new":true}')
+  await writeFile(active, '{"goal":true,"externalConcurrentEdit":true}')
+  assert.notEqual(sha(await readFile(active)), stale)
+  // This demonstrates why an unconditional fs.rename cannot be exposed as --promote.
+  renameSync(incoming, active)
+  assert.equal((await readFile(active, 'utf8')), '{"new":true}')
 })
