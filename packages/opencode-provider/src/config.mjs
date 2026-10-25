@@ -51,7 +51,6 @@ export function createOpenCodeConfig({ runtimeExecutable, runtimeData, nodeExecu
     } }],
     providers: { 'chat-on-opencode': {
       name: 'Chat On OpenCode',
-      env: ['CHAT_ON_OPENCODE_GATEWAY_KEY'],
       package: '@opencode/ai/providers/openai-compatible',
       settings: { baseURL: 'http://127.0.0.1:' + port + '/v1' },
       models: { 'chatgpt-default': {

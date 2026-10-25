@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
@@ -58,10 +57,8 @@ for (const decision of ['allow', 'deny']) test('actual OpenCode V2 native read '
       ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
     }))
     const port = await freePort()
-    const gatewayKey = randomBytes(32).toString('hex')
     // Exercise the same shipped configuration generator as a real offline installation.
-    // In particular the generated config must work with the bearer secret only in the
-    // isolated OpenCode environment, never as a persisted JSON apiKey.
+    // The native SDK must receive the plugin-generated bearer without a launcher secret.
     const generated = spawnSync(nodeExe, [path.join(pluginPackage, 'bin', 'generate-config.mjs'),
       '--runtime', executable, '--data', profile, '--node', nodeExe,
       '--plugin-dir', pluginPackage, '--port', String(port), '--native-tools', 'read'], {
@@ -70,6 +67,7 @@ for (const decision of ['allow', 'deny']) test('actual OpenCode V2 native read '
     assert.equal(generated.status, 0, `config generation failed: ${generated.stderr?.slice(-500)}`)
     const configuration = JSON.parse(generated.stdout)
     assert.equal(configuration.providers['chat-on-opencode'].settings.apiKey, undefined)
+    assert.equal(configuration.providers['chat-on-opencode'].env, undefined)
     assert.equal(configuration.providers['chat-on-opencode'].models['chatgpt-default'].capabilities.tools, true)
     assert.deepEqual(configuration.permissions, [{ action: 'read', resource: '*', effect: 'ask' }])
     // The fixture is isolated and the real test file was just created. Explicit
@@ -86,10 +84,11 @@ for (const decision of ['allow', 'deny']) test('actual OpenCode V2 native read '
       XDG_CONFIG_HOME: path.join(root, 'config'), XDG_DATA_HOME: path.join(root, 'data'),
       XDG_CACHE_HOME: path.join(root, 'cache'), OPENCODE_CONFIG_DIR: path.join(root, 'config'),
       OPENCODE_CONFIG_CONTENT: JSON.stringify(configuration), OPENCODE_CONFIG_PROJECT_DISABLE: '1',
-      OPENCODE_DISABLE_AUTOUPDATE: '1', CHAT_ON_OPENCODE_GATEWAY_KEY: gatewayKey,
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
       CHAT_ON_OPENCODE_TEST_TRACE_DIR: root,
       CHAT_ON_OPENCODE_TEST_NATIVE_READ_FILE: toolFile,
     })
+    assert.equal(safeEnv.CHAT_ON_OPENCODE_GATEWAY_KEY, undefined)
     const args = ['run', '--standalone', '--format', 'json', '--model', 'chat-on-opencode/chatgpt-default',
       'Read the file provided to the native read tool, then answer with its verification marker.']
     let child
@@ -118,20 +117,11 @@ for (const decision of ['allow', 'deny']) test('actual OpenCode V2 native read '
       if (!found) {
         let journal = ''
         try { journal = await readFile(path.join(root, 'data', 'opencode', 'log', 'opencode.log'), 'utf8') } catch { /* optional */ }
-        // This is a synthetic account-free profile. Never print its bearer secret.
-        const clip = input => input.replaceAll(gatewayKey, '[redacted-test-key]').slice(-7000)
         let routes = ''
         try { routes = await readFile(path.join(profile, 'fixture-routes.txt'), 'utf8') } catch { /* optional */ }
-        let gateway = null
-        try {
-          const response = await fetch(`http://127.0.0.1:${port}/health`, {
-            headers: { Authorization: `Bearer ${gatewayKey}` }, signal: AbortSignal.timeout(1500),
-          })
-          if (response.ok) gateway = await response.json()
-        } catch { /* provider may have exited */ }
         console.error('ISOLATED_CLI_DIAGNOSTIC', JSON.stringify({ exit: child.exitCode,
-          stderr: clip(stderr.join('')).slice(-1000), stdout: clip(stdout.join('')).slice(-5000),
-          journal: clip(journal).slice(-350), routes, gateway }))
+          stderr: stderr.join('').slice(-1000), stdout: stdout.join('').slice(-5000),
+          journal: journal.slice(-350), routes }))
       }
       assert.ok(found, 'Native OpenCode did not finish real native read/permission flow')
       const parts = stdout.join('').split(/\r?\n/).flatMap(line => {
@@ -149,6 +139,9 @@ for (const decision of ['allow', 'deny']) test('actual OpenCode V2 native read '
         assert.equal(native, undefined, 'native read executed despite denied permission')
         assert.ok(!stdout.join('').includes('NATIVE_READ_PROOF_8729'), 'denied read contents leaked')
       }
+      let log = ''
+      try { log = await readFile(path.join(root, 'data', 'opencode', 'log', 'opencode.log'), 'utf8') } catch { /* optional */ }
+      assert.doesNotMatch([stdout.join(''), stderr.join(''), log].join('\n'), /Bearer\s+[a-f0-9]{64}/i)
       // The real tool_use event plus fixture's final marker proves native read
       // and result follow-up. Do not probe gateway health after CLI completion:
       // parent IPC may already have terminated the helper, correctly. The

@@ -72,10 +72,12 @@ node .\release\provider\opencode-plugin\bin\generate-config.mjs `
 The generated JSON uses the tested OpenCode 2 `plugins`/`providers` shape, a filesystem plugin
 entry, and `chat-on-opencode/chatgpt-default` model selection. Place that configuration into
 the intended **isolated** OpenCode configuration via OpenCode's normal configuration mechanism.
-The isolated OpenCode CLI 2.0.29 offline E2E also loads the staged standalone plugin from this
-generated configuration with the token supplied through the process environment alone.
-Set `CHAT_ON_OPENCODE_GATEWAY_KEY` to a strong random token (32+ characters) in that OpenCode
-process environment. The generator deliberately does not put the token or `apiKey` into JSON.
+The actual OpenCode 2.1.4 CLI offline E2E loads the provider, launches its owned gateway,
+and streams a native answer without `CHAT_ON_OPENCODE_GATEWAY_KEY` in the launching
+environment. The plugin generates a fresh 256-bit bearer in memory on setup and passes
+it only to its owned gateway process and the provider-scoped native request hooks.
+The generator deliberately stores neither an `env` credential dependency nor an `apiKey`
+or bearer token in OpenCode configuration. Desktop GUI selection has not yet been tested.
 Any existing personal CoS profile can be explicitly guarded with `--personal-cos-data` pointing
 to its existing directory. The provider service rechecks isolation when launched.
 
@@ -91,8 +93,8 @@ requests are rejected rather than guessed or incorrectly attached to another con
 
 The gateway reads `CHAT_ON_OPENCODE_RUNTIME_EXE` (a packaged **fork** executable),
 `CHAT_ON_OPENCODE_RUNTIME_DATA` (an **existing isolated** `userData` folder),
-`CHAT_ON_OPENCODE_GATEWAY_KEY` (a distinct strong local secret, at least 32 characters, set in
-the OpenCode process environment before provider initialization),
+`CHAT_ON_OPENCODE_GATEWAY_KEY` (a distinct process-local random bearer passed by the plugin
+only to its owned gateway subprocess),
 and optional `CHAT_ON_OPENCODE_PORT` (default 45861). The optional
 `CHAT_ON_OPENCODE_PERSONAL_COS_DATA` identifies a personal CoS folder the launcher must never
 reuse. The fork process checks this boundary independently against its actual personal profile.

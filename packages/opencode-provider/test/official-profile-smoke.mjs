@@ -2,7 +2,6 @@
 // profile. No ChatGPT sign-in, prompts, Desktop, registry or personal profile.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -32,7 +31,6 @@ Object.assign(env, {
   OPENCODE_CONFIG_DIR: path.join(root, 'opencode'),
   OPENCODE_DISABLE_AUTOUPDATE: '1', OPENCODE_DISABLE_MODELS_FETCH: '1',
   OPENCODE_DISABLE_PROJECT_CONFIG: '1', OPENCODE_DISABLE_DEFAULT_PLUGINS: '1',
-  CHAT_ON_OPENCODE_GATEWAY_KEY: randomBytes(32).toString('hex'),
 })
 const workspace = path.join(root, 'workspace')
 mkdirSync(workspace, { recursive: true })
@@ -62,7 +60,7 @@ const result = await new Promise(resolve => {
 })
 const present = result.observed
 if (process.env.CHAT_ON_OPENCODE_SMOKE_DIAGNOSTIC === '1') {
-  const scrub = text => String(text ?? '').replaceAll(env.CHAT_ON_OPENCODE_GATEWAY_KEY, '[redacted]')
+  const scrub = text => String(text ?? '')
     .replace(/[A-Za-z]:\\[^\s'"\x60]+/g, '[path]').slice(-2000)
   process.stderr.write('SMOKE_DIAGNOSTIC ' + JSON.stringify({
     stdout: scrub(result.stdout), stderr: scrub(result.stderr),

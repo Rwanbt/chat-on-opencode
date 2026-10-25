@@ -1,4 +1,5 @@
 import { Plugin } from '@opencode/plugin'
+import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { GatewayLifecycle } from '../src/lifecycle.mjs'
 import { MessageIdentity } from './message-identity.mjs'
@@ -11,7 +12,9 @@ export default Plugin.define({
   async setup(ctx) {
     const identities = new MessageIdentity()
     const option = (key: string) => typeof ctx.options[key] === 'string' ? ctx.options[key] as string : undefined
-    const key = process.env.CHAT_ON_OPENCODE_GATEWAY_KEY ?? ''
+    // One unpredictable bearer per plugin instance. Neither Desktop startup nor
+    // OpenCode's persisted provider configuration needs an external credential.
+    const key = randomBytes(32).toString('hex')
     const readEnabled = option('nativeTools') === 'read'
     const port = Number(option('port') ?? '45861')
     const service = new GatewayLifecycle({
