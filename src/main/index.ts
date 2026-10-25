@@ -787,7 +787,9 @@ void app.whenReady().then(async () => {
   if (getConfig().controlApi.enabled) {
     startControlApi().catch((error: Error) => logWarn(`control API did not start: ${error.message}`));
   }
-  if (getConfig().ui.autoConnect) void connect();
+  // This isolated login and its hidden service never auto-connect MCP surfaces;
+  // the provider's own bridge and local control API have independent lifecycles.
+  if (!providerService && getConfig().ui.autoConnect) void connect();
   void resumeUpdateRefresh().catch((error: Error) => logWarn(`update refresh did not resume: ${error.message}`));
 
   // Never awaited: an unreachable GitHub, a slow download or a broken release must not delay a
