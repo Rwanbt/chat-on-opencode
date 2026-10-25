@@ -1,10 +1,28 @@
 import { spawn } from 'node:child_process'
-import { realpath, stat } from 'node:fs/promises'
+import { lstat, readFile, realpath, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { CoSControl, BridgeError } from './control.mjs'
 
 const SERVICE_SWITCH = '--chat-on-opencode-provider-service'
+
+/** The helper must not boot Chromium with CoS's implicit first-launch defaults. */
+export async function validateProfileConsent(folder) {
+  const file = path.join(folder, 'config.json')
+  let info
+  try { info = await lstat(file) }
+  catch { throw new BridgeError('isolated_profile_not_initialized', 503) }
+  if (!info.isFile() || info.isSymbolicLink() || info.size > 2_097_152) {
+    throw new BridgeError('isolated_profile_config_unsafe', 403)
+  }
+  let config
+  try { config = JSON.parse((await readFile(file, 'utf8')).replace(/^\uFEFF/, '')) }
+  catch { throw new BridgeError('isolated_profile_config_unreadable', 503) }
+  if (!config || config.ui?.chatBrowser !== 'cos' || config.controlApi?.enabled !== true ||
+      config.controlApi?.allowActions !== true) {
+    throw new BridgeError('isolated_profile_has_no_provider_consent', 403)
+  }
+}
 
 /** Only start an explicitly configured fork binary in an existing, separate profile. */
 export async function validateRuntime({ executable, profile, personalProfile }) {
@@ -25,6 +43,7 @@ export async function validateRuntime({ executable, profile, personalProfile }) 
       throw new BridgeError('runtime_profile_overlaps_personal', 403)
     }
   }
+  await validateProfileConsent(folder)
   return { binary, folder }
 }
 

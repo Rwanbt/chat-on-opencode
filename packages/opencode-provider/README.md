@@ -7,7 +7,7 @@ It follows the OpenCode 2 `providers` convention and uses its native session ide
 translate a subset of Chat Completions into CoS's local control API and now owns a separately
 launched fork process via a service-only flag. The user must still provision that fork binary,
 an independent control-enabled profile and login; no automated login is available. CoS tool-call
-parity and streaming of outputs longer than its redacted 4,000-character projection are not done.
+parity and outputs exceeding its provider-only redacted 64,000-character limit are not supported.
 Do not install this in a real OpenCode profile.
 
 ## Wiring / isolated test only
@@ -24,6 +24,10 @@ the OpenCode process environment before provider initialization),
 and optional `CHAT_ON_OPENCODE_PORT` (default 45861). The optional
 `CHAT_ON_OPENCODE_PERSONAL_COS_DATA` identifies a personal CoS folder the launcher must never
 reuse. The fork process checks this boundary independently against its actual personal profile.
+The dedicated profile must contain an existing regular `config.json` that explicitly selects
+`ui.chatBrowser = "cos"` and `controlApi.enabled = controlApi.allowActions = true`.
+Invalid or missing settings refuse startup before Chromium is spawned. The personal CoS
+profile may be absent entirely; the provider neither creates nor copies one.
 The plugin option `nodeExecutable` must be an absolute path to a real Node.js binary (Node 20+),
 because OpenCode V2 may itself be a compiled Bun executable and must not be spawned as a Node interpreter.
 Never commit either token or copy them into the OpenCode project config. The listener binds only

@@ -8,7 +8,7 @@ import path from 'node:path'
 import { test } from 'node:test'
 import { CoSControl, BridgeError } from '../src/control.mjs'
 import { createGateway, requestText, runTurn, stableUUID } from '../src/gateway.mjs'
-import { CoSRuntime, validateRuntime } from '../src/runtime.mjs'
+import { CoSRuntime, validateRuntime, validateProfileConsent } from '../src/runtime.mjs'
 import { GatewayLifecycle } from '../src/lifecycle.mjs'
 import { MessageIdentity } from '../plugin/message-identity.mjs'
 
@@ -206,6 +206,11 @@ test('runtime launcher only accepts existing, isolated files and directories', a
   const personal = path.join(root, 'cos')
   await mkdir(profile)
   await mkdir(personal)
+  await assert.rejects(validateRuntime({ executable: process.execPath, profile, personalProfile: personal }),
+    /isolated_profile_not_initialized/)
+  await writeFile(path.join(profile, 'config.json'), JSON.stringify({
+    ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
+  }))
   const ok = await validateRuntime({ executable: process.execPath, profile, personalProfile: personal })
   // Windows temp may be an 8.3 alias (RUNNER~1) while realpath expands it.
   assert.equal(ok.folder, await realpath(profile))
@@ -216,9 +221,27 @@ test('runtime launcher only accepts existing, isolated files and directories', a
     /runtime_path_not_found/)
 })
 
+test('runtime refuses unconsented or damaged isolated CoS profile before any process spawn', async t => {
+  const profile = await mkdtemp(path.join(os.tmpdir(), 'cos-no-consent-'))
+  t.after(() => rm(profile, { recursive: true, force: true }))
+  const config = path.join(profile, 'config.json')
+  await assert.rejects(validateProfileConsent(profile), /isolated_profile_not_initialized/)
+  await writeFile(config, '{ broken')
+  await assert.rejects(validateProfileConsent(profile), /isolated_profile_config_unreadable/)
+  await writeFile(config, JSON.stringify({ ui: { chatBrowser: 'chrome' }, controlApi: { enabled: true, allowActions: true } }))
+  await assert.rejects(validateProfileConsent(profile), /isolated_profile_has_no_provider_consent/)
+  await writeFile(config, JSON.stringify({ ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: false } }))
+  await assert.rejects(validateProfileConsent(profile), /isolated_profile_has_no_provider_consent/)
+  await writeFile(config, JSON.stringify({ ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true } }))
+  await validateProfileConsent(profile)
+})
+
 test('service launcher uses the fork-only flag, owns exact endpoint PID and stops its child', async t => {
   const profile = await mkdtemp(path.join(os.tmpdir(), 'cos-owned-'))
   t.after(() => rm(profile, { recursive: true, force: true }))
+  await writeFile(path.join(profile, 'config.json'), JSON.stringify({
+    ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
+  }))
   const token = 'z'.repeat(43)
   const server = createServer((req, res) => {
     assert.equal(req.headers.authorization, `Bearer ${token}`)

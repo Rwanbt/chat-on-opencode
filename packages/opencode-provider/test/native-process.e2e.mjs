@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdtemp, mkdir, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -54,6 +54,9 @@ test('real Node gateway launches owned Bun service and streams two correlated na
     const personal = path.join(root, 'untouched-personal')
     await mkdir(profile)
     await mkdir(personal)
+    await writeFile(path.join(profile, 'config.json'), JSON.stringify({
+      ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
+    }))
     const executable = path.join(root, process.platform === 'win32' ? 'offline-cos.exe' : 'offline-cos')
     const compiled = spawnSync('bun', ['build', fixtureEntry, '--compile', '--outfile', executable], {
       cwd: packageDir, encoding: 'utf8', timeout: 35000, windowsHide: true, shell: false,

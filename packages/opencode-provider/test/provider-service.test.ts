@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { providerServiceProfile, providerServiceOwner, providerServiceOwnerAlive, providerBrowserUiAllowed, providerServiceReady, PROVIDER_SERVICE_SWITCH } from '../../../src/main/provider-service.js';
+import { providerServiceProfile, prospectiveRealPath, providerServiceOwner, providerServiceOwnerAlive, providerBrowserUiAllowed, providerServiceReady, PROVIDER_SERVICE_SWITCH } from '../../../src/main/provider-service.js';
 
 describe('standalone provider service admission', () => {
   it('keeps CoS windows and extension popup hidden only in provider mode', () => {
@@ -42,6 +42,17 @@ describe('standalone provider service admission', () => {
       expect(() => providerServiceProfile(launch, undefined, personal)).toThrow(/isolated_absolute_userdata/);
       expect(() => providerServiceProfile(launch, 'relative', personal)).toThrow(/isolated_absolute_userdata/);
       expect(() => providerServiceProfile(launch, path.join(root, 'missing'), personal)).toThrow(/profile_must_exist/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('accepts a first-use machine with no ordinary CoS profile and never creates one', () => {
+    const { root, isolated } = create();
+    const missingPersonal = path.join(root, 'fresh-normal', 'not-created');
+    try {
+      const launch = ['app.exe', PROVIDER_SERVICE_SWITCH];
+      expect(providerServiceProfile(launch, isolated, missingPersonal)).toBe(prospectiveRealPath(isolated));
+      expect(existsSync(missingPersonal)).toBeFalse();
+      expect(() => providerServiceProfile(launch, root, missingPersonal)).toThrow(/profile_overlaps_personal_userdata/);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
