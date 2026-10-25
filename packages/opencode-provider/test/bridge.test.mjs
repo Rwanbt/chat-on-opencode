@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { EventEmitter } from 'node:events'
 import { once } from 'node:events'
-import { mkdtemp, writeFile, rm, mkdir } from 'node:fs/promises'
+import { mkdtemp, writeFile, rm, mkdir, realpath } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -121,7 +121,8 @@ test('runtime launcher only accepts existing, isolated files and directories', a
   await mkdir(profile)
   await mkdir(personal)
   const ok = await validateRuntime({ executable: process.execPath, profile, personalProfile: personal })
-  assert.equal(ok.folder, profile)
+  // Windows temp may be an 8.3 alias (RUNNER~1) while realpath expands it.
+  assert.equal(ok.folder, await realpath(profile))
   await assert.rejects(validateRuntime({ executable: process.execPath, profile: personal, personalProfile: personal }),
     /runtime_profile_overlaps_personal/)
   await assert.rejects(validateRuntime({ executable: 'node', profile }), /isolated_runtime_not_configured/)
@@ -155,7 +156,7 @@ test('service launcher uses the fork-only flag, owns exact endpoint PID and stop
   const control = await runtime.start()
   assert.equal(control.endpointPid, child.pid)
   assert.deepEqual(launch.args, ['--chat-on-opencode-provider-service'])
-  assert.equal(launch.opts.env.CHAT_ON_OPENCODE_USERDATA_DIR, profile)
+  assert.equal(launch.opts.env.CHAT_ON_OPENCODE_USERDATA_DIR, await realpath(profile))
   assert.equal(launch.opts.windowsHide, true)
   assert.equal(launch.opts.shell, false)
   runtime.stop()

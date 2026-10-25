@@ -49,6 +49,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - name: Service profile and UI isolation policy
-        run: bun test test/provider-service.test.ts
+        run: bun test packages/opencode-provider/test/provider-service.test.ts
       - name: Provider hook bundles for OpenCode V2
         run: bun build packages/opencode-provider/plugin/index.ts --external '@opencode/plugin' --target bun --outdir packages/opencode-provider/.smoke-build

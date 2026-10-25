@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { providerServiceProfile, providerServiceReady, PROVIDER_SERVICE_SWITCH } from '../src/main/provider-service.js';
+import { providerServiceProfile, providerServiceReady, PROVIDER_SERVICE_SWITCH } from '../../../src/main/provider-service.js';
 
 describe('standalone provider service admission', () => {
   const create = () => {
