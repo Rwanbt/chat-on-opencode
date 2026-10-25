@@ -129,7 +129,7 @@ import { browserWindowIconPath } from './window-icon.js';
 import { approvedChatGptImageRequest, RENDERER_CONTENT_SECURITY_POLICY } from './renderer-csp.js';
 import { editContextMenuTemplate } from './edit-context-menu.js';
 import { connectionLossLine, showConnectionLossNotice } from './connection-loss-notice.js';
-import { providerServiceProfile, providerServiceReady, PROVIDER_SERVICE_SWITCH } from './provider-service.js';
+import { providerServiceProfile, providerServiceReady, providerServiceOwner, providerServiceOwnerAlive, PROVIDER_SERVICE_SWITCH } from './provider-service.js';
 
 /** Durable state file holding the multi-agent run. Hashes only, never credentials. */
 const SWARM_STATE = 'swarm';
@@ -141,6 +141,7 @@ const MAIN_TEXTS_STATE = 'main-texts';
 // A provider helper cannot share the original application's instance lock, settings, or cookies.
 // This is checked BEFORE app.requestSingleInstanceLock() or any normal userData writes.
 const providerService = process.argv.includes(PROVIDER_SERVICE_SWITCH);
+const providerOwner = providerService ? providerServiceOwner(process.env.CHAT_ON_OPENCODE_OWNER_PID) : null;
 let providerUserData: string | null = null;
 try {
   providerUserData = providerServiceProfile(process.argv, process.env.CHAT_ON_OPENCODE_USERDATA_DIR, app.getPath('userData'));
@@ -157,6 +158,18 @@ let quitting = false;
 let shutdownStarted = false;
 let shutdownComplete = false;
 const usageWarmup = new AbortController();
+
+// Windows does not guarantee delivery of SIGTERM to the gateway. If it disappears,
+// its provider-only Chromium subprocess terminates instead of living indefinitely.
+if (providerOwner !== null) {
+  const watcher = setInterval(() => {
+    if (providerServiceOwnerAlive(providerOwner)) return;
+    logWarn('provider service: gateway process exited; stopping owned browser');
+    quitting = true;
+    app.quit();
+  }, 1500);
+  watcher.unref();
+}
 
 // One instance only: two copies would fight over the tunnel and the config file.
 const hasSingleInstanceLock = app.requestSingleInstanceLock();

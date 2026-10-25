@@ -29,6 +29,12 @@ The message-identity worktree binds provider input IDs to OpenCode V2's actual
 consecutive prompts with the same words and for safe replay of an identical request.
 Unexpected absence of that identity fails closed instead of guessing an attribution.
 
+The provider service also keeps native CoS Chromium tabs offscreen even if its companion
+extension requests a foreground window or extension popup. The normal CoS GUI is untouched.
+An offline process-level E2E compiles a separate Bun test fixture and verifies the real
+Node gateway, owner PID, token, two text turns, and shutdown, without using any personal
+browser profile. **This is not a live ChatGPT/Electron browser inference test.**
+
 The V2 plugin also has a first-request-only launcher for the gateway, which in turn owns
 the standalone fork helper. The helper must be built and explicitly configured with a
 dedicated profile; neither executable packaging nor real ChatGPT session E2E has been

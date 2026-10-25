@@ -21,6 +21,7 @@ import { cosSignInTransfer, SignInTransferError, type SignInCookie } from './sig
 import { EXTERNAL_BROWSER_LABELS, installedSignInBrowsers, openBrowserSignIn, type ExternalChatBrowser } from '../browser.js';
 import { opensInCosBrowser } from '../../shared/cos-browser-sites.js';
 import { TabModel, WINDOW_ID_NONE, type ModelEvent, type WindowState } from './tab-model.js';
+import { providerBrowserUiAllowed } from '../provider-service.js';
 
 const PARTITION = 'persist:cos-browser';
 /**
@@ -480,6 +481,8 @@ export class CosBrowser {
   }
 
   private showWindow(id: number, focus: boolean): void {
+    // Extensions can request foreground Chrome windows. Keep the tabs alive offscreen.
+    if (!providerBrowserUiAllowed(process.argv)) return;
     const frame = this.frames.get(id);
     if (!frame) return;
     if (frame.base.isMinimized()) frame.base.restore();
@@ -598,6 +601,7 @@ export class CosBrowser {
 
   /** The extension's action popup, as Chrome shows it under the toolbar button. */
   private openExtensionPopup(frame: Frame): void {
+    if (!providerBrowserUiAllowed(process.argv)) return;
     if (!this.ses || !this.extensionId) return;
     this.popup?.destroy();
     const bounds = frame.base.getContentBounds();

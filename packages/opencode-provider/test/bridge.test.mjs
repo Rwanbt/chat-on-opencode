@@ -243,6 +243,8 @@ test('service launcher uses the fork-only flag, owns exact endpoint PID and stop
   assert.equal(control.endpointPid, child.pid)
   assert.deepEqual(launch.args, ['--chat-on-opencode-provider-service'])
   assert.equal(launch.opts.env.CHAT_ON_OPENCODE_USERDATA_DIR, await realpath(profile))
+  assert.equal(launch.opts.env.CHAT_ON_OPENCODE_OWNER_PID, String(process.pid))
+  assert.equal(launch.opts.env.CHAT_ON_OPENCODE_GATEWAY_KEY, undefined)
   assert.equal(launch.opts.windowsHide, true)
   assert.equal(launch.opts.shell, false)
   runtime.stop()
@@ -250,7 +252,7 @@ test('service launcher uses the fork-only flag, owns exact endpoint PID and stop
 })
 
 test('selected-provider lifecycle starts only one gateway, with private env, and cleans up', async () => {
-  const child = Object.assign(new EventEmitter(), { exitCode: null, killed: false,
+  const child = Object.assign(new EventEmitter(), { pid: 43210, exitCode: null, killed: false,
     kill() { this.killed = true; this.emit('exit', 0) } })
   const launches = []
   const gateway = new GatewayLifecycle({ entry: 'fixture.mjs', runtimeExecutable: 'fixture-fork.exe',
@@ -259,7 +261,7 @@ test('selected-provider lifecycle starts only one gateway, with private env, and
     fetcher: async (url, opts) => {
       assert.equal(url, 'http://127.0.0.1:45861/health')
       assert.equal(opts.headers.Authorization, `Bearer ${'a'.repeat(40)}`)
-      return Response.json({ ok: true, gateway: 'chat-on-opencode' })
+      return Response.json({ ok: true, gateway: 'chat-on-opencode', pid: 43210 })
     },
   })
   assert.equal(launches.length, 0) // Import and setup alone cannot launch Chromium.
@@ -270,6 +272,18 @@ test('selected-provider lifecycle starts only one gateway, with private env, and
   assert.equal(launches[0].options.env.CHAT_ON_OPENCODE_RUNTIME_EXE, 'fixture-fork.exe')
   assert.equal(launches[0].options.env.CHAT_ON_OPENCODE_RUNTIME_DATA, 'fixture-isolated')
   gateway.stop()
+  assert.equal(child.killed, true)
+})
+
+test('gateway rejects an authenticated, stale listener with the wrong process owner', async () => {
+  const child = Object.assign(new EventEmitter(), { pid: 43210, exitCode: null, killed: false,
+    kill() { this.killed = true; this.emit('exit', 0) } })
+  const lifecycle = new GatewayLifecycle({ entry: 'entry.mjs', runtimeExecutable: 'offline.exe',
+    runtimeData: 'isolated', key: 'm'.repeat(40), node: process.execPath }, {
+    launcher: () => child,
+    fetcher: async () => Response.json({ ok: true, gateway: 'chat-on-opencode', pid: 99999 }),
+  })
+  await assert.rejects(lifecycle.ensure(), /provider_gateway_owner_mismatch/)
   assert.equal(child.killed, true)
 })
 

@@ -52,3 +52,20 @@ jobs:
         run: bun test packages/opencode-provider/test/provider-service.test.ts
       - name: Provider hook bundles for OpenCode V2
         run: bun build packages/opencode-provider/plugin/index.ts --external '@opencode/plugin' --target bun --outdir packages/opencode-provider/.smoke-build
+
+  native-process:
+    name: Offline native process E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+      - name: Launch real isolated processes, exchange two turns, and verify cleanup
+        run: node --test packages/opencode-provider/test/native-process.e2e.mjs

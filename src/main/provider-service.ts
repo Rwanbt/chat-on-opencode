@@ -4,6 +4,24 @@ import { realpathSync } from 'node:fs';
 /** The provider runtime is opt-in and MUST NOT silently reuse CoS's personal userData. */
 export const PROVIDER_SERVICE_SWITCH = '--chat-on-opencode-provider-service';
 
+/** Chromium tabs remain offscreen in provider mode; no CoS GUI may be revealed. */
+export function providerBrowserUiAllowed(argv: readonly string[]): boolean {
+  return !argv.includes(PROVIDER_SERVICE_SWITCH);
+}
+
+/** An orphaned helper must never keep Chromium and its private control API alive. */
+export function providerServiceOwner(raw: string | undefined, currentPID = process.pid): number {
+  const value = Number(raw);
+  if (!raw || !/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < 2 || value === currentPID) {
+    throw new Error('provider_service_gateway_owner_required');
+  }
+  return value;
+}
+
+export function providerServiceOwnerAlive(pid: number, probe: (pid: number, signal: 0) => void = process.kill): boolean {
+  try { probe(pid, 0); return true; } catch { return false; }
+}
+
 export function providerServiceProfile(argv: readonly string[], supplied: string | undefined, normalUserData: string): string | null {
   if (!argv.includes(PROVIDER_SERVICE_SWITCH)) return null;
   if (!supplied || !path.isAbsolute(supplied) || !path.isAbsolute(normalUserData)) {
