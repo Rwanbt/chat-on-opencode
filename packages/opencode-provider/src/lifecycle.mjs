@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process'
+import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
 /** Owned gateway process: never ask OpenCode to find/attach to an unrelated CoS instance. */
 export class GatewayLifecycle {
-  constructor({ entry, runtimeExecutable, runtimeData, key, port = 45861, node = process.execPath },
+  constructor({ entry, runtimeExecutable, runtimeData, key, port = 45861, node },
     { launcher = spawn, fetcher = fetch, clock = delay } = {}) {
     this.options = { entry, runtimeExecutable, runtimeData, key, port, node }
     this.launcher = launcher
@@ -23,7 +24,10 @@ export class GatewayLifecycle {
 
   async open() {
     const { entry, runtimeExecutable, runtimeData, key, port, node } = this.options
-    if (!entry || !runtimeExecutable || !runtimeData || typeof key !== 'string' || key.length < 32 ||
+    // OpenCode 2 is often a packaged Bun executable. process.execPath would relaunch OpenCode,
+    // NOT run this Node server. Require a known absolute Node executable instead.
+    if (!entry || !runtimeExecutable || !runtimeData || !node || !path.isAbsolute(node) ||
+      typeof key !== 'string' || key.length < 32 ||
       !Number.isInteger(port) || port < 1 || port > 65535) throw new Error('provider_runtime_not_configured')
     if (this.child && this.child.exitCode === null && !this.child.killed) return
     this.child = null

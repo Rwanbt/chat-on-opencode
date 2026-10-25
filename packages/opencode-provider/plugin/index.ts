@@ -14,6 +14,7 @@ export default Plugin.define({
       entry: fileURLToPath(new URL('../src/server.mjs', import.meta.url)),
       runtimeExecutable: option('runtimeExecutable'),
       runtimeData: option('runtimeData'),
+      node: option('nodeExecutable') ?? '',
       key,
       port,
     })

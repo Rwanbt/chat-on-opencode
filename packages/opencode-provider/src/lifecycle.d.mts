@@ -5,7 +5,7 @@ export class GatewayLifecycle {
     runtimeData?: string;
     key: string;
     port?: number;
-    node?: string;
+    node: string;
   });
   ensure(): Promise<void>;
   stop(): void;

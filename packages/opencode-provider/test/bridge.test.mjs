@@ -168,7 +168,7 @@ test('selected-provider lifecycle starts only one gateway, with private env, and
     kill() { this.killed = true; this.emit('exit', 0) } })
   const launches = []
   const gateway = new GatewayLifecycle({ entry: 'fixture.mjs', runtimeExecutable: 'fixture-fork.exe',
-    runtimeData: 'fixture-isolated', key: 'a'.repeat(40), port: 45861 }, {
+    runtimeData: 'fixture-isolated', key: 'a'.repeat(40), port: 45861, node: process.execPath }, {
     launcher: (exe, args, options) => { launches.push({ exe, args, options }); return child },
     fetcher: async (url, opts) => {
       assert.equal(url, 'http://127.0.0.1:45861/health')
@@ -193,5 +193,11 @@ test('selected-provider lifecycle refuses incomplete runtime configuration befor
     launcher: () => { launches++; throw new Error('must_not_launch') },
   })
   await assert.rejects(gateway.ensure(), /provider_runtime_not_configured/)
+  assert.equal(launches, 0)
+  const noNode = new GatewayLifecycle({ entry: 'fixture.mjs', runtimeExecutable: 'fork.exe',
+    runtimeData: 'isolated', key: 'a'.repeat(40), node: 'opencode' }, {
+    launcher: () => { launches++; throw new Error('must_not_launch') },
+  })
+  await assert.rejects(noNode.ensure(), /provider_runtime_not_configured/)
   assert.equal(launches, 0)
 })

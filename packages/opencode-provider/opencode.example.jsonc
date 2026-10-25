@@ -4,7 +4,8 @@
     "package": "./packages/opencode-provider/plugin",
     "options": {
       "runtimeExecutable": "C:\\ABSOLUTE\\PATH\\TO\\Chat-On-OpenCode.exe",
-      "runtimeData": "C:\\ABSOLUTE\\ISOLATED\\PROVIDER-DATA"
+      "runtimeData": "C:\\ABSOLUTE\\ISOLATED\\PROVIDER-DATA",
+      "nodeExecutable": "C:\\Program Files\\nodejs\\node.exe"
     }
   }],
   "providers": {

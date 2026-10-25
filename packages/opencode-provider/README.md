@@ -24,6 +24,8 @@ the OpenCode process environment before provider initialization),
 and optional `CHAT_ON_OPENCODE_PORT` (default 45861). The optional
 `CHAT_ON_OPENCODE_PERSONAL_COS_DATA` identifies a personal CoS folder the launcher must never
 reuse. The fork process checks this boundary independently against its actual personal profile.
+The plugin option `nodeExecutable` must be an absolute path to a real Node.js binary (Node 20+),
+because OpenCode V2 may itself be a compiled Bun executable and must not be spawned as a Node interpreter.
 Never commit either token or copy them into the OpenCode project config. The listener binds only
 to 127.0.0.1, checks Host, rejects browser Origin, and requires the local bearer token.
 
