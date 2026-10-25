@@ -35,6 +35,18 @@ An offline process-level E2E compiles a separate Bun test fixture and verifies t
 Node gateway, owner PID, token, two text turns, and shutdown, without using any personal
 browser profile. **This is not a live ChatGPT/Electron browser inference test.**
 
+The next first-use safety slice canonicalizes a missing *personal* CoS profile's nearest
+existing parent, without creating any personal data. Before launching the isolated
+Electron helper it verifies a bounded, non-symlinked settings file explicitly enabling
+the built-in browser and local API actions. The helper revalidates on startup. Missing,
+disabled and malformed profiles fail closed without a new browser process.
+
+An isolated OpenCode **2.0.29** CLI invocation displayed
+`chat-on-opencode/chatgpt-default` using a provider-only configuration. However its
+`models --standalone` process did not terminate cleanly under the disposable test home.
+This is evidence of **model enumeration**, not successful plugin-hook activation,
+ChatGPT sign-in, model inference, or ready-to-install Desktop integration.
+
 The V2 plugin also has a first-request-only launcher for the gateway, which in turn owns
 the standalone fork helper. The helper must be built and explicitly configured with a
 dedicated profile; neither executable packaging nor real ChatGPT session E2E has been

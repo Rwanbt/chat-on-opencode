@@ -22,6 +22,23 @@ export function providerServiceOwnerAlive(pid: number, probe: (pid: number, sign
   try { probe(pid, 0); return true; } catch { return false; }
 }
 
+/** Canonicalize an absent *personal* path without creating a personal CoS profile. */
+export function prospectiveRealPath(candidate: string): string {
+  const resolved = path.resolve(candidate);
+  const missing: string[] = [];
+  let cursor = resolved;
+  for (;;) {
+    try { return path.join(realpathSync(cursor), ...missing.reverse()); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const parent = path.dirname(cursor);
+      if (cursor === parent) throw error;
+      missing.push(path.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
 export function providerServiceProfile(argv: readonly string[], supplied: string | undefined, normalUserData: string): string | null {
   if (!argv.includes(PROVIDER_SERVICE_SWITCH)) return null;
   if (!supplied || !path.isAbsolute(supplied) || !path.isAbsolute(normalUserData)) {
@@ -33,7 +50,7 @@ export function providerServiceProfile(argv: readonly string[], supplied: string
   let personal: string;
   try {
     profile = realpathSync(path.resolve(supplied));
-    personal = realpathSync(path.resolve(normalUserData));
+    personal = prospectiveRealPath(normalUserData);
   } catch {
     throw new Error('provider_service_profile_must_exist');
   }
