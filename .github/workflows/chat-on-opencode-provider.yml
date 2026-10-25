@@ -10,6 +10,8 @@ on:
       - 'scripts/smoke-packaged-runtime.mjs'
       - 'scripts/provider-isolated-profile.ts'
       - 'scripts/verify-provider-packaged-electron.mjs'
+      - 'scripts/verify-provider-packaged-sign-in.mjs'
+      - 'scripts/provider-windows-window-probe.ps1'
       - 'package.json'
       - 'test/provider-packaging.test.ts'
   push:
@@ -22,6 +24,8 @@ on:
       - 'scripts/smoke-packaged-runtime.mjs'
       - 'scripts/provider-isolated-profile.ts'
       - 'scripts/verify-provider-packaged-electron.mjs'
+      - 'scripts/verify-provider-packaged-sign-in.mjs'
+      - 'scripts/provider-windows-window-probe.ps1'
       - 'package.json'
       - 'test/provider-packaging.test.ts'
 
@@ -99,8 +103,8 @@ jobs:
         run: npm ci
       - name: Build independent unpacked provider runtime and probe native modules
         run: npm run dist:provider:win:x64
-      - name: Boot packaged Electron service with a fresh isolated profile
-        run: node scripts/verify-provider-packaged-electron.mjs
+      - name: Qualify hidden service and explicit isolated sign-in against packaged Electron
+        run: node scripts/verify-provider-packaged-sign-in.mjs
       - name: Publish portable provider bundle after runtime smoke
         uses: actions/upload-artifact@v4
         with:

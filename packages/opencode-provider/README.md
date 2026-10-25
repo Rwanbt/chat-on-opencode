@@ -160,6 +160,16 @@ boots this actual Electron executable in provider-service mode using a generated
 profile with all local tool permissions off, with no real ChatGPT login, to verify the
 private control API and absence of a visible CoS window. **This is not yet ChatGPT inference.**
 
+After packaging, `node scripts/verify-provider-packaged-sign-in.mjs` also tests the
+explicit interactive mode on Windows. It uses a fresh temporary profile with every
+local capability disabled, routes Chromium HTTPS to a rejecting loopback proxy,
+observes exactly one browser HWND owned by the packaged process, and sends WM_CLOSE
+only to that verified handle. It checks process exit, refuses an uninitialized
+profile, preserves the separate ordinary application-data directory, and runs the
+hidden-service gate. A failed/denied network request proves only that the browser
+attempted the ChatGPT host; the exact login path is separately covered by the host
+unit test. No real login, auth cookie or model inference is used.
+
 
 1. Qualify the packaged sign-in window and its existing Google handoff with a user-controlled
    isolated browser profile, then prove the returning headless provider observes that login.

@@ -149,6 +149,13 @@ try {
   if (providerUserData) app.setPath('userData', providerUserData);
 } catch (error) {
   // No normal-mode fallback when an isolated provider profile is malformed.
+  // Electron shows a blocking JavaScript error dialog for an uncaught exception
+  // before ready. Provider helpers must fail closed as OS processes instead of
+  // keeping that dialog and its inaccessible Chromium parent alive.
+  if (providerService) {
+    process.stderr.write('Provider service refused: invalid isolated profile\n');
+    process.exit(1);
+  }
   throw new Error(`Provider service refused: ${error instanceof Error ? error.message : String(error)}`);
 }
 
