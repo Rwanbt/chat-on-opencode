@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const source = path.join(repository, 'packages', 'opencode-provider')
-const files = ['package.json', 'README.md', 'opencode.example.jsonc']
+const files = ['package.json', 'README.md', 'OFFICIAL_INSTALL.md', 'opencode.example.jsonc']
 const folders = ['bin', 'plugin', 'src']
 
 function safeDirectory(directory) {

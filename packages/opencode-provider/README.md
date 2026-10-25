@@ -1,5 +1,10 @@
 # Chat On OpenCode — provider bridge (first integration slice)
 
+The guarded **official OpenCode** installation/rollback procedure is documented
+in [OFFICIAL_INSTALL.md](./OFFICIAL_INSTALL.md). The actual official CLI 2.1.4
+has now passed the synthetic provider-streaming E2E; this does **not** prove
+Desktop UI selection, credential readiness or actual ChatGPT inference.
+
 This directory is the beginning of a **provider**, not an additional multi-agent/Goal/Loop/Daemon system.
 It follows the OpenCode 2 `providers` convention and uses its native session identity hook.
 
