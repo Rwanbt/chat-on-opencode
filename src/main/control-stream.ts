@@ -93,7 +93,7 @@ export async function serveEventStream(
         readAgain = false;
         for (;;) {
           const before = from;
-          const page = await streamEvents(sessionId, from, query.kinds);
+          const page = await streamEvents(sessionId, from, query.kinds, query.fullAssistantText);
           if (ended) return;
           send(page.events, page.nextFrom);
           if (ended || page.events.length < STREAM_PAGE || from === before) break;
@@ -110,7 +110,7 @@ export async function serveEventStream(
 
   let first;
   try {
-    first = await firstRead(() => streamEvents(sessionId, from, query.kinds));
+    first = await firstRead(() => streamEvents(sessionId, from, query.kinds, query.fullAssistantText));
   } catch (error) {
     ended = true;
     streams.delete(stream);

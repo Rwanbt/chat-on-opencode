@@ -30,6 +30,7 @@ const { appendEvent, createSession, initSessionStore, resetSessionStoreForTests 
 const { notifyChanged } = await import('../src/main/session/recorder.js');
 const controlApi = await import('../src/main/control-api.js');
 const stream = await import('../src/main/control-stream.js');
+const { projectReadableEvent, eventStreamQuery, RequestError } = await import('../src/main/control-reads.js');
 
 let dir: string;
 let port = 0;
@@ -136,6 +137,20 @@ afterAll(async () => {
 });
 
 describe('GET /v1/sessions/{id}/events/stream', () => {
+  it('refuses extended assistant text for normal CoS and preserves normal event projection', async () => {
+    const long = 'Z'.repeat(7000);
+    const fake = { kind: 'assistant_message', source: 'extension', seq: 999, time: Date.now(),
+      message: text(long), messageId: 'message-1', final: true, state: 'final' } as never;
+    expect(projectReadableEvent(fake).message?.text.length).toBe(4_000);
+    expect(projectReadableEvent(fake).message?.truncated).toBe(true);
+    expect(projectReadableEvent(fake, true).message?.text).toBe(long);
+    expect(projectReadableEvent(fake, true).message?.truncated).toBe(false);
+    expect(() => eventStreamQuery(new URLSearchParams('full=1'), undefined, false)).toThrow(RequestError);
+    expect(eventStreamQuery(new URLSearchParams('from=2&full=1'), undefined, true)).toMatchObject({ from: 2, fullAssistantText: true });
+    expect(await open(`/v1/sessions/${sessionId}/events/stream?full=1`)).toMatchObject({
+      status: 403, body: { error: 'provider_stream_disabled' }
+    });
+  });
   it('sends what is recorded, then each new event as it is written, in the shape of the paged read', async () => {
     const paged = (await new Promise<any>((resolve) => http.get({ hostname: '127.0.0.1', port, path: `/v1/sessions/${sessionId}/events?from=0`, headers: auth }, (res) => {
       let raw = ''; res.setEncoding('utf8'); res.on('data', (c) => { raw += c; }); res.on('end', () => resolve(JSON.parse(raw)));
