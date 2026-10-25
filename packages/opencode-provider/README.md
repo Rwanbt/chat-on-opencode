@@ -40,6 +40,10 @@ npm test
 
 - Stable CoS conversation IDs derived from exact OpenCode session IDs; no prompt-based identity.
 - CoS outbox admission and event-journal consumption with exact input correlation.
+- Provider-only redacted assistant stream up to 64,000 characters instead of CoS's public
+  4,000-character projection; timed-out SSE streams reopen from their sequence cursor.
+- An aborted OpenCode request only asks CoS to stop an exact observed turn; if the turn was
+  never proven, it asks the existing outbox for a safe cancellation rather than resending.
 - Launches and terminates a separately configured fork runtime without opening its main window;
   never adopts an endpoint owned by another PID.
 - Text-only request adapter, progressive Chat Completions SSE, per-session concurrency guard.

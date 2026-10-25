@@ -33,12 +33,14 @@ export async function runTurn(control, request, { sessionKey, kind = 'primary', 
   if (request.tools?.length || request.tool_choice && request.tool_choice !== 'none') throw new BridgeError('native_tool_calls_not_yet_supported', 501)
   if (request.model !== 'chatgpt-default') throw new BridgeError('model_not_configured', 422)
   if (kind !== 'primary') throw new BridgeError('auxiliary_calls_not_yet_supported', 501)
+  if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
   const sessionID = stableUUID('session:' + sessionKey)
   const turnID = stableUUID('turn:' + sessionKey + ':' + JSON.stringify(request.messages))
   const first = !(await control.hasSession(sessionID))
   const text = requestText(request.messages, first)
   if (text.length > 64000) throw new BridgeError('cos_input_too_large', 413)
   const inputID = first ? sessionID : turnID
+  if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
   await control.send({ id: inputID, ...(first ? {} : { sessionId: sessionID }), text })
 
   // A conversation is not considered delivered just because POST returned 202. Follow its
@@ -46,30 +48,46 @@ export async function runTurn(control, request, { sessionKey, kind = 'primary', 
   let seenInput = false
   let complete = false
   let textSoFar = ''
-  for await (const event of control.events(sessionID, { signal })) {
-    if (event.kind === 'user_message' && (event.inputId === inputID || event.messageId === inputID)) {
-      seenInput = true
-      continue
-    }
-    if (!seenInput) continue
-    if (event.kind === 'chat_error' && event.blocking) throw new BridgeError('cos_chat_blocked', 502)
-    if (event.kind === 'assistant_message') {
-      if (event.message?.truncated || typeof event.message?.text !== 'string') throw new BridgeError('cos_output_incomplete', 502)
-      const next = event.message.text
-      if (!next.startsWith(textSoFar)) throw new BridgeError('cos_answer_revision_not_streamable', 502)
-      const delta = next.slice(textSoFar.length)
-      if (delta) { textSoFar = next; await emit(delta) }
-    }
-    if (event.kind === 'turn_end') {
-      if (event.outcome && /error|fail|stop|abort|cancel|incomplete/.test(event.outcome)) {
-        throw new BridgeError('cos_turn_not_completed', 502)
+  let activeTurnID = null
+  try {
+    for await (const event of control.events(sessionID, { signal })) {
+      if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
+      if (event.kind === 'user_message' && (event.inputId === inputID || event.messageId === inputID)) {
+        seenInput = true
+        continue
       }
-      complete = true
-      break
+      if (!seenInput) continue
+      // Ignore other sessions'/earlier turns' events; the exact user-message acknowledgement
+      // is the publication boundary. Only an observed turn_start may authorize cancellation.
+      if (event.kind === 'turn_start' && typeof event.turnId === 'string' && event.turnId) activeTurnID = event.turnId
+      if (event.kind === 'chat_error' && event.blocking) throw new BridgeError('cos_chat_blocked', 502)
+      if (event.kind === 'assistant_message') {
+        if (event.message?.truncated || typeof event.message?.text !== 'string') throw new BridgeError('cos_output_incomplete', 502)
+        const next = event.message.text
+        if (!next.startsWith(textSoFar)) throw new BridgeError('cos_answer_revision_not_streamable', 502)
+        const delta = next.slice(textSoFar.length)
+        if (delta) { textSoFar = next; await emit(delta) }
+      }
+      if (event.kind === 'turn_end') {
+        if (event.outcome && /error|fail|stop|abort|cancel|incomplete/.test(event.outcome)) {
+          throw new BridgeError('cos_turn_not_completed', 502)
+        }
+        complete = true
+        break
+      }
+    }
+    if (!seenInput || !complete) throw new BridgeError('cos_turn_unconfirmed', 502)
+    return textSoFar
+  } finally {
+    if (signal?.aborted && !complete) {
+      // Never stop a later or unproven turn. The CoS broker validates exact turn identity;
+      // when Send is not proven, its outbox independently decides whether cancellation is safe.
+      try {
+        if (seenInput && activeTurnID) await control.stop(sessionID, activeTurnID)
+        else await control.cancelInput(inputID)
+      } catch { /* an unconfirmed stop must never be reported as successful */ }
     }
   }
-  if (!seenInput || !complete) throw new BridgeError('cos_turn_unconfirmed', 502)
-  return textSoFar
 }
 
 export function createGateway({ control, key }) {
@@ -102,11 +120,13 @@ export function createGateway({ control, key }) {
       try { body = JSON.parse(raw) } catch { throw new BridgeError('invalid_json', 400) }
       if (!body || typeof body !== 'object') throw new BridgeError('invalid_body', 400)
       const stream = body.stream === true
+      const cancel = new AbortController()
+      res.once('close', () => { if (!res.writableEnded) cancel.abort() })
       const id = 'chatcmpl-' + stableUUID(sessionKey + ':' + raw)
       const chunk = (delta, finish = null) => ({ id, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: body.model, choices: [{ index: 0, delta, finish_reason: finish }] })
       let answer = ''
       // Do not announce SSE success until we have validated the request and upstream admission.
-      const result = await runTurn(control, body, { sessionKey, emit: async (delta) => {
+      const result = await runTurn(control, body, { sessionKey, signal: cancel.signal, emit: async (delta) => {
         answer += delta
         if (stream) {
           if (!res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'close' })

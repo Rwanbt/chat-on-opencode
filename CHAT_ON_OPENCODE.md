@@ -31,4 +31,12 @@ verified. It refuses unsupported tool calls and incomplete stream messages rathe
 silently simulating tool execution. `opencode models --standalone` did not finish an
 isolated smoke attempt, so model-picker activation remains unverified.
 
+The following isolated stream/cancellation slice adds `full=1` to the CoS session SSE
+projection **only when the dedicated provider-service flag is present**. Regular CoS API
+replies retain their 4k bound and reject this opt-in; provider replies remain redacted and
+bounded to 64k. It also maps OpenCode request cancellation onto CoS's exact `turnId`
+stop operation or its conservative input-outbox cancellation, and reconnects after a
+normal 30-minute SSE expiry by sequence number, without re-sending a prompt. This is not
+evidence of full tool-call parity or a live ChatGPT inference test.
+
 No installation or replacement of the user's main OpenCode configuration is performed.

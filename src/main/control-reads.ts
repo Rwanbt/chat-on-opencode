@@ -46,6 +46,8 @@ export class RequestError extends Error {
 
 /** Caps on free text, so a page's size is bounded by its row limit. */
 const TEXT_CAP = 4_000;
+/** Provider-only assistant projection; existing public/private control API replies keep 4k. */
+const PROVIDER_ASSISTANT_CAP = 64_000;
 const TOOL_TEXT_CAP = 2_000;
 const TITLE_CAP = 200;
 const TASK_CAP = 1_000;
@@ -364,8 +366,11 @@ export function projectEvent(event: SessionEvent): ControlApiEvent {
 }
 
 /** One row that cannot be read must not take the rest of the page with it. */
-export function projectReadableEvent(event: SessionEvent): ControlApiEvent {
+export function projectReadableEvent(event: SessionEvent, fullAssistantText = false): ControlApiEvent {
   try {
+    if (fullAssistantText && event.kind === 'assistant_message') {
+      return { ...projectEvent(event), message: stored(event.message, PROVIDER_ASSISTANT_CAP) };
+    }
     return projectEvent(event);
   } catch {
     return { seq: event.seq, position: event.seq, time: event.time, kind: event.kind, source: event.source, unreadable: true };
@@ -400,24 +405,31 @@ export const STREAM_PAGE = MAX_EVENTS;
  * event a client saw, so a reconnect continues after it; it wins over `from`, which is still in
  * the address the client first opened.
  */
-export function eventStreamQuery(params: URLSearchParams, lastEventId: string | string[] | undefined): { from: number; kinds?: SessionEventKind[] } {
+export function eventStreamQuery(
+  params: URLSearchParams,
+  lastEventId: string | string[] | undefined,
+  allowProviderText = process.argv.includes('--chat-on-opencode-provider-service')
+): { from: number; kinds?: SessionEventKind[]; fullAssistantText?: boolean } {
   const query = parseQuery(params, {
     from: integer(0, 10_000_000).optional(),
-    kinds: csv(keysOf(EVENT_KINDS)).optional()
+    kinds: csv(keysOf(EVENT_KINDS)).optional(),
+    full: z.literal('1').optional()
   });
-  if (lastEventId === undefined) return { from: query.from ?? 0, kinds: query.kinds };
+  if (query.full && !allowProviderText) throw new RequestError(403, 'provider_stream_disabled');
+  const full = query.full ? { fullAssistantText: true } : {};
+  if (lastEventId === undefined) return { from: query.from ?? 0, kinds: query.kinds, ...full };
   if (typeof lastEventId !== 'string' || !/^\d{1,8}$/.test(lastEventId)) {
     throw new RequestError(400, 'invalid_query', 'Last-Event-ID is not valid');
   }
-  return { from: Number(lastEventId) + 1, kinds: query.kinds };
+  return { from: Number(lastEventId) + 1, kinds: query.kinds, ...full };
 }
 
 /** One read for a stream: the same rows, projection and limits as `GET …/events?from=`. */
-export function streamEvents(id: string, from: number, kinds: SessionEventKind[] | undefined): Promise<ControlApiEvents> {
+export function streamEvents(id: string, from: number, kinds: SessionEventKind[] | undefined, fullAssistantText = false): Promise<ControlApiEvents> {
   return heavy(async () => {
     const page = await readSessionEvents(id, { from, limit: STREAM_PAGE, ...(kinds ? { kinds } : {}) });
     if (!page) throw new RequestError(404, 'session_not_found');
-    return { events: page.events.map(projectReadableEvent), total: page.total, nextFrom: page.nextFrom };
+    return { events: page.events.map(event => projectReadableEvent(event, fullAssistantText)), total: page.total, nextFrom: page.nextFrom };
   });
 }
 

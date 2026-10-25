@@ -68,6 +68,40 @@ test('refuse clipped or rewritten CoS output, never invent a complete reply', as
     { sessionKey: 'ses_123', emit: () => undefined }), /cos_answer_revision_not_streamable/)
 })
 
+test('a cancelled OpenCode request stops only its exact observed CoS turn', async () => {
+  const abort = new AbortController()
+  const calls = []
+  const cos = new FakeCoS()
+  cos.stop = async (session, turn) => { calls.push({ session, turn }) }
+  cos.events = async function* () {
+    yield { kind: 'user_message', inputId: this.sent.at(-1).id, seq: 1 }
+    yield { kind: 'turn_start', turnId: 'proven-turn-42', seq: 2 }
+    yield { kind: 'assistant_message', seq: 3, message: { text: 'partial', truncated: false } }
+    yield { kind: 'turn_end', seq: 4, outcome: 'completed' }
+  }
+  await assert.rejects(runTurn(cos, request, { sessionKey: 'ses_cancel', signal: abort.signal,
+    emit: () => { abort.abort() } }), /opencode_turn_cancelled/)
+  assert.deepEqual(calls, [{ session: stableUUID('session:ses_cancel'), turn: 'proven-turn-42' }])
+})
+
+test('abort before admission never sends a prompt; abort before turn proof only attempts outbox cancel', async () => {
+  const already = new AbortController()
+  already.abort()
+  const cos = new FakeCoS()
+  await assert.rejects(runTurn(cos, request, { sessionKey: 'ses_cancel', signal: already.signal,
+    emit: () => undefined }), /opencode_turn_cancelled/)
+  assert.equal(cos.sent.length, 0)
+
+  const late = new AbortController()
+  const cancels = []
+  const noProof = new FakeCoS()
+  noProof.cancelInput = async id => cancels.push(id)
+  noProof.events = async function* () { late.abort(); yield { kind: 'user_message', inputId: this.sent.at(-1).id } }
+  await assert.rejects(runTurn(noProof, request, { sessionKey: 'ses_unknown', signal: late.signal,
+    emit: () => undefined }), /opencode_turn_cancelled/)
+  assert.deepEqual(cancels, [noProof.sent[0].id])
+})
+
 test('gateway authenticates, binds to local host and yields Chat Completions SSE', async t => {
   const server = createGateway({ control: new FakeCoS(), key: 't'.repeat(40) })
   server.listen(0, '127.0.0.1')
@@ -111,6 +145,30 @@ test('control stream resumes frames and fails closed on premature EOF', async ()
   await assert.rejects(async () => { for await (const item of cos.events('12345678', { from: 5 })) got.push(item) },
     error => error instanceof BridgeError && error.code === 'cos_stream_ended_without_terminal')
   assert.deepEqual(got, []) // The duplicate last sequence is not emitted again.
+})
+
+test('renew a timed-out CoS SSE stream by cursor without repeating input', async () => {
+  const routes = []
+  const payloads = [
+    'id: 1\nevent: assistant_message\ndata: {"seq":1,"kind":"assistant_message","message":{"text":"partial"}}\n\nevent: end\ndata: {"reason":"max_duration"}\n\n',
+    'id: 2\nevent: turn_end\ndata: {"seq":2,"kind":"turn_end","outcome":"completed"}\n\n',
+  ]
+  const control = new CoSControl({ directory: os.tmpdir(), fetcher: async (url, options) => {
+    assert.equal(options.method, 'GET')
+    routes.push(url)
+    return new Response(payloads.shift() ?? 'event: end\ndata: {"reason":"error"}\n\n')
+  } })
+  control.base = 'http://127.0.0.1:47898'
+  control.token = 'r'.repeat(43)
+  const events = []
+  for await (const event of control.events('12345678')) {
+    events.push(event)
+    if (event.kind === 'turn_end') break
+  }
+  assert.deepEqual(events.map(event => event.seq), [1, 2])
+  assert.equal(routes.length, 2)
+  assert.match(routes[0], /from=0&full=1$/)
+  assert.match(routes[1], /from=2&full=1$/)
 })
 
 test('runtime launcher only accepts existing, isolated files and directories', async t => {
