@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
@@ -56,10 +55,8 @@ test('actual OpenCode V2 CLI loads provider plugin, starts owned gateway and rec
       ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
     }))
     const port = await freePort()
-    const gatewayKey = randomBytes(32).toString('hex')
     // Exercise the same shipped configuration generator as a real offline installation.
-    // In particular the generated config must work with the bearer secret only in the
-    // isolated OpenCode environment, never as a persisted JSON apiKey.
+    // The plugin must create its own transient bearer key without a process env secret.
     const generated = spawnSync(nodeExe, [path.join(pluginPackage, 'bin', 'generate-config.mjs'),
       '--runtime', executable, '--data', profile, '--node', nodeExe,
       '--plugin-dir', pluginPackage, '--port', String(port)], {
@@ -68,6 +65,7 @@ test('actual OpenCode V2 CLI loads provider plugin, starts owned gateway and rec
     assert.equal(generated.status, 0, `config generation failed: ${generated.stderr?.slice(-500)}`)
     const configuration = JSON.parse(generated.stdout)
     assert.equal(configuration.providers['chat-on-opencode'].settings.apiKey, undefined)
+    assert.equal(configuration.providers['chat-on-opencode'].env, undefined)
     const safeEnv = {}
     for (const [name, value] of Object.entries(process.env)) {
       if (/^(PATH|PATHEXT|SystemRoot|WINDIR|COMSPEC|TEMP|TMP|PROCESSOR_ARCHITECTURE|NUMBER_OF_PROCESSORS)$/i.test(name) && typeof value === 'string') safeEnv[name] = value
@@ -78,9 +76,10 @@ test('actual OpenCode V2 CLI loads provider plugin, starts owned gateway and rec
       XDG_CONFIG_HOME: path.join(root, 'config'), XDG_DATA_HOME: path.join(root, 'data'),
       XDG_CACHE_HOME: path.join(root, 'cache'), OPENCODE_CONFIG_DIR: path.join(root, 'config'),
       OPENCODE_CONFIG_CONTENT: JSON.stringify(configuration), OPENCODE_CONFIG_PROJECT_DISABLE: '1',
-      OPENCODE_DISABLE_AUTOUPDATE: '1', CHAT_ON_OPENCODE_GATEWAY_KEY: gatewayKey,
+      OPENCODE_DISABLE_AUTOUPDATE: '1',
       CHAT_ON_OPENCODE_TEST_TRACE_DIR: root,
     })
+    assert.equal(safeEnv.CHAT_ON_OPENCODE_GATEWAY_KEY, undefined)
     const args = ['run', '--standalone', '--format', 'json', '--model', 'chat-on-opencode/chatgpt-default',
       'Say exactly OFFLINE_FORK_OK']
     let child
@@ -106,20 +105,14 @@ test('actual OpenCode V2 CLI loads provider plugin, starts owned gateway and rec
       if (!found) {
         let journal = ''
         try { journal = await readFile(path.join(root, 'data', 'opencode', 'log', 'opencode.log'), 'utf8') } catch { /* optional */ }
-        // This is a synthetic account-free profile. Never print its bearer secret.
-        const clip = input => input.replaceAll(gatewayKey, '[redacted-test-key]').slice(-7000)
+        // The ephemeral bearer is generated in the plugin and unknown to the test.
+        // Mask hex-shaped secrets before emitting a failing SDK's diagnostics.
+        const clip = input => String(input).replace(/\b[a-f0-9]{64}\b/gi, '[redacted-hex]').slice(-7000)
         let routes = ''
         try { routes = await readFile(path.join(profile, 'fixture-routes.txt'), 'utf8') } catch { /* optional */ }
-        let gateway = null
-        try {
-          const response = await fetch(`http://127.0.0.1:${port}/health`, {
-            headers: { Authorization: `Bearer ${gatewayKey}` }, signal: AbortSignal.timeout(1500),
-          })
-          if (response.ok) gateway = await response.json()
-        } catch { /* provider may have exited */ }
         console.error('ISOLATED_CLI_DIAGNOSTIC', JSON.stringify({ exit: child.exitCode,
           stderr: clip(stderr.join('')).slice(-300), stdout: clip(stdout.join('')).slice(-350),
-          journal: clip(journal).slice(-350), routes, gateway }))
+          journal: clip(journal).slice(-350), routes }))
       }
       assert.ok(found, 'Native OpenCode model request did not produce offline fixture reply')
       const parts = stdout.join('').split(/\r?\n/).flatMap(line => {
@@ -127,6 +120,10 @@ test('actual OpenCode V2 CLI loads provider plugin, starts owned gateway and rec
       })
       assert.ok(parts.some(item => item.type === 'text' && item.part?.text?.includes('OFFLINE_FORK_OK')),
         'only an actual assistant text part counts as a valid streamed reply')
+      // The plugin-owned bearer must never be projected into user-facing CLI output or logs.
+      let log = ''
+      try { log = await readFile(path.join(root, 'data', 'opencode', 'log', 'opencode.log'), 'utf8') } catch { /* optional */ }
+      assert.doesNotMatch([stdout.join(''), stderr.join(''), log].join('\n'), /Bearer\s+[a-f0-9]{64}/i)
       const homeContents = await readdir(path.join(root, 'home'))
       assert.ok(homeContents.every(name => name === '.local'), 'unknown files in isolated HOME')
     } finally {
