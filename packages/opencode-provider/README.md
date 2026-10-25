@@ -51,6 +51,13 @@ node --test test/native-process.e2e.mjs
   If the native ID cannot be proven (e.g. a plugin restart mid-turn), the bridge fails closed.
 - OpenAI Chat Completions string and text-part content are supported. Image/audio/tool parts
   remain unsupported and are rejected without dropping context.
+- In text-only mode, the provider-scoped OpenCode V2 `session.context` hook removes native
+  tool definitions before model generation. This is required because OpenCode 2.0.29 still
+  supplies its default agent tools even when the model declares `tools:false`. It affects
+  **only** `chat-on-opencode`, never other models/providers; full native tool parity remains open.
+- A real OpenCode V2.0.29 CLI executable has produced a streamed **assistant text part** using
+  the plugin, its owned Node gateway and an independently compiled offline CoS fixture.
+  It is still not evidence of real ChatGPT login or inference.
 - CoS outbox admission and event-journal consumption with exact input correlation.
 - Provider-only redacted assistant stream up to 64,000 characters instead of CoS's public
   4,000-character projection; timed-out SSE streams reopen from their sequence cursor.

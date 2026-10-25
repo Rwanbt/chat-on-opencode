@@ -11,6 +11,7 @@ import { createGateway, requestText, runTurn, stableUUID } from '../src/gateway.
 import { CoSRuntime, validateRuntime, validateProfileConsent } from '../src/runtime.mjs'
 import { GatewayLifecycle } from '../src/lifecycle.mjs'
 import { MessageIdentity } from '../plugin/message-identity.mjs'
+import { enforceTextOnlyContext } from '../plugin/text-only.mjs'
 
 const request = { model: 'chatgpt-default', messages: [{ role: 'user', content: 'Bonjour' }] }
 
@@ -86,6 +87,25 @@ test('refuse tools instead of silently dropping OpenCode tool contracts', async 
   await assert.rejects(runTurn(cos, { ...request, tools: [{ type: 'function', function: { name: 'bash' } }] },
     { sessionKey: 'ses_123', messageKey: 'msg_tests_0001', emit: () => undefined }), /native_tool_calls_not_yet_supported/)
   assert.equal(cos.sent.length, 0)
+})
+
+test('text-only context gate is provider-scoped, never modifies another provider tools', () => {
+  const tools = { bash: { description: 'exec' }, read: { description: 'read' } }
+  const other = { model: { providerID: 'anthropic' }, tools: { ...tools } }
+  assert.equal(enforceTextOnlyContext(other), false)
+  assert.deepEqual(other.tools, tools)
+  const ours = { model: { providerID: 'chat-on-opencode' }, tools: { ...tools } }
+  assert.equal(enforceTextOnlyContext(ours), true)
+  assert.deepEqual(ours.tools, {})
+})
+
+test('OpenAI compatible automatic tool choice without tool schemas is text-only', async () => {
+  const cos = new FakeCoS()
+  const text = await runTurn(cos, { ...request, tool_choice: 'auto', tools: [] }, {
+    sessionKey: 'ses_text_only', messageKey: 'msg_textonly_1', emit: () => undefined,
+  })
+  assert.equal(text, 'Bonjour')
+  assert.equal(cos.sent.length, 1)
 })
 
 test('refuse clipped or rewritten CoS output, never invent a complete reply', async () => {

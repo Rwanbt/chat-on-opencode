@@ -5,7 +5,7 @@
  */
 import http from 'node:http'
 import path from 'node:path'
-import { mkdir, writeFile, rm } from 'node:fs/promises'
+import { appendFile, mkdir, writeFile, rm } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 
 const folder = process.env.CHAT_ON_OPENCODE_USERDATA_DIR
@@ -18,6 +18,9 @@ const token = randomBytes(32).toString('base64url')
 const sessions = new Set<string>()
 const events = new Map<string, Array<Record<string, unknown>>>()
 const server = http.createServer(async (req, res) => {
+  if (process.env.CHAT_ON_OPENCODE_TEST_TRACE_DIR === path.dirname(folder)) {
+    await appendFile(path.join(folder, 'fixture-routes.txt'), `${req.method} ${req.url?.split('?')[0]}\n`).catch(() => undefined)
+  }
   const json = (status: number, obj: unknown) => {
     res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
     res.end(JSON.stringify(obj))

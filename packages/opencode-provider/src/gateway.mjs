@@ -37,7 +37,10 @@ export function requestText(messages, first) {
 export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal } = {}) {
   if (!sessionKey || sessionKey.length > 256 || /[\r\n]/.test(sessionKey)) throw new BridgeError('opencode_session_id_required', 422)
   if (!messageKey || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
-  if (request.tools?.length || request.tool_choice && request.tool_choice !== 'none') throw new BridgeError('native_tool_calls_not_yet_supported', 501)
+  if (request.tools?.length || (request.tool_choice === 'required' ||
+      (typeof request.tool_choice === 'object' && request.tool_choice !== null))) {
+    throw new BridgeError('native_tool_calls_not_yet_supported', 501)
+  }
   if (request.model !== 'chatgpt-default') throw new BridgeError('model_not_configured', 422)
   if (kind !== 'primary') throw new BridgeError('auxiliary_calls_not_yet_supported', 501)
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
@@ -101,6 +104,8 @@ export function createGateway({ control, key }) {
   if (typeof key !== 'string' || key.length < 32) throw new Error('A strong local gateway bearer token is required')
   const active = new Set()
   const secret = Buffer.from('Bearer ' + key)
+  // Protected /health gives only categorical diagnostics. No prompt, path, headers or secrets.
+  const diagnostics = { attempted: 0, authRefused: 0, lastFailure: null }
   const server = http.createServer(async (req, res) => {
     const sendJSON = (status, value) => {
       if (!res.headersSent) res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
@@ -108,11 +113,16 @@ export function createGateway({ control, key }) {
     }
     if (req.headers.origin || req.headers.host !== `127.0.0.1:${server.address()?.port}`) return sendJSON(403, { error: 'untrusted_origin' })
     const presented = Buffer.from(req.headers.authorization ?? '')
-    if (presented.length !== secret.length || !timingSafeEqual(presented, secret)) return sendJSON(401, { error: 'unauthorized' })
+    if (presented.length !== secret.length || !timingSafeEqual(presented, secret)) {
+      diagnostics.authRefused++
+      return sendJSON(401, { error: 'unauthorized' })
+    }
     if (req.method === 'GET' && req.url === '/health') return sendJSON(200, {
       ok: true, gateway: 'chat-on-opencode', phase: 'control-api-adapter', pid: process.pid,
+      diagnostics,
     })
     if (req.method !== 'POST' || req.url !== '/v1/chat/completions') return sendJSON(404, { error: 'not_found' })
+    diagnostics.attempted++
     let sessionKey = ''
     try {
       const header = req.headers['x-opencode-session-id']
@@ -152,6 +162,7 @@ export function createGateway({ control, key }) {
     } catch (error) {
       const status = error instanceof BridgeError ? error.status : 502
       const code = error instanceof BridgeError ? error.code : 'unexpected_bridge_failure'
+      diagnostics.lastFailure = code
       if (res.headersSent) res.destroy(new Error(code))
       else sendJSON(status, { error: { message: code, type: 'chat_on_opencode_error' } })
     } finally { if (sessionKey) active.delete(sessionKey) }
