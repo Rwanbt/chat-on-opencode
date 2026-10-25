@@ -10,6 +10,7 @@ import { CoSControl, BridgeError } from '../src/control.mjs'
 import { createGateway, requestText, runTurn, stableUUID } from '../src/gateway.mjs'
 import { CoSRuntime, validateRuntime, validateProfileConsent } from '../src/runtime.mjs'
 import { GatewayLifecycle } from '../src/lifecycle.mjs'
+import { startService } from '../src/service.mjs'
 import { MessageIdentity } from '../plugin/message-identity.mjs'
 import { enforceTextOnlyContext } from '../plugin/text-only.mjs'
 
@@ -347,10 +348,80 @@ test('selected-provider lifecycle starts only one gateway, with private env, and
   assert.equal(launches.length, 1)
   assert.equal(launches[0].options.windowsHide, true)
   assert.equal(launches[0].options.shell, false)
+  assert.deepEqual(launches[0].args, ['fixture.mjs', '--owned-ipc'])
+  assert.deepEqual(launches[0].options.stdio, ['ignore', 'ignore', 'ignore', 'ipc'])
   assert.equal(launches[0].options.env.CHAT_ON_OPENCODE_RUNTIME_EXE, 'fixture-fork.exe')
   assert.equal(launches[0].options.env.CHAT_ON_OPENCODE_RUNTIME_DATA, 'fixture-isolated')
   gateway.stop()
   assert.equal(child.killed, true)
+})
+
+test('owned gateway refuses startup without an actual live parent IPC channel', async () => {
+  let started = false
+  const owner = Object.assign(new EventEmitter(), { connected: false, exit: () => {} })
+  await assert.rejects(startService({
+    runtime: { start() { started = true }, stop() {} }, owner, owned: true, key: 'k'.repeat(40), port: 45861,
+  }), /provider_parent_ipc_required/)
+  assert.equal(started, false)
+})
+
+test('parent IPC disconnect during pending runtime.start kills it and forbids late listener', async () => {
+  const exits = []
+  const owner = Object.assign(new EventEmitter(), {
+    channel: {}, connected: true, exit: code => exits.push(code),
+  })
+  let finishStartup
+  let stopped = 0
+  let listeners = 0
+  const runtime = {
+    start: () => new Promise(resolve => { finishStartup = resolve }),
+    stop: () => { stopped++ },
+  }
+  const pending = startService({
+    runtime, key: 'k'.repeat(40), port: 45861, owner, owned: true,
+    gatewayFactory: () => { listeners++; throw new Error('late_listener_created') },
+  })
+  owner.connected = false
+  owner.emit('disconnect')
+  owner.emit('disconnect')
+  assert.equal(stopped, 1)
+  assert.deepEqual(exits, [0])
+  finishStartup({})
+  await pending
+  assert.equal(listeners, 0)
+})
+
+test('parent IPC disconnect after listen closes sockets and stops the CoS runtime once', async () => {
+  const owner = Object.assign(new EventEmitter(), { channel: {}, connected: true })
+  const activity = []
+  const server = Object.assign(new EventEmitter(), {
+    listen: () => activity.push('listen'),
+    closeAllConnections: () => activity.push('connections_closed'),
+    close: () => activity.push('server_closed'),
+  })
+  const runtime = {
+    start: async () => ({}),
+    stop: () => activity.push('runtime_stopped'),
+  }
+  await startService({
+    runtime, owner, owned: true, port: 45861, key: 'a'.repeat(40),
+    gatewayFactory: () => server, exit: code => activity.push('exit_' + code),
+  })
+  owner.connected = false
+  owner.emit('disconnect')
+  owner.emit('SIGTERM')
+  assert.deepEqual(activity, ['listen', 'connections_closed', 'server_closed', 'runtime_stopped', 'exit_0'])
+})
+
+test('legacy direct offline service still starts without IPC', async () => {
+  const owner = new EventEmitter()
+  let listening = false
+  const server = Object.assign(new EventEmitter(), { listen() { listening = true }, close() {} })
+  await startService({
+    runtime: { start: async () => ({}), stop() {} }, owner, key: 'q'.repeat(40),
+    port: 45861, gatewayFactory: () => server, exit() {},
+  })
+  assert.equal(listening, true)
 })
 
 test('gateway rejects an authenticated, stale listener with the wrong process owner', async () => {

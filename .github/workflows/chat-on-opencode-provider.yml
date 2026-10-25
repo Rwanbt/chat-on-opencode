@@ -81,8 +81,8 @@ jobs:
         with:
           node-version: '22'
       - uses: oven-sh/setup-bun@v2
-      - name: Launch real isolated processes, exchange two turns, and verify cleanup
-        run: node --test packages/opencode-provider/test/native-process.e2e.mjs
+      - name: Launch isolated processes, prove native turns and parent-death cleanup
+        run: node --test packages/opencode-provider/test/native-process.e2e.mjs packages/opencode-provider/test/parent-death.e2e.mjs
 
   portable-electron:
     name: Native Electron provider service (Windows x64)

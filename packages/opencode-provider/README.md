@@ -138,6 +138,9 @@ node --test test/native-process.e2e.mjs
   never proven, it asks the existing outbox for a safe cancellation rather than resending.
 - Launches and terminates a separately configured fork runtime without opening its main window;
   never adopts an endpoint owned by another PID.
+- The plugin holds a dedicated Node IPC channel to its gateway. A closed parent channel
+  immediately closes the gateway and stops its CoS child, even during runtime startup;
+  a service launched with the ownership flag but without IPC refuses to start.
 - Private Chromium tabs are never revealed by extension-driven focus or popup requests;
   a gateway-owner watchdog stops them if OpenCode dies on Windows.
 - The gateway health response must prove the exact spawned process PID, and the gateway
