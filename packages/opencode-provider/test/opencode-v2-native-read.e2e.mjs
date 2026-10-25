@@ -39,7 +39,7 @@ async function stopTree(child) {
   child.unref()
 }
 
-for (const decision of ['allow', 'deny']) test('actual OpenCode 2.0.32 native read ' + decision + ' is enforced by its own permission engine',
+for (const decision of ['allow', 'deny']) test('actual OpenCode V2 native read ' + decision + ' is enforced by its own permission engine',
   { skip: !cli ? 'Set CHAT_ON_OPENCODE_TEST_CLI to an actual absolute OpenCode 2 executable' : false,
     timeout: 80_000 }, async () => {
     assert.ok(path.isAbsolute(cli) && existsSync(cli), 'OpenCode V2 executable missing')
@@ -107,7 +107,9 @@ for (const decision of ['allow', 'deny']) test('actual OpenCode 2.0.32 native re
       })
       child.stdout.on('data', chunk => { if (stdout.join('').length < 200_000) stdout.push(chunk.toString()) })
       child.stderr.on('data', chunk => { if (stderr.join('').length < 100_000) stderr.push(chunk.toString()) })
-      const end = Date.now() + 9_000
+      // Pin a bounded cold-start budget for both tested official CLI versions.
+      // A slow first launch is not evidence that the native read was denied.
+      const end = Date.now() + 30_000
       for (;;) {
         if (stdout.join('').includes(expected)) { found = true; break }
         if (child.exitCode !== null || Date.now() >= end) break

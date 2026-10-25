@@ -114,25 +114,31 @@ jobs:
           retention-days: 14
 
   native-opencode-v2:
-    name: Actual OpenCode V2 provider turn (Windows x64 offline)
+    name: Actual OpenCode V2 provider turn (Windows x64 offline, CLI ${{ matrix.cli_version }})
     runs-on: windows-2025
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        cli_version: ['2.0.32', '2.1.4']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - uses: oven-sh/setup-bun@v2
-      - name: Install OpenCode CLI 2.0.32 in runner temp only
+      - name: Install pinned OpenCode CLI ${{ matrix.cli_version }} in runner temp only
         shell: pwsh
+        env:
+          CHAT_ON_OPENCODE_CLI_VERSION: ${{ matrix.cli_version }}
         run: |
           $prefix = Join-Path $env:RUNNER_TEMP 'chat-on-opencode-cli'
-          npm install --prefix $prefix --no-save --no-audit --no-fund @opencode/cli@2.0.32
+          npm install --prefix $prefix --no-save --no-audit --no-fund "@opencode/cli@$env:CHAT_ON_OPENCODE_CLI_VERSION"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Execute native plugin, gateway and two-process CoS transport
         shell: pwsh
         run: |
           $env:CHAT_ON_OPENCODE_TEST_CLI = Join-Path $env:RUNNER_TEMP 'chat-on-opencode-cli/node_modules/@opencode/cli/bin/opencode.exe'
           if (-not (Test-Path -LiteralPath $env:CHAT_ON_OPENCODE_TEST_CLI)) { throw 'Pinned OpenCode CLI was not installed' }
-          node --test packages/opencode-provider/test/opencode-v2-cli.e2e.mjs packages/opencode-provider/test/opencode-v2-native-read.e2e.mjs
+          node --test --test-concurrency=1 packages/opencode-provider/test/opencode-v2-cli.e2e.mjs packages/opencode-provider/test/opencode-v2-native-read.e2e.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

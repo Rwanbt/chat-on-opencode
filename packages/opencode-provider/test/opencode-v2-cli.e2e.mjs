@@ -95,7 +95,9 @@ test('actual OpenCode V2 CLI loads provider plugin, starts owned gateway and rec
       })
       child.stdout.on('data', chunk => { if (stdout.join('').length < 200_000) stdout.push(chunk.toString()) })
       child.stderr.on('data', chunk => { if (stderr.join('').length < 100_000) stderr.push(chunk.toString()) })
-      const end = Date.now() + 9_000
+      // A newly installed official CLI may cold-start its isolated Bun server
+      // and plugin loader slowly, even when the native model turn is healthy.
+      const end = Date.now() + 30_000
       for (;;) {
         if (stdout.join('').includes('OFFLINE_FORK_OK')) { found = true; break }
         if (child.exitCode !== null || Date.now() >= end) break
