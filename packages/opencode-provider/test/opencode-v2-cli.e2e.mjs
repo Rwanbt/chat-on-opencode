@@ -11,7 +11,7 @@ import { test } from 'node:test'
 
 const cli = process.env.CHAT_ON_OPENCODE_TEST_CLI
 const packageRoot = fileURLToPath(new URL('..', import.meta.url))
-const pluginRoot = fileURLToPath(new URL('../plugin', import.meta.url))
+const pluginPackage = process.env.CHAT_ON_OPENCODE_TEST_PLUGIN_PACKAGE || packageRoot
 const fixture = fileURLToPath(new URL('fixtures/mock-cos.ts', import.meta.url))
 const nodeExe = process.execPath
 
@@ -57,21 +57,17 @@ test('actual OpenCode V2 CLI loads provider plugin, starts owned gateway and rec
     }))
     const port = await freePort()
     const gatewayKey = randomBytes(32).toString('hex')
-    const configuration = {
-      plugins: [{ package: pluginRoot, options: {
-        runtimeExecutable: executable, runtimeData: profile, nodeExecutable: nodeExe,
-        port: String(port),
-      } }],
-      providers: { 'chat-on-opencode': {
-        name: 'Chat On OpenCode test', package: '@opencode/ai/providers/openai-compatible',
-        env: ['CHAT_ON_OPENCODE_GATEWAY_KEY'],
-        settings: { baseURL: `http://127.0.0.1:${port}/v1`, apiKey: gatewayKey },
-        models: { 'chatgpt-default': {
-          name: 'ChatGPT via offline CoS', capabilities: { tools: false, input: ['text'], output: ['text'] },
-          limit: { context: 16384, output: 2048 },
-        } },
-      } },
-    }
+    // Exercise the same shipped configuration generator as a real offline installation.
+    // In particular the generated config must work with the bearer secret only in the
+    // isolated OpenCode environment, never as a persisted JSON apiKey.
+    const generated = spawnSync(nodeExe, [path.join(pluginPackage, 'bin', 'generate-config.mjs'),
+      '--runtime', executable, '--data', profile, '--node', nodeExe,
+      '--plugin-dir', pluginPackage, '--port', String(port)], {
+      cwd: path.join(root, 'workspace'), encoding: 'utf8', timeout: 5000, shell: false,
+    })
+    assert.equal(generated.status, 0, `config generation failed: ${generated.stderr?.slice(-500)}`)
+    const configuration = JSON.parse(generated.stdout)
+    assert.equal(configuration.providers['chat-on-opencode'].settings.apiKey, undefined)
     const safeEnv = {}
     for (const [name, value] of Object.entries(process.env)) {
       if (/^(PATH|PATHEXT|SystemRoot|WINDIR|COMSPEC|TEMP|TMP|PROCESSOR_ARCHITECTURE|NUMBER_OF_PROCESSORS)$/i.test(name) && typeof value === 'string') safeEnv[name] = value
