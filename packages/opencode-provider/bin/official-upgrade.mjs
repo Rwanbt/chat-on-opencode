@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { inspectUpgrade, stageUpgrade, recoverStagedUpgrade } from '../src/official-upgrade.mjs'
+import { inspectUpgrade, stageUpgrade, publishVersionedCandidate, recoverStagedUpgrade } from '../src/official-upgrade.mjs'
 
 const args = process.argv.slice(2)
-const operations = new Set(['--check', '--stage', '--recover'])
+const operations = new Set(['--check', '--stage', '--publish-candidate', '--recover'])
 const allowed = new Set([...operations, '--config', '--cli', '--bundle'])
 try {
   const operation = args.filter(x => operations.has(x))
@@ -15,14 +15,15 @@ try {
     fields.set(args[i++], args[i])
   }
   if (!fields.get('--config')) throw new Error('upgrade_config_required')
-  if (operation[0] !== '--recover' && (!fields.get('--cli') || !fields.get('--bundle'))) {
+  if (['--check', '--stage'].includes(operation[0]) && (!fields.get('--cli') || !fields.get('--bundle'))) {
     throw new Error('upgrade_cli_and_bundle_required')
   }
   const options = { configFile: fields.get('--config'), officialCli: fields.get('--cli'),
     bundleDir: fields.get('--bundle') }
   const result = operation[0] === '--check' ? inspectUpgrade(options)
     : operation[0] === '--stage' ? stageUpgrade(options)
-      : recoverStagedUpgrade(options.configFile)
+      : operation[0] === '--publish-candidate' ? publishVersionedCandidate(options.configFile)
+        : recoverStagedUpgrade(options.configFile)
   // No paths, config bytes, account data, or environment variables in CLI output.
   process.stdout.write(JSON.stringify(operation[0] === '--check'
     ? { status: result.status, promotionAllowed: false, cliVersion: result.cliVersion,

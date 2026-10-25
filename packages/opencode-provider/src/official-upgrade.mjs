@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import {
   closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync,
-  openSync, readFileSync, readdirSync, realpathSync, rmdirSync, rmSync, writeFileSync,
+  openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync,
 } from 'node:fs'
 import path from 'node:path'
 import { inspectInstalledProvider, validateBundle, payloadDigest } from './official-install.mjs'
@@ -135,6 +135,58 @@ function writeJournal(location, content) {
   try { writeFileSync(fd, JSON.stringify(content)); fsyncSync(fd) }
   finally { closeSync(fd) }
 }
+function readOwnedJob(configFile) {
+  const info = installed(configFile)
+  const job = journalFor(info)
+  noLinks(job, 'directory')
+  if (readdirSync(job).some(name => !['journal.json', 'validated.json', 'candidate', 'publication.json'].includes(name))) {
+    throw new Error('upgrade_recovery_unknown_files')
+  }
+  const file = path.join(job, 'journal.json')
+  noLinks(file, 'file')
+  const entry = JSON.parse(readFileSync(file, 'utf8'))
+  if (entry.format !== 1 || typeof entry.id !== 'string' ||
+      !/^[0-9a-f-]{36}$/.test(entry.id) || entry.config !== info.config || entry.managed !== info.managed ||
+      ![entry.manifestDigest, entry.configDigest, entry.oldDigest, entry.sourceDigest].every(s => SHA.test(s)) ||
+      !SUPPORTED.has(entry.cliVersion) || typeof entry.candidateVersion !== 'string') {
+    throw new Error('upgrade_recovery_journal_invalid')
+  }
+  ensurePinned(entry)
+  const publishedPath = path.join(path.dirname(info.config), '.chat-on-opencode-version-' + entry.sourceDigest)
+  const receiptPath = path.join(job, 'validated.json')
+  const validated = safeStat(receiptPath)
+  if (validated) {
+    noLinks(receiptPath, 'file')
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'))
+    if (Object.keys(receipt).sort().join() !== 'journalSha256,stagedSha256' ||
+        receipt.journalSha256 !== sha(readFileSync(file)) || receipt.stagedSha256 !== entry.sourceDigest) {
+      throw new Error('upgrade_recovery_validation_invalid')
+    }
+  }
+  const publication = path.join(job, 'publication.json')
+  if (safeStat(publication)) {
+    noLinks(publication, 'file')
+    const detail = JSON.parse(readFileSync(publication, 'utf8'))
+    if (Object.keys(detail).sort().join() !== 'destination,journalSha256' ||
+        detail.destination !== publishedPath || detail.journalSha256 !== sha(readFileSync(file)) ||
+        !validated) throw new Error('upgrade_publication_journal_invalid')
+  }
+  const stage = path.join(job, 'candidate')
+  if (safeStat(stage)) {
+    if (safeDigest(stage) !== entry.sourceDigest) {
+      if (validated) throw new Error('upgrade_recovery_staged_modified')
+      walkSafe(stage)
+    }
+  }
+  if (safeStat(publishedPath)) {
+    if (!safeStat(publication) || safeDigest(publishedPath) !== entry.sourceDigest || safeStat(stage)) {
+      throw new Error('upgrade_published_candidate_invalid')
+    }
+  } else if (safeStat(publication) && !safeStat(stage)) {
+    throw new Error('upgrade_published_candidate_missing')
+  }
+  return { info, job, file, entry, stage, receiptPath, publication, publishedPath }
+}
 const copyTree = (src, dest) => {
   for (const name of readdirSync(src)) {
     const from = path.join(src, name), to = path.join(dest, name)
@@ -183,6 +235,46 @@ export function stageUpgrade(options, { runner = spawnSync, checkpoint = () => {
     stagedDigest: plan.sourceDigest, cliVersion: plan.cliVersion, candidateVersion: plan.candidateVersion }
 }
 
+/** Publish only verified candidate files under a digest-addressed sibling path.
+ * This does NOT update opencode.jsonc or grant permission to switch the live plugin. */
+export function publishVersionedCandidate(configFile, { checkpoint = () => {} } = {}) {
+  const state = readOwnedJob(configFile)
+  if (!safeStat(state.receiptPath) || !safeStat(state.stage) ||
+      safeStat(state.publication) || safeStat(state.publishedPath)) {
+    throw new Error('upgrade_candidate_not_ready_to_publish')
+  }
+  validateBundle(state.stage)
+  ensurePinned(state.entry)
+  writeJournal(state.publication, { journalSha256: sha(readFileSync(state.file)),
+    destination: state.publishedPath })
+  checkpoint('publication_intent_durable')
+  if (safeDigest(state.stage) !== state.entry.sourceDigest || safeStat(state.publishedPath)) {
+    throw new Error('upgrade_publication_precondition_changed')
+  }
+  ensurePinned(state.entry)
+  checkpoint('before_publish_rename')
+  // Single directory rename in the SAME config directory. Old managed bytes remain intact.
+  renameSync(state.stage, state.publishedPath)
+  checkpoint('published_directory')
+  readOwnedJob(configFile)
+  checkpoint('published_verified')
+  return { publishedForOfflineReview: true, promotionAllowed: false,
+    status: 'NO_GO_CONFIG_CAS_UNPROVEN', publishedSha256: state.entry.sourceDigest }
+}
+
+/** Verify a retained content-addressed sibling even after its staging journal was recovered. */
+export function inspectPublishedCandidate(configFile, publishedSha256) {
+  if (typeof publishedSha256 !== 'string' || !SHA.test(publishedSha256)) {
+    throw new Error('upgrade_published_digest_invalid')
+  }
+  const info = installed(configFile)
+  const location = path.join(path.dirname(info.config), '.chat-on-opencode-version-' + publishedSha256)
+  noLinks(location, 'directory')
+  if (safeDigest(location) !== publishedSha256) throw new Error('upgrade_published_candidate_invalid')
+  validateBundle(location)
+  return { publishedSha256, candidateAvailable: true, promotionAllowed: false }
+}
+
 /** Safely discard a crashed/prepared plan; active install must still match exactly. */
 export function recoverStagedUpgrade(configFile) {
   const info = installed(configFile)
@@ -197,30 +289,14 @@ export function recoverStagedUpgrade(configFile) {
     installed(info.config)
     return { recovered: true, originalInstallUnchanged: true, promotionAllowed: false }
   }
-  noLinks(file, 'file')
-  const entry = JSON.parse(readFileSync(file, 'utf8'))
-  if (entry.format !== 1 || typeof entry.id !== 'string' ||
-      !/^[0-9a-f-]{36}$/.test(entry.id) || entry.config !== info.config || entry.managed !== info.managed ||
-      ![entry.manifestDigest, entry.configDigest, entry.oldDigest, entry.sourceDigest].every(s => SHA.test(s)) ||
-      !SUPPORTED.has(entry.cliVersion) || typeof entry.candidateVersion !== 'string') {
-    throw new Error('upgrade_recovery_journal_invalid')
-  }
-  ensurePinned(entry)
+  const state = readOwnedJob(configFile)
+  const { entry } = state
   const files = readdirSync(job).sort()
-  if (files.some(x => !['journal.json', 'validated.json', 'candidate'].includes(x))) {
+  if (files.some(x => !['journal.json', 'validated.json', 'candidate', 'publication.json'].includes(x))) {
     throw new Error('upgrade_recovery_unknown_files')
   }
-  if (files.includes('candidate')) walkSafe(path.join(job, 'candidate'))
-  if (files.includes('validated.json')) {
-    noLinks(path.join(job, 'validated.json'), 'file')
-    const validated = JSON.parse(readFileSync(path.join(job, 'validated.json'), 'utf8'))
-    if (validated.journalSha256 !== sha(readFileSync(file)) || !SHA.test(validated.stagedSha256)) {
-      throw new Error('upgrade_recovery_validation_invalid')
-    }
-    if (!files.includes('candidate') || safeDigest(path.join(job, 'candidate')) !== validated.stagedSha256) {
-      throw new Error('upgrade_recovery_staged_modified')
-    }
-  }
+  if (files.includes('validated.json') && !files.includes('candidate') && !safeStat(state.publishedPath))
+    throw new Error('upgrade_recovery_staged_modified')
   rmSync(job, { recursive: true })
   ensurePinned(entry)
   return { recovered: true, originalInstallUnchanged: true, promotionAllowed: false }
