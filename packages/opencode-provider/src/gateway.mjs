@@ -51,6 +51,10 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
   if (text.length > 64000) throw new BridgeError('cos_input_too_large', 413)
   const inputID = first ? sessionID : turnID
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
+  // A hidden provider with no ChatGPT session or browser bridge must not accept
+  // a prompt into the durable outbox that no authenticated page can deliver.
+  await control.assertReady()
+  if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
   await control.send({ id: inputID, ...(first ? {} : { sessionId: sessionID }), text })
 
   // A conversation is not considered delivered just because POST returned 202. Follow its
@@ -119,7 +123,8 @@ export function createGateway({ control, key }) {
     }
     if (req.method === 'GET' && req.url === '/health') return sendJSON(200, {
       ok: true, gateway: 'chat-on-opencode', phase: 'control-api-adapter', pid: process.pid,
-      diagnostics,
+      diagnostics, provider: await control.readiness().catch(() => ({ sessionCookie: 'unknown',
+        extension: 'disconnected', paired: false, canAttempt: false })),
     })
     if (req.method !== 'POST' || req.url !== '/v1/chat/completions') return sendJSON(404, { error: 'not_found' })
     diagnostics.attempted++
