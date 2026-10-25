@@ -34,6 +34,8 @@ node .\release\provider\opencode-plugin\bin\generate-config.mjs `
 The generated JSON uses the tested OpenCode 2 `plugins`/`providers` shape, a filesystem plugin
 entry, and `chat-on-opencode/chatgpt-default` model selection. Place that configuration into
 the intended **isolated** OpenCode configuration via OpenCode's normal configuration mechanism.
+The isolated OpenCode CLI 2.0.29 offline E2E also loads the staged standalone plugin from this
+generated configuration with the token supplied through the process environment alone.
 Set `CHAT_ON_OPENCODE_GATEWAY_KEY` to a strong random token (32+ characters) in that OpenCode
 process environment. The generator deliberately does not put the token or `apiKey` into JSON.
 Any existing personal CoS profile can be explicitly guarded with `--personal-cos-data` pointing
