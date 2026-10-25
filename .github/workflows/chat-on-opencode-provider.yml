@@ -101,6 +101,13 @@ jobs:
         run: npm run dist:provider:win:x64
       - name: Boot packaged Electron service with a fresh isolated profile
         run: node scripts/verify-provider-packaged-electron.mjs
+      - name: Publish portable provider bundle after runtime smoke
+        uses: actions/upload-artifact@v4
+        with:
+          name: chat-on-opencode-provider-win-x64-${{ github.sha }}
+          path: release/provider/
+          if-no-files-found: error
+          retention-days: 14
 
   native-opencode-v2:
     name: Actual OpenCode V2 provider turn (Windows x64 offline)

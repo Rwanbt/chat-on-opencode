@@ -17,6 +17,10 @@ Running `npm run dist:provider:win:x64` produces both the separate portable Elec
 (`release/provider/opencode-plugin/`). Move **the complete plugin directory**, with its `src/`,
 `plugin/`, and `bin/` folders together, to a stable location of your choice. The plugin does
 not depend on the fork repository checkout; its entry point imports only sibling packaged files.
+The Windows provider CI job also publishes these two directories together as a short-lived
+`chat-on-opencode-provider-win-x64-<commit SHA>` GitHub Actions artifact **only after** its
+packaged runtime smoke succeeds; this is a testable portable bundle, not a signed installer,
+approved ChatGPT integration or a production release.
 If the helper executable is moved during an update, regenerate the config with the new path;
 keep the independent runtime profile in a separate, persistent location.
 
