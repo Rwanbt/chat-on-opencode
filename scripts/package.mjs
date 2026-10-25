@@ -61,4 +61,5 @@ for (const arch of arches) {
   // checkout's node_modules was linked to another tree) fail this same packaging command instead
   // of producing an installer that crashes before the first BrowserWindow exists.
   run(node, ['scripts/smoke-packaged-runtime.mjs', ...targetArgs, ...(providerOnly ? ['--provider'] : [])]);
+  if (providerOnly) run(node, ['scripts/stage-opencode-plugin.mjs']);
 }

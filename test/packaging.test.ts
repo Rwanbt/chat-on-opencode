@@ -550,7 +550,10 @@ describe('cross-platform packaging targets', () => {
     const packageScript = readFileSync(path.join(root, 'scripts', 'package.mjs'), 'utf8');
     expect(packageScript).toContain("run(node, ['-e', \"require('electron')\"]);");
     expect(packageScript).toContain('COS_PACKAGE_ARCH: arch');
-    expect(packageScript).toContain("run(node, ['scripts/smoke-packaged-runtime.mjs', ...targetArgs]);");
+    // Both the ordinary runtime and the independent provider payload must be smoked.
+    // Provider mode adds its own flag while retaining the same per-target runtime probe.
+    expect(packageScript).toContain("run(node, ['scripts/smoke-packaged-runtime.mjs', ...targetArgs, ...(providerOnly ? ['--provider'] : [])]);");
+    expect(packageScript).toContain("if (providerOnly) run(node, ['scripts/stage-opencode-plugin.mjs']);");
     const releaseWorkflow = readFileSync(path.join(root, '.github', 'workflows', 'release.yml'), 'utf8');
     expect(releaseWorkflow).toContain('HOME="$deb_smoke_root/home"');
     expect(releaseWorkflow).toContain('HOME="$smoke_root/home"');

@@ -10,6 +10,38 @@ an independent control-enabled profile and login; no automated login is availabl
 parity and outputs exceeding its provider-only redacted 64,000-character limit are not supported.
 Do not install this in a real OpenCode profile.
 
+## Portable installation layout / isolated configuration
+
+Running `npm run dist:provider:win:x64` produces both the separate portable Electron service
+(`release/provider/win-unpacked/Chat On OpenCode Provider.exe`) and the standalone plugin
+(`release/provider/opencode-plugin/`). Move **the complete plugin directory**, with its `src/`,
+`plugin/`, and `bin/` folders together, to a stable location of your choice. The plugin does
+not depend on the fork repository checkout; its entry point imports only sibling packaged files.
+If the helper executable is moved during an update, regenerate the config with the new path;
+keep the independent runtime profile in a separate, persistent location.
+
+The generator only reads an **already existing** isolated provider profile with its explicit
+`config.json` settings. It prints OpenCode V2 configuration to stdout and never touches
+OpenCode's installed profile or creates credentials. For example, in PowerShell:
+
+```powershell
+node .\release\provider\opencode-plugin\bin\generate-config.mjs `
+  --runtime 'D:\Apps\Chat On OpenCode Provider\Chat On OpenCode Provider.exe' `
+  --data 'D:\Apps\provider-profile' `
+  --node 'C:\Program Files\nodejs\node.exe'
+```
+
+The generated JSON uses the tested OpenCode 2 `plugins`/`providers` shape, a filesystem plugin
+entry, and `chat-on-opencode/chatgpt-default` model selection. Place that configuration into
+the intended **isolated** OpenCode configuration via OpenCode's normal configuration mechanism.
+Set `CHAT_ON_OPENCODE_GATEWAY_KEY` to a strong random token (32+ characters) in that OpenCode
+process environment. The generator deliberately does not put the token or `apiKey` into JSON.
+Any existing personal CoS profile can be explicitly guarded with `--personal-cos-data` pointing
+to its existing directory. The provider service rechecks isolation when launched.
+
+This standalone layout is packaging/configuration evidence, not proof of real ChatGPT login,
+tool calls, multimodal parity, or unattended inference. Those milestones remain open.
+
 ## Wiring / isolated test only
 
 The example `opencode.example.jsonc` shows the OpenCode **V2** `providers` object and local
