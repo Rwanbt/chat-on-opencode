@@ -393,7 +393,7 @@ async function sessionEvents(id: string, params: URLSearchParams): Promise<Contr
   return heavy(async () => {
     const page = await readSessionEvents(id, { ...query, limit: query.limit ?? 50 });
     if (!page) throw new RequestError(404, 'session_not_found');
-    return { events: page.events.map(projectReadableEvent), total: page.total, nextFrom: page.nextFrom };
+    return { events: page.events.map(event => projectReadableEvent(event)), total: page.total, nextFrom: page.nextFrom };
   });
 }
 
