@@ -3,7 +3,7 @@
 This directory is the beginning of a **provider**, not an additional multi-agent/Goal/Loop/Daemon system.
 It follows the OpenCode 2 `providers` convention and uses its native session identity hook.
 
-**Current status: NOT installable for unattended ChatGPT inference.** The Node gateway can
+**Current status: NOT qualified for unattended ChatGPT inference.** The Node gateway can
 translate a subset of Chat Completions into CoS's local control API and now owns a separately
 launched fork process via a service-only flag. The user must still provision that fork binary,
 an independent control-enabled profile and login; no automated login is available. CoS tool-call
@@ -60,6 +60,41 @@ The dedicated profile must contain an existing regular `config.json` that explic
 `ui.chatBrowser = "cos"` and `controlApi.enabled = controlApi.allowActions = true`.
 Invalid or missing settings refuse startup before Chromium is spawned. The personal CoS
 profile may be absent entirely; the provider neither creates nor copies one.
+
+### Explicit one-time ChatGPT sign-in
+
+Close the dedicated provider gateway before starting sign-in: the service and sign-in
+processes use **the same isolated Electron profile**, which must not be opened by two
+Chromium instances simultaneously. With the fork-only packaged binary and a pre-created
+profile configured as above, start an **interactive**, separate sign-in process:
+
+```powershell
+$env:CHAT_ON_OPENCODE_USERDATA_DIR = 'D:\Private\chat-on-opencode-provider'
+& 'D:\Apps\Chat On OpenCode Provider.exe' --chat-on-opencode-provider-sign-in
+```
+
+The user signs in on ChatGPT's own page. The embedded browser may offer the existing
+Google sign-in handoff into a supported installed browser; that path requires the user
+to choose and approve the companion's transfer. Close the dedicated sign-in window to
+terminate this process, then start the normal provider through OpenCode. No real user
+profile, password, cookies or Chrome debugging port are imported automatically.
+
+The locally authenticated `GET /health` now includes a `provider` object containing
+only `sessionCookie` (`present`, `absent`, `unknown`), `extension` (`connected`,
+`disconnected`), `paired`, and `canAttempt`. A missing cookie, unpaired bridge
+or disconnected companion **refuses the prompt before adding an outbox entry**, with
+`chatgpt_sign_in_required`, `chatgpt_session_unobserved`,
+`cos_companion_unpaired` or `cos_companion_not_connected` respectively.
+`canAttempt` is an *operational preflight*, **not** proof ChatGPT accepted the
+cookie, the account can use the selected model or inference succeeded. A stale
+session, expired entitlement or changed ChatGPT UI can still fail later. In particular,
+do not present a green `/health` as verified real-account inference.
+
+Manual sign-in also does not establish that browser automation or programmatic
+extraction is permitted by the provider's terms. Confirm an authorized integration
+path before using this to route real account inference; the supported
+`Sign in with ChatGPT` app/partner authorization is a separate program from
+reusing cookies in a browser: https://help.openai.com/en/articles/20001542-using-your-chatgpt-plan-in-other-apps-and-sites
 The plugin option `nodeExecutable` must be an absolute path to a real Node.js binary (Node 20+),
 because OpenCode V2 may itself be a compiled Bun executable and must not be spawned as a Node interpreter.
 Never commit either token or copy them into the OpenCode project config. The listener binds only
@@ -117,8 +152,8 @@ profile with all local tool permissions off, with no real ChatGPT login, to veri
 private control API and absence of a visible CoS window. **This is not yet ChatGPT inference.**
 
 
-1. Package the fork's Electron runtime as a noninteractive helper, prove true UI-free launch,
-   connect on provider selection, and implement a consent-based initial ChatGPT login.
+1. Qualify the packaged sign-in window and its existing Google handoff with a user-controlled
+   isolated browser profile, then prove the returning headless provider observes that login.
 2. Map actual CoS model IDs/efforts, tool results and long-form assistant content without the
    external control API's intentionally clipped/redacted projection.
 3. Verify `/models`, streaming, tools, cancellation and session continuity with packaged

@@ -30,6 +30,9 @@ const server = http.createServer(async (req, res) => {
     return json(403, { error: 'untrusted_caller' })
   }
   if (req.method === 'GET' && req.url === '/v1/health') return json(200, { ok: true, protocol: 1, actions: { enabled: true } })
+  if (req.method === 'GET' && req.url === '/v1/provider/readiness') return json(200, {
+    sessionCookie: 'present', extension: 'connected', paired: true, canAttempt: true
+  })
   if (req.method === 'POST' && req.url === '/v1/inputs') {
     let raw = ''
     for await (const chunk of req) raw += chunk.toString('utf8')

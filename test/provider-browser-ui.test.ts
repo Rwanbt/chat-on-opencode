@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { providerBrowserUiAllowed, providerServiceOwner, PROVIDER_SERVICE_SWITCH } from '../src/main/provider-service.js';
+import { providerBrowserUiAllowed, providerServiceOwner, PROVIDER_SERVICE_SWITCH, PROVIDER_SIGN_IN_SWITCH } from '../src/main/provider-service.js';
 
 describe('dedicated CoS provider service browser policy', () => {
   it('preserves ordinary browser presentation but suppresses provider presentation', () => {
     expect(providerBrowserUiAllowed(['app.exe'])).toBe(true);
     expect(providerBrowserUiAllowed(['app.exe', '--background'])).toBe(true);
     expect(providerBrowserUiAllowed(['app.exe', PROVIDER_SERVICE_SWITCH])).toBe(false);
+    expect(providerBrowserUiAllowed(['app.exe', PROVIDER_SIGN_IN_SWITCH])).toBe(true);
   });
 
   it('enforces provider-specific presentation checks at both window and popup entrypoints', () => {

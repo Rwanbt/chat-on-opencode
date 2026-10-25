@@ -14,6 +14,8 @@ import {
 import type { PluginSnapshot } from '../shared/plugins.js';
 import type { BridgeStatus, ConnectionStatus, UpdateStatus } from '../shared/types.js';
 import { bridgeStatus } from './bridge.js';
+import { cosBrowserSignedIn } from './cos-browser/sign-in.js';
+import { providerReadinessStatus } from './provider-service.js';
 import { actionsAllowed, isActionPath, serveAction } from './control-actions.js';
 import { RequestError, serveRead } from './control-reads.js';
 import { getStatus } from './connection.js';
@@ -438,6 +440,10 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, token
 
 /** Every read that asks an owner something. `/v1/health` asks nobody and is answered before this. */
 async function read(route: string, params: URLSearchParams): Promise<unknown> {
+  if (route === '/v1/provider/readiness') {
+    if ([...params.keys()].length) throw new RequestError(400, 'invalid_query');
+    return providerReadinessStatus(cosBrowserSignedIn(), await bridgeStatus());
+  }
   const workers = await serveWorkerRead(route, params);
   if (workers !== undefined) return workers;
   if (route !== '/v1/status') return serveRead(route, params);

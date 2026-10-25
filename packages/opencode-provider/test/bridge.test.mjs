@@ -17,6 +17,8 @@ const request = { model: 'chatgpt-default', messages: [{ role: 'user', content: 
 
 class FakeCoS {
   constructor(events = ['Bon', 'Bonjour']) { this.sent = []; this.exists = false; this.outputs = events }
+  async assertReady() {}
+  async readiness() { return { sessionCookie: 'present', extension: 'connected', paired: true, canAttempt: true } }
   async hasSession() { return this.exists }
   async send(payload) { this.sent.push(payload); this.exists = true; return { delivery: 'pending' } }
   async *events(id) {
@@ -87,6 +89,39 @@ test('refuse tools instead of silently dropping OpenCode tool contracts', async 
   await assert.rejects(runTurn(cos, { ...request, tools: [{ type: 'function', function: { name: 'bash' } }] },
     { sessionKey: 'ses_123', messageKey: 'msg_tests_0001', emit: () => undefined }), /native_tool_calls_not_yet_supported/)
   assert.equal(cos.sent.length, 0)
+})
+
+test('refuse delivery while the isolated browser has no authenticated-session hint or companion', async () => {
+  const cos = new FakeCoS()
+  cos.assertReady = async () => { throw new BridgeError('chatgpt_sign_in_required', 503) }
+  await assert.rejects(runTurn(cos, request, {
+    sessionKey: 'no_login', messageKey: 'msg_no_login_1', emit: () => undefined,
+  }), error => error instanceof BridgeError && error.code === 'chatgpt_sign_in_required')
+  assert.equal(cos.sent.length, 0)
+})
+
+test('readiness endpoint distinguishes cookie, pairing and extension without exposing account data', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'cos-auth-'))
+  try {
+    const requests = []
+    const control = new CoSControl({ directory: dir, fetcher: async url => {
+      requests.push(url)
+      return new Response(JSON.stringify({ sessionCookie: 'absent', extension: 'disconnected',
+        paired: false, canAttempt: false }), { status: 200 })
+    } })
+    control.base = 'http://127.0.0.1:47898'
+    control.token = 't'.repeat(40)
+    await assert.rejects(control.assertReady(), /chatgpt_sign_in_required/)
+    assert.deepEqual(requests, ['http://127.0.0.1:47898/v1/provider/readiness'])
+    control.fetcher = async () => new Response(JSON.stringify({
+      sessionCookie: 'present', extension: 'disconnected', paired: true, canAttempt: false,
+    }), { status: 200 })
+    await assert.rejects(control.assertReady(), /cos_companion_not_connected/)
+    control.fetcher = async () => new Response(JSON.stringify({
+      sessionCookie: 'present', extension: 'connected', paired: true, canAttempt: true,
+    }), { status: 200 })
+    await control.assertReady()
+  } finally { await rm(dir, { recursive: true, force: true }) }
 })
 
 test('text-only context gate is provider-scoped, never modifies another provider tools', () => {

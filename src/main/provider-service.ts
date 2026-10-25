@@ -3,10 +3,12 @@ import { realpathSync } from 'node:fs';
 
 /** The provider runtime is opt-in and MUST NOT silently reuse CoS's personal userData. */
 export const PROVIDER_SERVICE_SWITCH = '--chat-on-opencode-provider-service';
+/** Explicit one-time user action: the same isolated profile, with a visible ChatGPT sign-in. */
+export const PROVIDER_SIGN_IN_SWITCH = '--chat-on-opencode-provider-sign-in';
 
 /** Chromium tabs remain offscreen in provider mode; no CoS GUI may be revealed. */
 export function providerBrowserUiAllowed(argv: readonly string[]): boolean {
-  return !argv.includes(PROVIDER_SERVICE_SWITCH);
+  return !argv.includes(PROVIDER_SERVICE_SWITCH) || argv.includes(PROVIDER_SIGN_IN_SWITCH);
 }
 
 /** An orphaned helper must never keep Chromium and its private control API alive. */
@@ -40,7 +42,10 @@ export function prospectiveRealPath(candidate: string): string {
 }
 
 export function providerServiceProfile(argv: readonly string[], supplied: string | undefined, normalUserData: string): string | null {
-  if (!argv.includes(PROVIDER_SERVICE_SWITCH)) return null;
+  if (!argv.includes(PROVIDER_SERVICE_SWITCH) && !argv.includes(PROVIDER_SIGN_IN_SWITCH)) return null;
+  if (argv.includes(PROVIDER_SERVICE_SWITCH) && argv.includes(PROVIDER_SIGN_IN_SWITCH)) {
+    throw new Error('provider_service_conflicting_modes');
+  }
   if (!supplied || !path.isAbsolute(supplied) || !path.isAbsolute(normalUserData)) {
     throw new Error('provider_service_requires_isolated_absolute_userdata');
   }
@@ -63,6 +68,19 @@ export function providerServiceProfile(argv: readonly string[], supplied: string
   }
   if (profile === path.parse(profile).root) throw new Error('provider_service_profile_cannot_be_root');
   return profile;
+}
+
+/** A cookie is a local hint, never proof ChatGPT accepted the login or granted model access. */
+export function providerReadinessStatus(cookie: boolean | null, bridge: {
+  running: boolean; paired: boolean; cosExtension?: { present: boolean };
+}): { sessionCookie: 'present' | 'absent' | 'unknown'; extension: 'connected' | 'disconnected';
+  paired: boolean; canAttempt: boolean } {
+  return {
+    sessionCookie: cookie === null ? 'unknown' : cookie ? 'present' : 'absent',
+    extension: bridge.running && bridge.cosExtension?.present === true ? 'connected' : 'disconnected',
+    paired: bridge.paired,
+    canAttempt: cookie === true && bridge.running && bridge.paired && bridge.cosExtension?.present === true
+  };
 }
 
 export function providerServiceReady(config: { ui: { chatBrowser?: string }; controlApi: { enabled: boolean; allowActions: boolean } }): boolean {

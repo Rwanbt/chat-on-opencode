@@ -21,7 +21,7 @@ import { cosSignInTransfer, SignInTransferError, type SignInCookie } from './sig
 import { EXTERNAL_BROWSER_LABELS, installedSignInBrowsers, openBrowserSignIn, type ExternalChatBrowser } from '../browser.js';
 import { opensInCosBrowser } from '../../shared/cos-browser-sites.js';
 import { TabModel, WINDOW_ID_NONE, type ModelEvent, type WindowState } from './tab-model.js';
-import { providerBrowserUiAllowed } from '../provider-service.js';
+import { providerBrowserUiAllowed, PROVIDER_SIGN_IN_SWITCH } from '../provider-service.js';
 
 const PARTITION = 'persist:cos-browser';
 /**
@@ -452,6 +452,8 @@ export class CosBrowser {
     // The window belongs to the tray: closing it hides it, and its chats go on.
     base.on('close', event => {
       if (this.stopping || this.quitting) return;
+      // The explicit one-time sign-in has no app shell or tray to return to.
+      if (process.argv.includes(PROVIDER_SIGN_IN_SWITCH)) { app.quit(); return; }
       event.preventDefault();
       this.userHide(id);
     });

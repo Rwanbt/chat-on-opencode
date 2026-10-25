@@ -12,6 +12,7 @@ export const CONTROL_API_PROTOCOL = 1;
 export const CONTROL_API_ROUTES = [
   '/v1/health',
   '/v1/status',
+  '/v1/provider/readiness',
   '/v1/sessions',
   '/v1/sessions/{id}',
   '/v1/sessions/{id}/events',
@@ -52,6 +53,14 @@ export interface ControlApiHealth {
   /** When this app process started. */
   startedAt: string;
   uptimeSeconds: number;
+}
+
+/** No account ID or credential crosses this route. Cookie presence is not verified login. */
+export interface ControlApiProviderReadiness {
+  sessionCookie: 'present' | 'absent' | 'unknown';
+  extension: 'connected' | 'disconnected';
+  paired: boolean;
+  canAttempt: boolean;
 }
 
 export interface ControlApiStatus {

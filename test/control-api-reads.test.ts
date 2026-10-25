@@ -130,12 +130,19 @@ describe('read routes', () => {
   it('are listed by health and need the token like every other route', async () => {
     const health = await call('/v1/health');
     expect(health.body.routes).toEqual([
-      '/v1/health', '/v1/status', '/v1/sessions', '/v1/sessions/{id}', '/v1/sessions/{id}/events', '/v1/sessions/{id}/events/stream', '/v1/inputs', '/v1/agents', '/v1/workers/{ownerId}', '/v1/workers/{ownerId}/reports', '/v1/log', '/v1/models'
+      '/v1/health', '/v1/status', '/v1/provider/readiness', '/v1/sessions', '/v1/sessions/{id}', '/v1/sessions/{id}/events', '/v1/sessions/{id}/events/stream', '/v1/inputs', '/v1/agents', '/v1/workers/{ownerId}', '/v1/workers/{ownerId}/reports', '/v1/log', '/v1/models'
     ]);
-    for (const route of ['/v1/sessions', `/v1/sessions/${sessionId}`, `/v1/sessions/${sessionId}/events`, '/v1/inputs', '/v1/agents', '/v1/log', '/v1/models']) {
+    for (const route of ['/v1/provider/readiness', '/v1/sessions', `/v1/sessions/${sessionId}`, `/v1/sessions/${sessionId}/events`, '/v1/inputs', '/v1/agents', '/v1/log', '/v1/models']) {
       expect((await call(route, {})).status).toBe(401);
       expect((await call(route)).status).toBe(200);
     }
+  });
+  it('never returns session cookies or account identifiers in the provider preflight', async () => {
+    const result = await call('/v1/provider/readiness');
+    expect(result.status).toBe(200);
+    expect(Object.keys(result.body).sort()).toEqual(['canAttempt', 'extension', 'paired', 'sessionCookie']);
+    expect(result.body.sessionCookie).toMatch(/^(present|absent|unknown)$/);
+    expect((await call('/v1/provider/readiness?token=secret')).status).toBe(400);
   });
 
   it('refuse unknown, repeated and malformed parameters instead of ignoring them', async () => {
