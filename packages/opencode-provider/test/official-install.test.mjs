@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, stat } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -7,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { addScopedProvider, readJSONC } from '../src/jsonc-scoped.mjs'
 import { checkInstall, installProvider, rollbackProvider } from '../src/official-install.mjs'
+import { parseOptions, checkOfficialModel, smokeOfficialModel, smokePassed } from '../bin/official-model-check.mjs'
 
 const bundleDir = fileURLToPath(new URL('..', import.meta.url))
 const version = value => () => ({ status: 0, stdout: 'opencode v' + value + '\n' })
@@ -125,4 +128,158 @@ test('real installed official CLI capability gate is read-only, with no personal
   const processResult = spawnSync(cli, ['--version'], { shell: false, windowsHide: true,
     encoding: 'utf8', timeout: 5000 })
   assert.equal(typeof processResult.stdout, 'string')
+})
+
+test('official model preflight verifies exact managed manifest and CLI version without writes', async t => {
+  const ctx = await synthetic(t)
+  installProvider(ctx.options, { runner: version('2.1.4') })
+  const prior = await readFile(ctx.configFile)
+  const plan = checkOfficialModel({ config: ctx.configFile, cli: ctx.options.officialCli },
+    { runner: version('2.1.4') })
+  assert.equal(plan.version, '2.1.4')
+  assert.deepEqual(await readFile(ctx.configFile), prior)
+  assert.throws(() => checkOfficialModel({ config: ctx.configFile, cli: ctx.options.officialCli },
+    { runner: version('2.0.32') }), /official_cli_version_mismatch/)
+  const edited = Buffer.concat([prior, Buffer.from('\n// concurrent user edit\n')])
+  await writeFile(ctx.configFile, edited)
+  assert.throws(() => checkOfficialModel({ config: ctx.configFile, cli: ctx.options.officialCli },
+    { runner: version('2.1.4') }), /provider_config_modified_refuse_rollback/)
+  assert.deepEqual(await readFile(ctx.configFile), edited)
+  assert.deepEqual(parseOptions(['--smoke', '--config', ctx.configFile, '--cli', ctx.options.officialCli]), {
+    smoke: true, config: ctx.configFile, cli: ctx.options.officialCli,
+  })
+  assert.throws(() => parseOptions(['--config', ctx.configFile, '--config', ctx.configFile]),
+    /invalid_model_check_argument/)
+  assert.throws(() => parseOptions(['--config', ctx.configFile, '--cli', ctx.options.officialCli,
+    '--unknown']), /unknown_model_check_argument/)
+})
+
+test('official model smoke uses child-only ephemeral key, exact model and terminates only its child', async t => {
+  const ctx = await synthetic(t)
+  installProvider(ctx.options, { runner: version('2.1.4') })
+  const plan = checkOfficialModel({ config: ctx.configFile, cli: ctx.options.officialCli },
+    { runner: version('2.1.4') })
+  const previous = await readFile(ctx.configFile)
+  let checked = false
+  let stopped = 0
+  const result = await smokeOfficialModel(plan, {
+    launcher(executable, args, options) {
+      assert.equal(executable, ctx.options.officialCli)
+      assert.deepEqual(args, ['models', '--standalone'])
+      assert.equal(options.env.OPENCODE_CONFIG_DIR, path.dirname(ctx.configFile))
+      assert.equal(options.env.CHAT_ON_OPENCODE_GATEWAY_KEY.length, 64)
+      assert.notEqual(options.env.CHAT_ON_OPENCODE_GATEWAY_KEY, process.env.CHAT_ON_OPENCODE_GATEWAY_KEY)
+      assert.equal(options.env.OPENCODE_DISABLE_AUTOUPDATE, '1')
+      checked = true
+      const child = new EventEmitter()
+      child.stdout = new PassThrough()
+      child.stderr = new PassThrough()
+      queueMicrotask(() => {
+        child.stdout.write('other/model\nchat-on-opencode/chatg')
+        child.stdout.write('pt-default\n')
+      })
+      return child
+    },
+    stopper(child) {
+      stopped++
+      queueMicrotask(() => child.emit('close', null, 'SIGTERM'))
+    },
+  })
+  assert.ok(checked)
+  assert.equal(stopped, 1)
+  assert.equal(result.modelPresent, true)
+  assert.equal(result.configUnchanged, true)
+  assert.equal(result.officialCliVersion, '2.1.4')
+  assert.equal(result.terminatedAfterMatch, true)
+  assert.equal(smokePassed(result), true)
+  assert.deepEqual(await readFile(ctx.configFile), previous)
+})
+
+test('official model smoke refuses absence and accidental config mutation', async t => {
+  const ctx = await synthetic(t)
+  installProvider(ctx.options, { runner: version('2.0.32') })
+  const plan = checkOfficialModel({ config: ctx.configFile, cli: ctx.options.officialCli },
+    { runner: version('2.0.32') })
+  const launch = (message, change) => ({
+    stopper() { /* synthetic child exits on its own in the next microtask */ },
+    launcher() {
+      const child = new EventEmitter()
+      child.stdout = new PassThrough()
+      child.stderr = new PassThrough()
+      queueMicrotask(async () => {
+        if (change) await writeFile(ctx.configFile, (await readFile(ctx.configFile, 'utf8')) + ' ')
+        child.stdout.write(message)
+        child.emit('close', 0, null)
+      })
+      return child
+    },
+  })
+  const missing = await smokeOfficialModel(plan, launch('other/model\n', false))
+  assert.equal(missing.modelPresent, false)
+  assert.equal(smokePassed(missing), false)
+  assert.equal(missing.configUnchanged, true)
+  const mutated = await smokeOfficialModel(plan, launch('chat-on-opencode/chatgpt-default\n', true))
+  assert.equal(mutated.modelPresent, true)
+  assert.equal(mutated.configUnchanged, false)
+  assert.equal(smokePassed(mutated), false)
+  await assert.rejects(async () => smokeOfficialModel(plan, launch('chat-on-opencode/chatgpt-default\n')),
+    /provider_config_modified_refuse_rollback/)
+})
+
+test('model smoke distinguishes native CLI crash, child error, and bounded shutdown', async t => {
+  const ctx = await synthetic(t)
+  installProvider(ctx.options, { runner: version('2.1.4') })
+  const plan = checkOfficialModel({ config: ctx.configFile, cli: ctx.options.officialCli },
+    { runner: version('2.1.4') })
+  const newChild = () => {
+    const child = new EventEmitter()
+    child.stdout = new PassThrough()
+    child.stderr = new PassThrough()
+    return child
+  }
+  const crashed = await smokeOfficialModel(plan, {
+    launcher() {
+      const child = newChild()
+      // The final unterminated model line is not a successful CLI invocation.
+      queueMicrotask(() => { child.stdout.write('chat-on-opencode/chatgpt-default'); child.emit('close', 1, null) })
+      return child
+    },
+    stopper() { assert.fail('already closed child must not be killed') },
+  })
+  assert.equal(crashed.modelPresent, true)
+  assert.equal(crashed.terminatedAfterMatch, false)
+  assert.equal(smokePassed(crashed), false)
+
+  await assert.rejects(() => smokeOfficialModel(plan, {
+    launcher() {
+      const child = newChild()
+      queueMicrotask(() => child.emit('error', new Error('synthetic_spawn_error')))
+      return child
+    },
+  }), /synthetic_spawn_error/)
+
+  let stopped = 0
+  await assert.rejects(() => smokeOfficialModel(plan, {
+    launcher() { return newChild() },
+    stopper() { stopped++ },
+    startupTimeoutMs: 15, shutdownTimeoutMs: 15,
+  }), /official_model_child_did_not_exit/)
+  assert.equal(stopped, 1)
+
+  let secret
+  const recovered = await smokeOfficialModel(plan, {
+    launcher(_exe, _args, options) {
+      secret = options.env.CHAT_ON_OPENCODE_GATEWAY_KEY
+      const child = newChild()
+      queueMicrotask(() => {
+        child.stdout.write('chat-on-opencode/chatgpt-default\n')
+        child.emit('close', 1, null) // Windows taskkill can produce exit code 1
+      })
+      return child
+    },
+    stopper() {},
+  })
+  assert.equal(smokePassed(recovered), true)
+  assert.equal(JSON.stringify(recovered).includes(secret), false)
+  assert.equal((await readFile(ctx.configFile, 'utf8')).includes(secret), false)
 })
