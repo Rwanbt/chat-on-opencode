@@ -24,6 +24,11 @@ CoS's built-in browser and local-control actions. This is service **admission**,
 proof of successful sign-in or native provider usage; it must not copy cookies or
 silently enable permissions.
 
+The message-identity worktree binds provider input IDs to OpenCode V2's actual
+`session.prompt.messageID` events, not to prompt text hashes. This is essential for two
+consecutive prompts with the same words and for safe replay of an identical request.
+Unexpected absence of that identity fails closed instead of guessing an attribution.
+
 The V2 plugin also has a first-request-only launcher for the gateway, which in turn owns
 the standalone fork helper. The helper must be built and explicitly configured with a
 dedicated profile; neither executable packaging nor real ChatGPT session E2E has been

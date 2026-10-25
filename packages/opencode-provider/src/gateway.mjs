@@ -13,29 +13,36 @@ export function stableUUID(value) {
 
 export function requestText(messages, first) {
   if (!Array.isArray(messages) || !messages.length) throw new BridgeError('messages_required', 400)
-  for (const part of messages) {
-    if (!['system', 'developer', 'user', 'assistant'].includes(part?.role) || typeof part.content !== 'string') {
-      throw new BridgeError('unsupported_chat_content', 422)
-    }
-  }
-  const last = messages.at(-1)
+  const plain = messages.map(part => {
+    if (!['system', 'developer', 'user', 'assistant'].includes(part?.role)) throw new BridgeError('unsupported_chat_content', 422)
+    // AI SDK/OpenAI-compatible transports can encode a text-only message as content parts.
+    // Image, audio, tool and binary parts must not disappear silently.
+    const content = typeof part.content === 'string' ? part.content
+      : Array.isArray(part.content) && part.content.length > 0 &&
+        part.content.every(entry => entry?.type === 'text' && typeof entry.text === 'string')
+        ? part.content.map(entry => entry.text).join('') : null
+    if (content === null) throw new BridgeError('unsupported_chat_content', 422)
+    return { role: part.role, content }
+  })
+  const last = plain.at(-1)
   if (last.role !== 'user' || !last.content.trim()) throw new BridgeError('last_message_must_be_user', 422)
   if (!first) return last.content
-  const preface = messages.filter(part => part.role === 'system' || part.role === 'developer')
-  const history = messages.filter(part => part.role === 'user' || part.role === 'assistant')
+  const preface = plain.filter(part => part.role === 'system' || part.role === 'developer')
+  const history = plain.filter(part => part.role === 'user' || part.role === 'assistant')
   // Only the initial turn carries prior history; later turns use the CoS session itself.
   return [...preface.map(p => `[${p.role} instructions]\n${p.content}\n[/instructions]`),
     ...history.map(p => `[${p.role}]\n${p.content}\n[/${p.role}]`)].join('\n\n')
 }
 
-export async function runTurn(control, request, { sessionKey, kind = 'primary', emit, signal } = {}) {
+export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal } = {}) {
   if (!sessionKey || sessionKey.length > 256 || /[\r\n]/.test(sessionKey)) throw new BridgeError('opencode_session_id_required', 422)
+  if (!messageKey || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
   if (request.tools?.length || request.tool_choice && request.tool_choice !== 'none') throw new BridgeError('native_tool_calls_not_yet_supported', 501)
   if (request.model !== 'chatgpt-default') throw new BridgeError('model_not_configured', 422)
   if (kind !== 'primary') throw new BridgeError('auxiliary_calls_not_yet_supported', 501)
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
   const sessionID = stableUUID('session:' + sessionKey)
-  const turnID = stableUUID('turn:' + sessionKey + ':' + JSON.stringify(request.messages))
+  const turnID = stableUUID('turn:' + sessionKey + ':' + messageKey)
   const first = !(await control.hasSession(sessionID))
   const text = requestText(request.messages, first)
   if (text.length > 64000) throw new BridgeError('cos_input_too_large', 413)
@@ -109,6 +116,8 @@ export function createGateway({ control, key }) {
       const header = req.headers['x-opencode-session-id']
       if (typeof header !== 'string' || !/^[\w.:/-]{1,256}$/.test(header)) throw new BridgeError('opencode_session_id_required', 422)
       sessionKey = header
+      const messageKey = req.headers['x-opencode-message-id']
+      if (typeof messageKey !== 'string' || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
       if (active.has(sessionKey)) throw new BridgeError('session_busy', 409)
       active.add(sessionKey)
       let raw = ''
@@ -126,7 +135,7 @@ export function createGateway({ control, key }) {
       const chunk = (delta, finish = null) => ({ id, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: body.model, choices: [{ index: 0, delta, finish_reason: finish }] })
       let answer = ''
       // Do not announce SSE success until we have validated the request and upstream admission.
-      const result = await runTurn(control, body, { sessionKey, signal: cancel.signal, emit: async (delta) => {
+      const result = await runTurn(control, body, { sessionKey, messageKey, signal: cancel.signal, emit: async (delta) => {
         answer += delta
         if (stream) {
           if (!res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'close' })
