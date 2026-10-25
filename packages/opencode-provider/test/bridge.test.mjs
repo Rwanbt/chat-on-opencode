@@ -10,6 +10,7 @@ import { CoSControl, BridgeError } from '../src/control.mjs'
 import { createGateway, requestText, runTurn, stableUUID } from '../src/gateway.mjs'
 import { CoSRuntime, validateRuntime } from '../src/runtime.mjs'
 import { GatewayLifecycle } from '../src/lifecycle.mjs'
+import { MessageIdentity } from '../plugin/message-identity.mjs'
 
 const request = { model: 'chatgpt-default', messages: [{ role: 'user', content: 'Bonjour' }] }
 
@@ -32,22 +33,48 @@ test('UUID ownership is deterministic and valid across independent turns', () =>
   assert.notEqual(stableUUID('session:ses_123'), stableUUID('session:ses_124'))
 })
 
+test('native message identity changes between identical prompts and is bounded', () => {
+  const store = new MessageIdentity(2)
+  store.remember('ses_repeat1', 'msg_user_00001')
+  assert.equal(store.require('ses_repeat1'), 'msg_user_00001')
+  store.remember('ses_repeat2', 'msg_user_00002')
+  store.remember('ses_repeat3', 'msg_user_00003')
+  assert.throws(() => store.require('ses_repeat1'), /opencode_message_identity_unavailable/)
+  assert.throws(() => store.remember('ses_repeat1', '../bad\nrequest'), /invalid_opencode_message_identity/)
+})
+
 test('extract initial system context but only latest user on CoS continuation', () => {
   const messages = [{ role: 'system', content: 'Be precise' }, { role: 'user', content: 'Hello' },
     { role: 'assistant', content: 'Hi' }, { role: 'user', content: 'Again' }]
   assert.match(requestText(messages, true), /Be precise/)
   assert.equal(requestText(messages, false), 'Again')
   assert.throws(() => requestText([{ role: 'tool', content: 'x' }], true), /unsupported_chat_content/)
+  assert.equal(requestText([{ role: 'user', content: [{ type: 'text', text: 'Hello' },
+    { type: 'text', text: ' world' }] }], false), 'Hello world')
+  assert.throws(() => requestText([{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png' } }] }], false),
+    /unsupported_chat_content/)
+})
+
+test('identical user text in distinct native messages yields distinct CoS inputs', async () => {
+  const cos = new FakeCoS()
+  const args = { sessionKey: 'ses_repeat', emit: () => undefined }
+  await runTurn(cos, request, { ...args, messageKey: 'msg_repeat1' })
+  await runTurn(cos, request, { ...args, messageKey: 'msg_repeat2' })
+  await runTurn(cos, request, { ...args, messageKey: 'msg_repeat2' })
+  assert.equal(cos.sent[0].id, stableUUID('session:ses_repeat'))
+  assert.notEqual(cos.sent[1].id, cos.sent[0].id)
+  assert.equal(cos.sent[1].id, cos.sent[2].id)
+  assert.equal(cos.sent[1].text, cos.sent[2].text)
 })
 
 test('preserve a CoS session, stream only increasing text and correlate the input', async () => {
   const cos = new FakeCoS()
   const deltas = []
-  assert.equal(await runTurn(cos, request, { sessionKey: 'ses_123', emit: x => deltas.push(x) }), 'Bonjour')
+  assert.equal(await runTurn(cos, request, { sessionKey: 'ses_123', messageKey: 'msg_first_0001', emit: x => deltas.push(x) }), 'Bonjour')
   assert.deepEqual(deltas, ['Bon', 'jour'])
   const first = cos.sent[0].id
   const second = await runTurn(cos, { ...request, messages: [...request.messages, { role: 'assistant', content: 'Bonjour' },
-    { role: 'user', content: 'Next' }] }, { sessionKey: 'ses_123', emit: () => undefined })
+    { role: 'user', content: 'Next' }] }, { sessionKey: 'ses_123', messageKey: 'msg_second_0002', emit: () => undefined })
   assert.equal(second, 'Bonjour')
   assert.equal(cos.sent[1].sessionId, first)
   assert.notEqual(cos.sent[1].id, first)
@@ -57,15 +84,15 @@ test('preserve a CoS session, stream only increasing text and correlate the inpu
 test('refuse tools instead of silently dropping OpenCode tool contracts', async () => {
   const cos = new FakeCoS()
   await assert.rejects(runTurn(cos, { ...request, tools: [{ type: 'function', function: { name: 'bash' } }] },
-    { sessionKey: 'ses_123', emit: () => undefined }), /native_tool_calls_not_yet_supported/)
+    { sessionKey: 'ses_123', messageKey: 'msg_tests_0001', emit: () => undefined }), /native_tool_calls_not_yet_supported/)
   assert.equal(cos.sent.length, 0)
 })
 
 test('refuse clipped or rewritten CoS output, never invent a complete reply', async () => {
   await assert.rejects(runTurn(new FakeCoS([{ text: 'partial', truncated: true }]), request,
-    { sessionKey: 'ses_123', emit: () => undefined }), /cos_output_incomplete/)
+    { sessionKey: 'ses_123', messageKey: 'msg_tests_0002', emit: () => undefined }), /cos_output_incomplete/)
   await assert.rejects(runTurn(new FakeCoS(['abc', 'abd']), request,
-    { sessionKey: 'ses_123', emit: () => undefined }), /cos_answer_revision_not_streamable/)
+    { sessionKey: 'ses_123', messageKey: 'msg_tests_0003', emit: () => undefined }), /cos_answer_revision_not_streamable/)
 })
 
 test('a cancelled OpenCode request stops only its exact observed CoS turn', async () => {
@@ -79,7 +106,7 @@ test('a cancelled OpenCode request stops only its exact observed CoS turn', asyn
     yield { kind: 'assistant_message', seq: 3, message: { text: 'partial', truncated: false } }
     yield { kind: 'turn_end', seq: 4, outcome: 'completed' }
   }
-  await assert.rejects(runTurn(cos, request, { sessionKey: 'ses_cancel', signal: abort.signal,
+  await assert.rejects(runTurn(cos, request, { sessionKey: 'ses_cancel', messageKey: 'msg_cancel_0001', signal: abort.signal,
     emit: () => { abort.abort() } }), /opencode_turn_cancelled/)
   assert.deepEqual(calls, [{ session: stableUUID('session:ses_cancel'), turn: 'proven-turn-42' }])
 })
@@ -88,7 +115,7 @@ test('abort before admission never sends a prompt; abort before turn proof only 
   const already = new AbortController()
   already.abort()
   const cos = new FakeCoS()
-  await assert.rejects(runTurn(cos, request, { sessionKey: 'ses_cancel', signal: already.signal,
+  await assert.rejects(runTurn(cos, request, { sessionKey: 'ses_cancel', messageKey: 'msg_cancel_0002', signal: already.signal,
     emit: () => undefined }), /opencode_turn_cancelled/)
   assert.equal(cos.sent.length, 0)
 
@@ -97,7 +124,7 @@ test('abort before admission never sends a prompt; abort before turn proof only 
   const noProof = new FakeCoS()
   noProof.cancelInput = async id => cancels.push(id)
   noProof.events = async function* () { late.abort(); yield { kind: 'user_message', inputId: this.sent.at(-1).id } }
-  await assert.rejects(runTurn(noProof, request, { sessionKey: 'ses_unknown', signal: late.signal,
+  await assert.rejects(runTurn(noProof, request, { sessionKey: 'ses_unknown', messageKey: 'msg_cancel_0003', signal: late.signal,
     emit: () => undefined }), /opencode_turn_cancelled/)
   assert.deepEqual(cancels, [noProof.sent[0].id])
 })
@@ -113,7 +140,8 @@ test('gateway authenticates, binds to local host and yields Chat Completions SSE
   const wrongOrigin = await fetch(url, { method: 'POST', headers: { authorization: `Bearer ${'t'.repeat(40)}`, origin: 'https://evil.example' }, body: JSON.stringify(request) })
   assert.equal(wrongOrigin.status, 403)
   const res = await fetch(url, { method: 'POST', headers: { authorization: `Bearer ${'t'.repeat(40)}`,
-    'x-opencode-session-id': 'ses_test', 'content-type': 'application/json' }, body: JSON.stringify({ ...request, stream: true }) })
+    'x-opencode-session-id': 'ses_test', 'x-opencode-message-id': 'msg_http_0001',
+    'content-type': 'application/json' }, body: JSON.stringify({ ...request, stream: true }) })
   assert.equal(res.status, 200)
   const body = await res.text()
   assert.match(body, /"content":"Bon"/)

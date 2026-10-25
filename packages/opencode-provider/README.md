@@ -39,6 +39,11 @@ npm test
 ## Implemented boundaries
 
 - Stable CoS conversation IDs derived from exact OpenCode session IDs; no prompt-based identity.
+- Every model request requires the native OpenCode prompt **message ID**. Identical text in
+  successive messages produces distinct input IDs; retries of the same message reuse its ID.
+  If the native ID cannot be proven (e.g. a plugin restart mid-turn), the bridge fails closed.
+- OpenAI Chat Completions string and text-part content are supported. Image/audio/tool parts
+  remain unsupported and are rejected without dropping context.
 - CoS outbox admission and event-journal consumption with exact input correlation.
 - Provider-only redacted assistant stream up to 64,000 characters instead of CoS's public
   4,000-character projection; timed-out SSE streams reopen from their sequence cursor.
