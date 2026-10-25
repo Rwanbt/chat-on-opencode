@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
+import { EventEmitter } from 'node:events'
 import { once } from 'node:events'
-import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, writeFile, rm, mkdir } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { CoSControl, BridgeError } from '../src/control.mjs'
 import { createGateway, requestText, runTurn, stableUUID } from '../src/gateway.mjs'
+import { CoSRuntime, validateRuntime } from '../src/runtime.mjs'
+import { GatewayLifecycle } from '../src/lifecycle.mjs'
 
 const request = { model: 'chatgpt-default', messages: [{ role: 'user', content: 'Bonjour' }] }
 
@@ -108,4 +111,86 @@ test('control stream resumes frames and fails closed on premature EOF', async ()
   await assert.rejects(async () => { for await (const item of cos.events('12345678', { from: 5 })) got.push(item) },
     error => error instanceof BridgeError && error.code === 'cos_stream_ended_without_terminal')
   assert.deepEqual(got, []) // The duplicate last sequence is not emitted again.
+})
+
+test('runtime launcher only accepts existing, isolated files and directories', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'cos-runtime-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const profile = path.join(root, 'provider')
+  const personal = path.join(root, 'cos')
+  await mkdir(profile)
+  await mkdir(personal)
+  const ok = await validateRuntime({ executable: process.execPath, profile, personalProfile: personal })
+  assert.equal(ok.folder, profile)
+  await assert.rejects(validateRuntime({ executable: process.execPath, profile: personal, personalProfile: personal }),
+    /runtime_profile_overlaps_personal/)
+  await assert.rejects(validateRuntime({ executable: 'node', profile }), /isolated_runtime_not_configured/)
+  await assert.rejects(validateRuntime({ executable: process.execPath, profile: path.join(root, 'missing') }),
+    /runtime_path_not_found/)
+})
+
+test('service launcher uses the fork-only flag, owns exact endpoint PID and stops its child', async t => {
+  const profile = await mkdtemp(path.join(os.tmpdir(), 'cos-owned-'))
+  t.after(() => rm(profile, { recursive: true, force: true }))
+  const token = 'z'.repeat(43)
+  const server = createServer((req, res) => {
+    assert.equal(req.headers.authorization, `Bearer ${token}`)
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ ok: true, protocol: 1, actions: { enabled: true } }))
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  t.after(() => server.close())
+  const directory = path.join(profile, 'control-api')
+  await mkdir(directory)
+  await writeFile(path.join(directory, 'endpoint.json'), JSON.stringify({ protocol: 1, port: server.address().port, pid: 12345 }))
+  await writeFile(path.join(directory, 'token'), token)
+  const child = Object.assign(new EventEmitter(), { pid: 12345, exitCode: null, killed: false,
+    kill(signal) { assert.equal(signal, 'SIGTERM'); this.killed = true; this.emit('exit', 0) } })
+  let launch
+  const runtime = new CoSRuntime({ executable: process.execPath, profile }, { launcher: (exe, args, opts) => {
+    launch = { exe, args, opts }
+    return child
+  } })
+  const control = await runtime.start()
+  assert.equal(control.endpointPid, child.pid)
+  assert.deepEqual(launch.args, ['--chat-on-opencode-provider-service'])
+  assert.equal(launch.opts.env.CHAT_ON_OPENCODE_USERDATA_DIR, profile)
+  assert.equal(launch.opts.windowsHide, true)
+  assert.equal(launch.opts.shell, false)
+  runtime.stop()
+  assert.equal(child.killed, true)
+})
+
+test('selected-provider lifecycle starts only one gateway, with private env, and cleans up', async () => {
+  const child = Object.assign(new EventEmitter(), { exitCode: null, killed: false,
+    kill() { this.killed = true; this.emit('exit', 0) } })
+  const launches = []
+  const gateway = new GatewayLifecycle({ entry: 'fixture.mjs', runtimeExecutable: 'fixture-fork.exe',
+    runtimeData: 'fixture-isolated', key: 'a'.repeat(40), port: 45861 }, {
+    launcher: (exe, args, options) => { launches.push({ exe, args, options }); return child },
+    fetcher: async (url, opts) => {
+      assert.equal(url, 'http://127.0.0.1:45861/health')
+      assert.equal(opts.headers.Authorization, `Bearer ${'a'.repeat(40)}`)
+      return Response.json({ ok: true, gateway: 'chat-on-opencode' })
+    },
+  })
+  assert.equal(launches.length, 0) // Import and setup alone cannot launch Chromium.
+  await Promise.all([gateway.ensure(), gateway.ensure()])
+  assert.equal(launches.length, 1)
+  assert.equal(launches[0].options.windowsHide, true)
+  assert.equal(launches[0].options.shell, false)
+  assert.equal(launches[0].options.env.CHAT_ON_OPENCODE_RUNTIME_EXE, 'fixture-fork.exe')
+  assert.equal(launches[0].options.env.CHAT_ON_OPENCODE_RUNTIME_DATA, 'fixture-isolated')
+  gateway.stop()
+  assert.equal(child.killed, true)
+})
+
+test('selected-provider lifecycle refuses incomplete runtime configuration before spawning', async () => {
+  let launches = 0
+  const gateway = new GatewayLifecycle({ entry: 'fixture.mjs', key: '', port: 45861 }, {
+    launcher: () => { launches++; throw new Error('must_not_launch') },
+  })
+  await assert.rejects(gateway.ensure(), /provider_runtime_not_configured/)
+  assert.equal(launches, 0)
 })

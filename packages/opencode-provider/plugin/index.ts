@@ -1,12 +1,35 @@
 import { Plugin } from '@opencode/plugin'
+import { fileURLToPath } from 'node:url'
+import { GatewayLifecycle } from '../src/lifecycle.mjs'
 
-// OpenCode 2 native hook. Never affect other providers' requests or their sessions.
+// OpenCode V2 is the only frontend/session owner. The helper starts on the first *selected*
+// model request, not on plugin import, so other providers remain completely unaffected.
 export default Plugin.define({
   id: 'chat-on-opencode',
   async setup(ctx) {
+    const option = (key: string) => typeof ctx.options[key] === 'string' ? ctx.options[key] as string : undefined
+    const key = process.env.CHAT_ON_OPENCODE_GATEWAY_KEY ?? ''
+    const port = Number(option('port') ?? '45861')
+    const service = new GatewayLifecycle({
+      entry: fileURLToPath(new URL('../src/server.mjs', import.meta.url)),
+      runtimeExecutable: option('runtimeExecutable'),
+      runtimeData: option('runtimeData'),
+      key,
+      port,
+    })
+    await ctx.session.hook('model.request', async event => {
+      if (event.model.providerID !== 'chat-on-opencode') return
+      if (event.kind !== 'primary') throw new Error('chat_on_opencode_auxiliary_requests_not_supported')
+      await service.ensure()
+      event.baseURL = `http://127.0.0.1:${port}/v1`
+      event.headers.Authorization = `Bearer ${key}`
+    }, { providerID: 'chat-on-opencode' })
     await ctx.session.hook('http.request', event => {
       if (event.model.providerID !== 'chat-on-opencode') return
+      if (event.kind !== 'primary') throw new Error('chat_on_opencode_auxiliary_requests_not_supported')
       event.request.headers.set('x-opencode-session-id', event.sessionID)
+      event.request.headers.set('Authorization', `Bearer ${key}`)
     }, { providerID: 'chat-on-opencode' })
+    return () => service.stop()
   },
 })
