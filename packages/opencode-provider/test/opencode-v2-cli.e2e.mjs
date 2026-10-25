@@ -105,11 +105,14 @@ test('actual OpenCode V2 CLI loads provider plugin, starts owned gateway and rec
       if (!found) {
         let journal = ''
         try { journal = await readFile(path.join(root, 'data', 'opencode', 'log', 'opencode.log'), 'utf8') } catch { /* optional */ }
+        // The ephemeral bearer is generated in the plugin and unknown to the test.
+        // Mask hex-shaped secrets before emitting a failing SDK's diagnostics.
+        const clip = input => String(input).replace(/\b[a-f0-9]{64}\b/gi, '[redacted-hex]').slice(-7000)
         let routes = ''
         try { routes = await readFile(path.join(profile, 'fixture-routes.txt'), 'utf8') } catch { /* optional */ }
         console.error('ISOLATED_CLI_DIAGNOSTIC', JSON.stringify({ exit: child.exitCode,
-          stderr: stderr.join('').slice(-300), stdout: stdout.join('').slice(-350),
-          journal: journal.slice(-350), routes }))
+          stderr: clip(stderr.join('')).slice(-300), stdout: clip(stdout.join('')).slice(-350),
+          journal: clip(journal).slice(-350), routes }))
       }
       assert.ok(found, 'Native OpenCode model request did not produce offline fixture reply')
       const parts = stdout.join('').split(/\r?\n/).flatMap(line => {

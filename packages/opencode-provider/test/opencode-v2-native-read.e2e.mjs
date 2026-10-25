@@ -117,11 +117,12 @@ for (const decision of ['allow', 'deny']) test('actual OpenCode V2 native read '
       if (!found) {
         let journal = ''
         try { journal = await readFile(path.join(root, 'data', 'opencode', 'log', 'opencode.log'), 'utf8') } catch { /* optional */ }
+        const clip = input => String(input).replace(/\b[a-f0-9]{64}\b/gi, '[redacted-hex]').slice(-7000)
         let routes = ''
         try { routes = await readFile(path.join(profile, 'fixture-routes.txt'), 'utf8') } catch { /* optional */ }
         console.error('ISOLATED_CLI_DIAGNOSTIC', JSON.stringify({ exit: child.exitCode,
-          stderr: stderr.join('').slice(-1000), stdout: stdout.join('').slice(-5000),
-          journal: journal.slice(-350), routes }))
+          stderr: clip(stderr.join('')).slice(-1000), stdout: clip(stdout.join('')).slice(-5000),
+          journal: clip(journal).slice(-350), routes }))
       }
       assert.ok(found, 'Native OpenCode did not finish real native read/permission flow')
       const parts = stdout.join('').split(/\r?\n/).flatMap(line => {
