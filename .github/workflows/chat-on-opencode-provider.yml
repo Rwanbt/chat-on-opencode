@@ -1,0 +1,39 @@
+name: Chat On OpenCode Provider
+
+on:
+  pull_request:
+    paths:
+      - 'packages/opencode-provider/**'
+      - '.github/workflows/chat-on-opencode-provider.yml'
+  push:
+    branches: [feat/opencode-v2-provider-bridge]
+    paths:
+      - 'packages/opencode-provider/**'
+      - '.github/workflows/chat-on-opencode-provider.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Node 22 contract (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: packages/opencode-provider
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Node syntax
+        run: |
+          node --check src/control.mjs
+          node --check src/gateway.mjs
+          node --check src/server.mjs
+      - name: Native protocol tests
+        run: npm test
