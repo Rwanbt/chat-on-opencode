@@ -39,7 +39,7 @@ function officialVersion(binary, { runner = spawnSync } = {}) {
   return version
 }
 
-function validateBundle(folder) {
+export function validateBundle(folder) {
   const source = directory(folder, 'bundle')
   for (const folder of ['bin', 'plugin', 'src']) directory(path.join(source, folder), 'bundle_subfolder')
   for (const file of ['package.json', 'bin/generate-config.mjs', 'plugin/index.ts',
@@ -58,7 +58,7 @@ function validateBundle(folder) {
   return source
 }
 
-function payloadDigest(folder) {
+export function payloadDigest(folder) {
   const digest = createHash('sha256')
   const walk = (dir, prefix = '') => {
     for (const name of readdirSync(dir).sort()) {
