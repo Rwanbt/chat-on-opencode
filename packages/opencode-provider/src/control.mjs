@@ -28,16 +28,17 @@ export class CoSControl {
     try { endpoint = JSON.parse(raw) } catch { throw new BridgeError('invalid_cos_endpoint', 503) }
     if (endpoint.protocol !== 1 || !Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65535 ||
       !/^[A-Za-z0-9_-]{30,}$/.test(token.trim())) throw new BridgeError('invalid_cos_endpoint', 503)
+    this.endpointPid = endpoint.pid
     this.base = `http://127.0.0.1:${endpoint.port}`
     this.token = token.trim()
     const health = await this.json('GET', '/v1/health')
     if (health.protocol !== 1 || !health.ok || !health.actions?.enabled) throw new BridgeError('cos_actions_unavailable', 503)
   }
 
-  async request(method, route, body, { signal } = {}) {
+  async request(method, route, body, { signal, stream = false } = {}) {
     if (!this.base) throw new BridgeError('cos_runtime_not_connected', 503)
     const response = await this.fetcher(this.base + route, {
-      method, redirect: 'error', signal: signal ?? AbortSignal.timeout(15000),
+      method, redirect: 'error', signal: signal ?? AbortSignal.timeout(stream ? 33 * 60_000 : 15000),
       headers: { Authorization: `Bearer ${this.token}`, ...(body ? { 'content-type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     }).catch(() => { throw new BridgeError('cos_transport_unavailable', 503) })
@@ -73,7 +74,7 @@ export class CoSControl {
     let response
     for (let attempt = 0; attempt < 60; attempt++) {
       try {
-        response = await this.request('GET', `/v1/sessions/${sessionID}/events/stream?from=${from}`, undefined, { signal })
+        response = await this.request('GET', `/v1/sessions/${sessionID}/events/stream?from=${from}`, undefined, { signal, stream: true })
         break
       } catch (error) {
         if (!(error instanceof BridgeError) || error.status !== 404 || attempt === 59) throw error

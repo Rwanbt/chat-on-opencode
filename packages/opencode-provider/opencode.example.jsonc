@@ -1,6 +1,13 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["./packages/opencode-provider/plugin"],
+  "plugins": [{
+    "package": "./packages/opencode-provider/plugin",
+    "options": {
+      "runtimeExecutable": "C:\\ABSOLUTE\\PATH\\TO\\Chat-On-OpenCode.exe",
+      "runtimeData": "C:\\ABSOLUTE\\ISOLATED\\PROVIDER-DATA",
+      "nodeExecutable": "C:\\Program Files\\nodejs\\node.exe"
+    }
+  }],
   "providers": {
     "chat-on-opencode": {
       "name": "Chat On OpenCode (experimental)",
@@ -8,7 +15,11 @@
       "package": "@opencode/ai/providers/openai-compatible",
       "settings": { "baseURL": "http://127.0.0.1:45861/v1" },
       "models": {
-        "chatgpt-default": { "name": "ChatGPT via CoS (experimental)" }
+        "chatgpt-default": {
+          "name": "ChatGPT via CoS (experimental, text-only)",
+          "capabilities": { "tools": false, "input": ["text"], "output": ["text"] },
+          "limit": { "context": 16384, "output": 2048 }
+        }
       }
     }
   }

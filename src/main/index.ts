@@ -129,6 +129,7 @@ import { browserWindowIconPath } from './window-icon.js';
 import { approvedChatGptImageRequest, RENDERER_CONTENT_SECURITY_POLICY } from './renderer-csp.js';
 import { editContextMenuTemplate } from './edit-context-menu.js';
 import { connectionLossLine, showConnectionLossNotice } from './connection-loss-notice.js';
+import { providerServiceProfile, providerServiceReady, PROVIDER_SERVICE_SWITCH } from './provider-service.js';
 
 /** Durable state file holding the multi-agent run. Hashes only, never credentials. */
 const SWARM_STATE = 'swarm';
@@ -136,6 +137,18 @@ const RETIRED_WORKERS_STATE = 'retired-workers';
 const WINDOW_BOUNDS_STATE = 'window-bounds';
 /** The tray and notice texts in the last interface language; a launch to the tray opens no window to send them. */
 const MAIN_TEXTS_STATE = 'main-texts';
+
+// A provider helper cannot share the original application's instance lock, settings, or cookies.
+// This is checked BEFORE app.requestSingleInstanceLock() or any normal userData writes.
+const providerService = process.argv.includes(PROVIDER_SERVICE_SWITCH);
+let providerUserData: string | null = null;
+try {
+  providerUserData = providerServiceProfile(process.argv, process.env.CHAT_ON_OPENCODE_USERDATA_DIR, app.getPath('userData'));
+  if (providerUserData) app.setPath('userData', providerUserData);
+} catch (error) {
+  // No normal-mode fallback when an isolated provider profile is malformed.
+  throw new Error(`Provider service refused: ${error instanceof Error ? error.message : String(error)}`);
+}
 
 let window: BrowserWindow | null = null;
 let savedWindowBounds: unknown = null;
@@ -290,7 +303,7 @@ function showWindow(): void {
   // Defense in depth for every current or future native activation source. The explicit gate
   // below additionally protects the long pre-window startup interval, while this invariant makes
   // a direct caller harmless once `before-quit` has started.
-  if (quitting) return;
+  if (quitting || providerService) return;
   if (!window) {
     createWindow();
     return;
@@ -301,6 +314,7 @@ function showWindow(): void {
 }
 
 setFinishNotifier((title, body, sessionId, turnId) => {
+  if (providerService) return false;
   phoneNeedsYou(sessionId);
   if (window?.isFocused() || !Notification.isSupported()) return false;
   chatNoticeAt.set(sessionId, Date.now());
@@ -324,6 +338,7 @@ setFinishNotifier((title, body, sessionId, turnId) => {
   return true;
 });
 setStuckNotifier((title, body, sessionId, opens = 'app') => {
+  if (providerService) return false;
   phoneNeedsYou(sessionId);
   // A person looking at the app already has the timeline note this accompanies; interrupting
   // them with the same sentence is noise, exactly as the finish notice treats a focused window.
@@ -345,6 +360,7 @@ setStuckNotifier((title, body, sessionId, opens = 'app') => {
   return true;
 });
 setConnectionLossNotifier(surface => {
+  if (providerService) return false;
   if (!quitting) void pushToPhone({ kind: 'failed', detail: connectionLossLine(surface, mainText) });
   return showConnectionLossNotice(surface, {
     isQuitting: () => quitting,
@@ -421,7 +437,7 @@ function refreshTray(): void {
 }
 
 app.on('second-instance', (_event, argv) => {
-  if (!isBackgroundLaunch(argv)) windowActivation.request();
+  if (!providerService && !isBackgroundLaunch(argv)) windowActivation.request();
 });
 
 void app.whenReady().then(async () => {
@@ -468,6 +484,13 @@ void app.whenReady().then(async () => {
   await restoreChatModels();
   if (windowActivation.isDisabled()) return;
   await loadConfig();
+  // The user must prepare and authorize the isolated profile explicitly. Do not silently
+  // turn on write actions, start an external browser, or adopt personal credentials.
+  if (providerService && !providerServiceReady(getConfig())) {
+    logWarn('provider service refused: isolated profile must select the built-in browser and explicitly enable control actions');
+    app.quit();
+    return;
+  }
   setRecordingStorageLimit(getConfig().sessions.storageLimitGiB ?? DEFAULT_RECORDING_STORAGE_GIB);
   await loadConnectorProof();
   await loadWorkerArchive();
@@ -545,7 +568,7 @@ void app.whenReady().then(async () => {
   await refreshAppProxy();
   setInterval(() => void refreshAppProxy(), 2 * 60_000).unref();
   if (windowActivation.isDisabled()) return;
-  try { applyLoginStartup(app, getConfig().ui.startAtLogin === true); }
+  try { if (!providerService) applyLoginStartup(app, getConfig().ui.startAtLogin === true); }
   catch (error) { logWarn(`Windows login startup: ${error instanceof Error ? error.message : String(error)}`); }
   // The renderer has its own explicit light/dark palette, so native chrome must follow the same
   // user choice instead of Electron's default `system` theme. On macOS this controls the window
@@ -701,22 +724,26 @@ void app.whenReady().then(async () => {
     }
   );
   windowActivation.enable();
-  if (!isBackgroundLaunch(process.argv)) windowActivation.request();
+  if (!providerService && !isBackgroundLaunch(process.argv)) windowActivation.request();
   // The desktop pet overlay is independent of the main window once started; it stays hidden
   // until a pet is enabled.
-  await startPetOverlay(() => window, () => windowActivation.request());
+  if (!providerService) await startPetOverlay(() => window, () => windowActivation.request());
   // macOS `activate` can fire on first launch, so do not wire it at module load where it could
   // create a BrowserWindow before Electron is ready. Once the initial window path is established,
   // Dock activation/re-launch can safely recreate or focus it.
-  registerNativeWindowActivation(app, windowActivation.request);
+  if (!providerService) registerNativeWindowActivation(app, windowActivation.request);
 
-  tray = new Tray(trayIcon(false), ...trayGuidArgsForPlatform());
-  tray.on('click', windowActivation.request);
-  refreshTray();
-  onStatusChange(refreshTray);
+  if (!providerService) {
+    tray = new Tray(trayIcon(false), ...trayGuidArgsForPlatform());
+    tray.on('click', windowActivation.request);
+    refreshTray();
+    onStatusChange(refreshTray);
+  }
   // The built-in browser's own hooks live in its module, which loads only once it is selected.
-  onCosBrowserLoaded(cosBrowser => { cosBrowser.onChange(refreshTray); refreshTray(); });
-  onMainTextsChange(refreshTray);
+  if (!providerService) {
+    onCosBrowserLoaded(cosBrowser => { cosBrowser.onChange(refreshTray); refreshTray(); });
+    onMainTextsChange(refreshTray);
+  }
   onMainTextsChange(() => writeDurableSoon(MAIN_TEXTS_STATE, mainTextTranslations()));
 
   logInfo('app started');
@@ -745,7 +772,7 @@ void app.whenReady().then(async () => {
   // window that is already on screen. Everything it learns arrives through the ordinary state
   // push, every failure ends inside it, and its own timer keeps it running for a tray app that
   // is never restarted.
-  startUpdateChecks();
+  if (!providerService) startUpdateChecks();
   // Warm the existing derived cache once, after startup, without delaying the UI.
   // A visit to Usage joins this same calculation; unchanged recordings cost no reads.
   void usageOverview(usageWarmup.signal).catch((error: Error) => {
@@ -765,6 +792,9 @@ app.on('before-quit', () => {
 
 app.on('window-all-closed', () => {
   if (!ownsAppRuntime(hasSingleInstanceLock)) return;
+  // The service is controlled by its parent; a temporary Chromium window closing is
+  // not a request to shut down its API or lose accepted provider work.
+  if (providerService) return;
   // macOS convention: closing the last window is not quitting the application. The Dock/menu
   // bar stay alive and `activate` recreates it. Windows/Linux retain the explicit close-to-tray
   // preference; Cmd+Q / app.quit bypasses this event and still enters the shutdown sequence.

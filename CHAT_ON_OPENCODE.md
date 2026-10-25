@@ -14,4 +14,21 @@ native tool calls, and does not perform headless ChatGPT sign-in. It is a testab
 foundation, not a promised working provider. A full release requires an independently packaged
 background engine plus demonstrated streaming, tool execution and session restoration.
 
+The separate `feat/provider-v2-registration` worktree adds an experimental
+`--chat-on-opencode-provider-service` entry mode to the existing Electron main process.
+It requires a separately provisioned **existing** directory in
+`CHAT_ON_OPENCODE_USERDATA_DIR`, checks real paths before acquiring the instance lock,
+refuses personal-profile overlap, and does not display the main window, tray, pet or
+update UI. It also refuses to run if the isolated profile has not explicitly enabled
+CoS's built-in browser and local-control actions. This is service **admission**, not
+proof of successful sign-in or native provider usage; it must not copy cookies or
+silently enable permissions.
+
+The V2 plugin also has a first-request-only launcher for the gateway, which in turn owns
+the standalone fork helper. The helper must be built and explicitly configured with a
+dedicated profile; neither executable packaging nor real ChatGPT session E2E has been
+verified. It refuses unsupported tool calls and incomplete stream messages rather than
+silently simulating tool execution. `opencode models --standalone` did not finish an
+isolated smoke attempt, so model-picker activation remains unverified.
+
 No installation or replacement of the user's main OpenCode configuration is performed.

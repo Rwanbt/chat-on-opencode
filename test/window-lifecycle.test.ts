@@ -42,13 +42,17 @@ describe('native window activation', () => {
       restore: () => operations.push('restore'),
       show: () => operations.push('show'), focus: () => operations.push('focus') };
     const createWindow = vi.fn();
-    const context = vm.createContext({ window: native, quitting: false, createWindow });
+    const context = vm.createContext({ window: native, quitting: false, providerService: false, createWindow });
     vm.runInContext(present + '\nshowWindow();', context);
     expect(operations.splice(0)).toEqual(['show', 'focus']);
     state.minimized = true;
     vm.runInContext('showWindow()', context);
     expect(operations.splice(0)).toEqual(['restore', 'show', 'focus']);
     context.quitting = true;
+    vm.runInContext('showWindow()', context);
+    expect(operations).toEqual([]);
+    context.quitting = false;
+    context.providerService = true;
     vm.runInContext('showWindow()', context);
     expect(operations).toEqual([]);
 
@@ -255,12 +259,17 @@ describe('Windows login startup', () => {
     const handler = source.slice(start, source.indexOf('\n});', start) + 4);
     let received!: (event: unknown, argv: string[]) => void;
     const request = vi.fn();
-    vm.runInNewContext(handler, { app: { on: (_: string, listener: typeof received) => { received = listener; } }, windowActivation: { request }, isBackgroundLaunch });
+    const context = vm.createContext({ app: { on: (_: string, listener: typeof received) => { received = listener; } },
+      windowActivation: { request }, isBackgroundLaunch, providerService: false });
+    vm.runInContext(handler, context);
     received({}, ['app.exe', '--background']);
     expect(request).not.toHaveBeenCalled();
     received({}, ['app.exe']);
     expect(request).toHaveBeenCalledOnce();
+    context.providerService = true;
+    received({}, ['app.exe']);
+    expect(request).toHaveBeenCalledOnce();
     expect(isBackgroundLaunch(['app.exe', '--background=false'])).toBe(false);
-    expect(source).toContain('if (!isBackgroundLaunch(process.argv)) windowActivation.request();');
+    expect(source).toContain('if (!providerService && !isBackgroundLaunch(process.argv)) windowActivation.request();');
   });
 });
