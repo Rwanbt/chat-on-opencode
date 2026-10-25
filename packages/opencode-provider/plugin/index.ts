@@ -12,6 +12,7 @@ export default Plugin.define({
     const identities = new MessageIdentity()
     const option = (key: string) => typeof ctx.options[key] === 'string' ? ctx.options[key] as string : undefined
     const key = process.env.CHAT_ON_OPENCODE_GATEWAY_KEY ?? ''
+    const readEnabled = option('nativeTools') === 'read'
     const port = Number(option('port') ?? '45861')
     const service = new GatewayLifecycle({
       entry: fileURLToPath(new URL('../src/server.mjs', import.meta.url)),
@@ -20,11 +21,11 @@ export default Plugin.define({
       node: option('nodeExecutable') ?? '',
       key,
       port,
+      nativeTools: readEnabled ? 'read' : 'off',
     })
-    // The first provider version explicitly does NOT implement native tool calls.
-    // OpenCode 2 still supplies default agent tools for tools:false models, so suppress
-    // them for this provider alone; the gateway retains its hard 501 rejection guard.
-    await ctx.session.hook('context', enforceTextOnlyContext, { providerID: 'chat-on-opencode' })
+    // Only the opted-in native read definition reaches this provider. Neither CoS
+    // nor the gateway may execute tools; OpenCode's native permissions own execution.
+    await ctx.session.hook('context', event => enforceTextOnlyContext(event, readEnabled), { providerID: 'chat-on-opencode' })
     await ctx.session.hook('prompt', event => {
       identities.remember(event.sessionID, event.messageID)
     })

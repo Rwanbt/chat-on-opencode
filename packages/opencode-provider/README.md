@@ -12,8 +12,37 @@ It follows the OpenCode 2 `providers` convention and uses its native session ide
 translate a subset of Chat Completions into CoS's local control API and now owns a separately
 launched fork process via a service-only flag. The user must still provision that fork binary,
 an independent control-enabled profile and login; no automated login is available. CoS tool-call
-parity and outputs exceeding its provider-only redacted 64,000-character limit are not supported.
+parity beyond the specifically opted-in native read preview and outputs exceeding its
+provider-only redacted 64,000-character limit are not supported.
 Do not install this in a real OpenCode profile.
+
+### Experimental native read tool (OpenCode 2.0.32, offline qualification)
+
+The default remains **text-only**: the gateway refuses every native tool definition,
+and the plugin removes all tool definitions only for this provider. To test the
+**single native \`read\` tool**, regenerate the *isolated* OpenCode configuration with
+\`--native-tools read\`. This sets the provider-specific model's tool capability
+and the plugin's narrow allowlist. The generated OpenCode \`permissions\` rules
+require **\`read: ask\`**, not \`allow\`, by default. Inspect and approve each
+requested path in OpenCode's native permission UI before execution. Only a
+deliberate override by the user changes that approval policy.
+
+The fork translates an **exact complete** \`<opencode-read>…</opencode-read>\`
+JSON envelope in CoS's finished browser answer into an OpenAI-compatible native
+tool call. It does **not** run local tools itself. Only the native OpenCode
+\`read({path})\` call is accepted; shell, writing, task delegation, unknown schemas,
+malformed tool instructions and mismatched tool results are refused. On a successful
+native read, the tool result is sent back to the CoS browser for the answer; **that
+transmits approved file contents to the external provider**, so explicitly opting
+in is a data-disclosure decision as well as an execution-permission decision.
+Do not enable for private files without understanding this boundary.
+
+An isolated **actual OpenCode 2.0.32** process E2E verifies that native read
+gets the marker from a real temporary disk file only when its test-only policy
+is explicitly \`allow\`, and a \`deny\` policy blocks native execution. The model
+side in this test is a deterministic offline fixture, not a real ChatGPT login or
+model; no production inference, authenticated ChatGPT tool decision, arbitrary
+native tools, agent delegation or user-approved sign-in has been qualified.
 
 ## Portable installation layout / isolated configuration
 
@@ -151,7 +180,7 @@ node --test test/native-process.e2e.mjs
 - The gateway health response must prove the exact spawned process PID, and the gateway
   bearer secret is never passed into its child Chromium environment.
 - Text-only request adapter, progressive Chat Completions SSE, per-session concurrency guard.
-- Fail-closed unknown model, tool calls, auxiliary requests, non-monotonic output,
+- Fail-closed unknown model, unapproved/unsupported tool calls, auxiliary requests, non-monotonic output,
   clipped content, unknown delivery or premature completion.
 
 ## Next integration milestones

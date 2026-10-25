@@ -15,7 +15,8 @@ if (owned && (!process.channel || process.connected !== true)) {
 } else {
   const runtime = new CoSRuntime({ executable, profile, personalProfile: process.env.CHAT_ON_OPENCODE_PERSONAL_COS_DATA })
   try {
-    await startService({ runtime, key, port, owned })
+    await startService({ runtime, key, port, owned,
+      nativeTools: process.env.CHAT_ON_OPENCODE_NATIVE_TOOLS === 'read' ? 'read' : 'off' })
   } catch (error) {
     console.error('Chat On OpenCode cannot connect to its CoS runtime:', error.code ?? 'invalid_configuration')
     runtime.stop()

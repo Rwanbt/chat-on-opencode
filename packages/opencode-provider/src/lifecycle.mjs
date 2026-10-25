@@ -4,9 +4,9 @@ import { setTimeout as delay } from 'node:timers/promises'
 
 /** Owned gateway process: never ask OpenCode to find/attach to an unrelated CoS instance. */
 export class GatewayLifecycle {
-  constructor({ entry, runtimeExecutable, runtimeData, key, port = 45861, node },
+  constructor({ entry, runtimeExecutable, runtimeData, key, port = 45861, node, nativeTools = 'off' },
     { launcher = spawn, fetcher = fetch, clock = delay } = {}) {
-    this.options = { entry, runtimeExecutable, runtimeData, key, port, node }
+    this.options = { entry, runtimeExecutable, runtimeData, key, port, node, nativeTools }
     this.launcher = launcher
     this.fetcher = fetcher
     this.clock = clock
@@ -23,7 +23,7 @@ export class GatewayLifecycle {
   }
 
   async open() {
-    const { entry, runtimeExecutable, runtimeData, key, port, node } = this.options
+    const { entry, runtimeExecutable, runtimeData, key, port, node, nativeTools } = this.options
     // OpenCode 2 is often a packaged Bun executable. process.execPath would relaunch OpenCode,
     // NOT run this Node server. Require a known absolute Node executable instead.
     if (!entry || !runtimeExecutable || !runtimeData || !node || !path.isAbsolute(node) ||
@@ -41,6 +41,7 @@ export class GatewayLifecycle {
         CHAT_ON_OPENCODE_RUNTIME_DATA: runtimeData,
         CHAT_ON_OPENCODE_GATEWAY_KEY: key,
         CHAT_ON_OPENCODE_PORT: String(port),
+        CHAT_ON_OPENCODE_NATIVE_TOOLS: nativeTools === 'read' ? 'read' : 'off',
       },
     })
     this.child = child

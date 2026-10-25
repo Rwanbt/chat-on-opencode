@@ -2,6 +2,7 @@ import { createGateway } from './gateway.mjs'
 
 /** One process owns both the gateway listener and its isolated CoS runtime. */
 export async function startService({ runtime, key, port, owner = process, owned = false,
+  nativeTools = 'off',
   gatewayFactory = createGateway, exit = code => owner.exit(code) }) {
   // Direct process fixtures keep working without the plugin's ownership lease.
   // A plugin-owned process must never fall back to an unowned listener.
@@ -34,7 +35,7 @@ export async function startService({ runtime, key, port, owner = process, owned 
       if (!stopped) shutdown(0)
       return
     }
-    server = gatewayFactory({ control, key })
+    server = gatewayFactory({ control, key, nativeTools })
     server.once('error', () => {
       console.error('Chat On OpenCode gateway refused to listen on its private port')
       shutdown(1)

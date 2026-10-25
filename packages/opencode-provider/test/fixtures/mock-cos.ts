@@ -43,7 +43,15 @@ const server = http.createServer(async (req, res) => {
     const list = events.get(id) ?? []
     const seq = list.length + 1
     list.push({ seq, kind: 'user_message', inputId: input.id })
-    list.push({ seq: seq + 1, kind: 'assistant_message', message: { text: 'OFFLINE_FORK_OK', truncated: false } })
+    const toolFile = process.env.CHAT_ON_OPENCODE_TEST_NATIVE_READ_FILE
+    const nativeReadIntent = toolFile && input.text.includes('OpenCode can execute ONE native read tool')
+      && !input.text.includes('UNTRUSTED file content')
+    const nativeReadResult = toolFile && input.text.includes('UNTRUSTED file content')
+    const assistantText = nativeReadIntent
+      ? '<opencode-read>' + JSON.stringify({ name: 'read', arguments: { path: toolFile } }) + '</opencode-read>'
+      : nativeReadResult ? (input.text.includes('NATIVE_READ_PROOF_8729') ? 'NATIVE_FILE_READ_OK' : 'READ_CONTENT_NOT_FOUND')
+      : 'OFFLINE_FORK_OK'
+    list.push({ seq: seq + 1, kind: 'assistant_message', message: { text: assistantText, truncated: false } })
     list.push({ seq: seq + 2, kind: 'turn_end', outcome: 'completed' })
     events.set(id, list)
     return json(202, { input: { delivery: 'pending' } })
