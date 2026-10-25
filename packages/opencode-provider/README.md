@@ -34,6 +34,9 @@ Run the contract tests without any browser, login or global profile modification
 ```sh
 cd packages/opencode-provider
 npm test
+
+# Optional OS-process integration with compiled Bun test-only service:
+node --test test/native-process.test.mjs
 ```
 
 ## Implemented boundaries
@@ -51,6 +54,10 @@ npm test
   never proven, it asks the existing outbox for a safe cancellation rather than resending.
 - Launches and terminates a separately configured fork runtime without opening its main window;
   never adopts an endpoint owned by another PID.
+- Private Chromium tabs are never revealed by extension-driven focus or popup requests;
+  a gateway-owner watchdog stops them if OpenCode dies on Windows.
+- The gateway health response must prove the exact spawned process PID, and the gateway
+  bearer secret is never passed into its child Chromium environment.
 - Text-only request adapter, progressive Chat Completions SSE, per-session concurrency guard.
 - Fail-closed unknown model, tool calls, auxiliary requests, non-monotonic output,
   clipped content, unknown delivery or premature completion.

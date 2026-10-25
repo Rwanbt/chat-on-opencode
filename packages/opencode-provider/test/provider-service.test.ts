@@ -2,9 +2,22 @@ import { describe, expect, it } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { providerServiceProfile, providerServiceReady, PROVIDER_SERVICE_SWITCH } from '../../../src/main/provider-service.js';
+import { providerServiceProfile, providerServiceOwner, providerServiceOwnerAlive, providerBrowserUiAllowed, providerServiceReady, PROVIDER_SERVICE_SWITCH } from '../../../src/main/provider-service.js';
 
 describe('standalone provider service admission', () => {
+  it('keeps CoS windows and extension popup hidden only in provider mode', () => {
+    expect(providerBrowserUiAllowed(['app.exe'])).toBeTrue();
+    expect(providerBrowserUiAllowed(['app.exe', '--background'])).toBeTrue();
+    expect(providerBrowserUiAllowed(['app.exe', PROVIDER_SERVICE_SWITCH])).toBeFalse();
+  });
+  it('requires a different, living gateway owner PID, without guessing', () => {
+    expect(providerServiceOwner('123456', 42)).toBe(123456);
+    for (const pid of [undefined, '0', '-1', 'NaN', '41.5', '42']) {
+      expect(() => providerServiceOwner(pid, 42)).toThrow(/gateway_owner_required/);
+    }
+    expect(providerServiceOwnerAlive(123, () => undefined)).toBeTrue();
+    expect(providerServiceOwnerAlive(123, () => { throw new Error('ESRCH'); })).toBeFalse();
+  });
   const create = () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'chat-on-opencode-'));
     const personal = path.join(root, 'existing-cos-userdata');

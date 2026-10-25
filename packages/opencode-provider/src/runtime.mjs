@@ -39,10 +39,13 @@ export class CoSRuntime {
   async start() {
     if (this.child) throw new BridgeError('runtime_already_started', 409)
     const { binary, folder } = await validateRuntime(this.options)
+    const { CHAT_ON_OPENCODE_GATEWAY_KEY: _gatewaySecret, ...childEnvironment } = process.env
     const child = this.launcher(binary, [SERVICE_SWITCH], {
       cwd: path.dirname(binary),
       shell: false, windowsHide: true, stdio: 'ignore', detached: false,
-      env: { ...process.env, CHAT_ON_OPENCODE_USERDATA_DIR: folder },
+      // No gateway bearer token or long-running helper without its gateway owner.
+      env: { ...childEnvironment, CHAT_ON_OPENCODE_USERDATA_DIR: folder,
+        CHAT_ON_OPENCODE_OWNER_PID: String(process.pid) },
     })
     this.child = child
     const control = new CoSControl({ directory: path.join(folder, 'control-api') })

@@ -109,7 +109,9 @@ export function createGateway({ control, key }) {
     if (req.headers.origin || req.headers.host !== `127.0.0.1:${server.address()?.port}`) return sendJSON(403, { error: 'untrusted_origin' })
     const presented = Buffer.from(req.headers.authorization ?? '')
     if (presented.length !== secret.length || !timingSafeEqual(presented, secret)) return sendJSON(401, { error: 'unauthorized' })
-    if (req.method === 'GET' && req.url === '/health') return sendJSON(200, { ok: true, gateway: 'chat-on-opencode', phase: 'control-api-adapter' })
+    if (req.method === 'GET' && req.url === '/health') return sendJSON(200, {
+      ok: true, gateway: 'chat-on-opencode', phase: 'control-api-adapter', pid: process.pid,
+    })
     if (req.method !== 'POST' || req.url !== '/v1/chat/completions') return sendJSON(404, { error: 'not_found' })
     let sessionKey = ''
     try {

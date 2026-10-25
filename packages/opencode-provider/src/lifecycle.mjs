@@ -54,8 +54,19 @@ export class GatewayLifecycle {
           headers: { Authorization: `Bearer ${key}` }, redirect: 'error',
           signal: AbortSignal.timeout(1000),
         })
-        if (response.ok && (await response.json()).gateway === 'chat-on-opencode') return
-      } catch { /* listener may not have started yet */ }
+        if (response.ok) {
+          const health = await response.json()
+          // A prior crashed gateway may still own this fixed local port. Its health and
+          // bearer key are insufficient proof; only the child WE spawned may be adopted.
+          if (health.gateway === 'chat-on-opencode' && health.pid !== child.pid) {
+            throw new Error('provider_gateway_owner_mismatch')
+          }
+          if (health.gateway === 'chat-on-opencode' && health.pid === child.pid) return
+        }
+      } catch (error) {
+        if (error?.message === 'provider_gateway_owner_mismatch') throw error
+        // The local listener may not yet have started.
+      }
       await this.clock(250, undefined, { signal: signal.signal }).catch(() => { throw new Error('provider_runtime_exited') })
     }
     throw new Error('provider_runtime_start_timeout')
