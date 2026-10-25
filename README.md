@@ -1,3 +1,9 @@
+> **Chat On OpenCode fork — work in progress.** This repository is being adapted to provide
+> ChatGPT through OpenCode V2, without replacing its native sessions or existing plugins.
+> [Implementation status and scope](CHAT_ON_OPENCODE.md). The upstream project and its
+> original documentation are preserved below for provenance; the original app is not yet
+> replaced by the new provider.
+
 <p align="center"><img src="docs/images/readme-hero.svg?v=2" width="960" alt="Turn ChatGPT into Codex-style local coding. Chat On Steroids: Your files. Your terminal. Your ChatGPT plan." /></p>
 
 <p align="center">

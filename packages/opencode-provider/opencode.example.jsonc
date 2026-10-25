@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["./packages/opencode-provider/plugin"],
+  "providers": {
+    "chat-on-opencode": {
+      "name": "Chat On OpenCode (experimental)",
+      "env": ["CHAT_ON_OPENCODE_GATEWAY_KEY"],
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": { "baseURL": "http://127.0.0.1:45861/v1" },
+      "models": {
+        "chatgpt-default": { "name": "ChatGPT via CoS (experimental)" }
+      }
+    }
+  }
+}
