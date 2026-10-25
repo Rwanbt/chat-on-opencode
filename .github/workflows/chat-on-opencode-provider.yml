@@ -68,4 +68,4 @@ jobs:
           node-version: '22'
       - uses: oven-sh/setup-bun@v2
       - name: Launch real isolated processes, exchange two turns, and verify cleanup
-        run: node --test packages/opencode-provider/test/native-process.test.mjs
+        run: node --test packages/opencode-provider/test/native-process.e2e.mjs

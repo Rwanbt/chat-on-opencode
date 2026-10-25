@@ -36,7 +36,7 @@ cd packages/opencode-provider
 npm test
 
 # Optional OS-process integration with compiled Bun test-only service:
-node --test test/native-process.test.mjs
+node --test test/native-process.e2e.mjs
 ```
 
 ## Implemented boundaries
