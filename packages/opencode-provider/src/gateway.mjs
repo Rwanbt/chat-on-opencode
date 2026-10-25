@@ -138,10 +138,19 @@ export function createGateway({ control, key }) {
       if (active.has(sessionKey)) throw new BridgeError('session_busy', 409)
       active.add(sessionKey)
       let raw = ''
+      let bodyBytes = 0
+      // HTTP buffers may split a multi-byte codepoint at any boundary. Decoding each
+      // chunk independently silently corrupts prompt text; replacing invalid bytes
+      // would also make a malformed input look like a valid user message.
+      const decoder = new TextDecoder('utf-8', { fatal: true })
       for await (const chunk of req) {
-        raw += chunk.toString('utf8')
-        if (raw.length > 262144) throw new BridgeError('body_too_large', 413)
+        bodyBytes += chunk.byteLength
+        if (bodyBytes > 262144) throw new BridgeError('body_too_large', 413)
+        try { raw += decoder.decode(chunk, { stream: true }) }
+        catch { throw new BridgeError('invalid_utf8', 400) }
       }
+      try { raw += decoder.decode() }
+      catch { throw new BridgeError('invalid_utf8', 400) }
       let body
       try { body = JSON.parse(raw) } catch { throw new BridgeError('invalid_json', 400) }
       if (!body || typeof body !== 'object') throw new BridgeError('invalid_body', 400)
