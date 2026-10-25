@@ -5054,6 +5054,18 @@ The local control API (`control-api.ts`, Settings → General → For developers
 below to a trusted local caller, typically an agent's MCP server watching the app from outside
 its process. It binds 127.0.0.1 on an ephemeral port
 and writes a per-launch token to `userData/control-api/`. The token is never issued over HTTP.
+The additive `GET /v1/provider/readiness` route is guarded by the same loopback bearer token,
+Origin/Host checks and read limits. Its only source owners are `cosBrowserSignedIn()` and
+`bridgeStatus()`: it projects categorical session-cookie presence (`present`/`absent`/`unknown`),
+extension connection and pairing, and their conjunction `canAttempt`. Cookie presence is **not**
+proof that ChatGPT authenticated, will accept an input, or permits unattended extraction; no
+cookie value, account identity, conversation or secret is returned. Missing bridge or cookie
+information must refuse provider admission before an outbox write (the provider gateway owns that
+decision). The fork-only sign-in switch uses the same pre-existing isolated `userData` as its
+offscreen service but requires a separate, intentionally visible, user-controlled process; these
+two modes must never share a concurrently running Chromium profile. The normal CoS mode remains
+independent. `test/provider-service.test.ts`, `test/control-api-reads.test.ts` and the provider
+Node bridge contracts cover this additive boundary without authenticating any personal account.
 It refuses any Origin and requires its own Host. Reads are GET only, without a body. Status is an
 allowlisted projection of the connection, bridge, plugin, updater and call-context owners.
 Local and public URLs, tunnel ids and plugin sources/config never appear; free text passes
