@@ -19,7 +19,7 @@ function contains(parent, child) {
 }
 
 /** Generate OpenCode V2 config without touching a real OpenCode profile or serializing secrets. */
-export function createOpenCodeConfig({ runtimeExecutable, runtimeData, nodeExecutable, pluginDir, personalCoSData, port = 45861 }) {
+export function createOpenCodeConfig({ runtimeExecutable, runtimeData, nodeExecutable, pluginDir, personalCoSData, port = 45861, nativeTools = 'off' }) {
   const executable = absoluteExisting(runtimeExecutable, 'runtime_executable')
   const data = absoluteExisting(runtimeData, 'runtime_data')
   const node = absoluteExisting(nodeExecutable, 'node_executable')
@@ -41,10 +41,13 @@ export function createOpenCodeConfig({ runtimeExecutable, runtimeData, nodeExecu
   if (config?.ui?.chatBrowser !== 'cos' || config?.controlApi?.enabled !== true ||
       config?.controlApi?.allowActions !== true) throw new Error('isolated_profile_service_opt_in_required')
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('provider_port_invalid')
+  if (!['off', 'read'].includes(nativeTools)) throw new Error('native_tools_mode_invalid')
 
   return {
+    ...(nativeTools === 'read' ? { permissions: [{ action: 'read', resource: '*', effect: 'ask' }] } : {}),
     plugins: [{ package: path.join(plugin, 'plugin'), options: {
       runtimeExecutable: executable, runtimeData: data, nodeExecutable: node, port: String(port),
+      nativeTools,
     } }],
     providers: { 'chat-on-opencode': {
       name: 'Chat On OpenCode',
@@ -52,8 +55,8 @@ export function createOpenCodeConfig({ runtimeExecutable, runtimeData, nodeExecu
       package: '@opencode/ai/providers/openai-compatible',
       settings: { baseURL: 'http://127.0.0.1:' + port + '/v1' },
       models: { 'chatgpt-default': {
-        name: 'ChatGPT via Chat On OpenCode (text only)',
-        capabilities: { tools: false, input: ['text'], output: ['text'] },
+        name: nativeTools === 'read' ? 'ChatGPT via Chat On OpenCode (native read preview)' : 'ChatGPT via Chat On OpenCode (text only)',
+        capabilities: { tools: nativeTools === 'read', input: ['text'], output: ['text'] },
         limit: { context: 16384, output: 2048 },
       } },
     } },

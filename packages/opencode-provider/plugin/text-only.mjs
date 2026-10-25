@@ -4,8 +4,10 @@
  * definitions to a backend that cannot execute them, or encourage the model to call them.
  * This is a scoped temporary compatibility gate, NOT tool-call parity.
  */
-export function enforceTextOnlyContext(event) {
+export function enforceTextOnlyContext(event, readEnabled = false) {
   if (event.model.providerID !== 'chat-on-opencode') return false
-  for (const name of Object.keys(event.tools)) delete event.tools[name]
+  for (const name of Object.keys(event.tools)) {
+    if (name !== 'read' || !readEnabled) delete event.tools[name]
+  }
   return true
 }
