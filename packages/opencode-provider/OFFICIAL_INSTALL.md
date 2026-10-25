@@ -18,11 +18,12 @@ environment key, the **real official OpenCode CLI 2.1.4**
 `models --standalone` printed `chat-on-opencode/chatgpt-default`.
 The smoke terminates **its own** CLI after that exact receipt; the CLI's
 embedded standalone server otherwise continues running. No prompt, ChatGPT
-sign-in or inference was attempted. The user's **existing/default**
-`~/.config/opencode/opencode.jsonc` and the running Desktop were **not changed**,
-and the Desktop's graphical model picker was **not observed**. This is an
-isolated official-CLI installation, not activation in the user's ongoing
-Desktop session.
+sign-in or inference was attempted. At the time of that first isolated test,
+the user's default config and running Desktop were untouched. A subsequent
+**scoped, backed-up installation in the default config** also exposed the model
+in the real official CLI 2.1.4. The existing Desktop process was not restarted,
+and its graphical model picker was **not observed**. Neither test proves
+activation in the user's ongoing Desktop session.
 Do not substitute a CLI version check for a Desktop UI model-picker test.
 
 For a default Desktop installation, remaining blockers include the absence
@@ -78,6 +79,32 @@ the historic backup is retained. A fresh installation can create a new backup.
 If interrupted while installing, the backup remains for recovery. Do not use
 this procedure to replace an official OpenCode application, update or reset
 running services, or extract an account token.
+
+## Read-only model registration check (no ChatGPT prompt)
+
+Run the verifier from the checked-out provider package that contains
+`bin/official-model-check.mjs`. It validates the immutable manifest, exact
+managed payload and backup hashes, and the version of the **separately
+specified** official CLI. It refuses modified installations and version drift.
+
+```powershell
+$config = Join-Path $HOME '.config/opencode/opencode.jsonc'
+$cli = Join-Path $env:LOCALAPPDATA 'Programs/OpenCode/resources/opencode-cli.exe'
+node packages/opencode-provider/bin/official-model-check.mjs --config $config --cli $cli
+node packages/opencode-provider/bin/official-model-check.mjs --smoke --config $config --cli $cli
+```
+
+The second command starts only a new, bounded CLI child with a random 32-byte
+process-only gateway key and executes `models --standalone`. It checks for
+`chat-on-opencode/chatgpt-default`, then terminates only that child. On Windows,
+intentional child-tree termination may report `processExit: 1`; the verifier
+reports `terminatedAfterMatch: true` to distinguish this from an unsolicited
+crash. A missing model, changed config, version mismatch, child error, timeout
+or early crash returns nonzero. Neither command logs or persists the key.
+
+These checks **do not** exercise a ChatGPT account, model inference, native
+Desktop selection or any UI permission dialog. They do not restart a running
+Desktop process or inject its previously missing environment key.
 
 **Important:** Installing the provider registration does not establish
 production-ready inference. Desktop model-picker appearance, verified

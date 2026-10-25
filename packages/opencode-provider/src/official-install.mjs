@@ -170,8 +170,8 @@ export function installProvider(options, dependencies = {}) {
   }
 }
 
-/** Restore exactly the previously backed up bytes; refuse any intervening change. */
-export function rollbackProvider(configFile) {
+/** Read-only integrity gate, shared by rollback and the process-only smoke launcher. */
+export function inspectInstalledProvider(configFile) {
   const config = regular(configFile, 'opencode_config')
   const { managed } = pathsFor(config)
   directory(managed, 'managed')
@@ -191,6 +191,13 @@ export function rollbackProvider(configFile) {
   if (payloadDigest(managed) !== manifest.payloadSha256) {
     throw new Error('provider_payload_modified_refuse_delete')
   }
+  return { config, managed, manifest }
+}
+
+/** Restore exactly the previously backed up bytes; refuse any intervening change. */
+export function rollbackProvider(configFile) {
+  const { config, managed, manifest } = inspectInstalledProvider(configFile)
+  const restored = readFileSync(regular(manifest.backup, 'backup'))
   atomicReplace(config, restored, statSync(config).mode & 0o777)
   rmSync(managed, { recursive: true })
   return { rolledBack: true, restoredSha256: manifest.originalSha256, backupRetained: true }
