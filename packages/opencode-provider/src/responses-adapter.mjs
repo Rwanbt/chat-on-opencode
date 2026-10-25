@@ -103,7 +103,7 @@ export function createResponsesRequest(request, { model } = {}) {
 }
 
 // All bytes are synthetic supplied by the caller. No fetch, credentials or local execution.
-export async function collectResponsesSSE(chunks, { signal, allowedTools = new Set() } = {}) {
+export async function collectResponsesSSE(chunks, { signal, allowedTools = new Set(), expectedModel } = {}) {
   if (!(allowedTools instanceof Set)) fail('invalid_tool_policy')
   const decoder = new TextDecoder('utf-8', { fatal: true })
   let buffer = '', frame = [], frameBytes = 0, completed = false, done = false, observed = '', count = 0
@@ -154,6 +154,7 @@ export async function collectResponsesSSE(chunks, { signal, allowedTools = new S
       }
       case 'response.completed': {
         if (event.response?.status !== 'completed' || !Array.isArray(event.response.output)) fail('invalid_completion')
+        if (expectedModel !== undefined && event.response.model !== expectedModel) fail('response_model_mismatch')
         const text = []
         const finalCalls = []
         for (const item of event.response.output) {
