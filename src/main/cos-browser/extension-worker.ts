@@ -39,6 +39,8 @@ export const API_CHANNEL = 'cos-browser:api';
 /** Events waiting for a worker. A worker that never comes back must not grow memory without bound. */
 export const PENDING_EVENT_LIMIT = 1000;
 const WAKE_RETRY_MS = 1000;
+const BOOTSTRAP_RETRY_MS = 5000;
+const BOOTSTRAP_RETRIES = 6;
 
 export class ExtensionWorkerLink {
   private readonly workers = new Map<number, WorkerLike>();
@@ -47,6 +49,8 @@ export class ExtensionWorkerLink {
   private readonly pending: Array<[string, unknown[]]> = [];
   private dropped = 0;
   private closed = false;
+  private bootstrapTimer: ReturnType<typeof setTimeout> | null = null;
+  private bootstrapAttempts = 0;
 
   constructor(
     private readonly registry: WorkerRegistry,
@@ -85,6 +89,7 @@ export class ExtensionWorkerLink {
   /** Releases every worker the link holds alive. The browser is stopping. */
   close(): void {
     this.closed = true;
+    this.clearBootstrap();
     for (const task of this.keepAlive.values()) {
       try { task.end(); } catch { /* the worker is already gone */ }
     }
@@ -109,6 +114,7 @@ export class ExtensionWorkerLink {
       catch (error) { this.warn(`cos browser: could not keep the extension worker alive: ${error instanceof Error ? error.message : String(error)}`); }
     }
     this.ready.add(versionId);
+    this.clearBootstrap();
     this.flush();
   }
 
@@ -129,10 +135,30 @@ export class ExtensionWorkerLink {
    * made while still no worker has appeared, fails too.
    */
   private wake(retried = false): void {
-    void this.registry.startWorkerForScope(this.scope).catch(error => {
+    void this.registry.startWorkerForScope(this.scope).then(() => {
+      // Electron can resolve a start request without ever publishing a running worker.
+      // A visible tab used to supply the next wake; hidden providers have no tab.
+      if (!this.closed && this.live().length === 0) this.scheduleBootstrap();
+    }).catch(error => {
       if (this.closed || this.workers.size > 0) return;
       if (!retried) { setTimeout(() => { if (!this.closed && this.workers.size === 0) this.wake(true); }, WAKE_RETRY_MS); return; }
       this.warn(`cos browser: could not start the extension worker: ${error instanceof Error ? error.message : String(error)}`);
     });
+  }
+
+  private clearBootstrap(): void {
+    if (this.bootstrapTimer) clearTimeout(this.bootstrapTimer);
+    this.bootstrapTimer = null;
+    this.bootstrapAttempts = 0;
+  }
+
+  private scheduleBootstrap(): void {
+    if (this.bootstrapTimer || this.bootstrapAttempts >= BOOTSTRAP_RETRIES) return;
+    this.bootstrapTimer = setTimeout(() => {
+      this.bootstrapTimer = null;
+      if (this.closed || this.live().length > 0) return;
+      this.bootstrapAttempts++;
+      this.wake();
+    }, BOOTSTRAP_RETRY_MS);
   }
 }
