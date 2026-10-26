@@ -42,6 +42,12 @@ test('generates installable OpenCode 2 configuration without secrets or profile 
     assert.equal(conf.providers['chat-on-opencode'].models['chatgpt-default'].capabilities.tools, false)
     assert.equal(conf.providers['chat-on-opencode'].models['chatgpt-default'].limit.context, 65536,
       'OpenCode 2.1.4 must have space above its initial compaction reserve')
+    const textAgent = conf.agents['chat-on-opencode-text']
+    assert.equal(textAgent.model, 'chat-on-opencode/chatgpt-default')
+    assert.equal(textAgent.mode, 'primary')
+    assert.ok(textAgent.system.length < 256)
+    assert.deepEqual(textAgent.permissions, [{ action: '*', resource: '*', effect: 'deny' }])
+    assert.equal(conf.defaultAgent, undefined, 'do not affect other provider workflows')
   })
 })
 
@@ -69,6 +75,9 @@ test('explicit native text generates reversible OAuth-only candidate without API
     assert.ok(conf.providers['chat-on-opencode'].models['synthetic-gpt-model'])
     assert.equal(conf.providers['chat-on-opencode'].models['synthetic-gpt-model'].capabilities.tools,false)
     assert.equal(conf.providers['chat-on-opencode'].models['synthetic-gpt-model'].limit.context,65536)
+    assert.equal(conf.agents, undefined, 'native OAuth transport keeps its own consent contract')
+    assert.equal(createOpenCodeConfig({...opts,nativeTools:'read'}).agents, undefined,
+      'never force a text-only agent on explicitly approved native read')
     assert.equal(JSON.stringify(conf).includes('apiKey'),false)
     assert.throws(()=>createOpenCodeConfig({...opts,nativeInference:'text'}),/native_inference_requires_verified_text_model/)
     assert.throws(()=>createOpenCodeConfig({...opts,nativeInference:'text',nativeModelID:'../../bad'}),/native_inference_requires_verified_text_model/)
