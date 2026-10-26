@@ -128,12 +128,23 @@ export class CoSControl {
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let afterCR = false
       let rotated = false
       try {
         readStream: for (;;) {
           const { done, value } = await reader.read()
           if (done) throw new BridgeError('cos_stream_ended_without_terminal', 502)
-          buffer += decoder.decode(value, { stream: true })
+          // SSE accepts LF, CRLF and bare CR. Normalize incrementally: a CRLF
+          // split across network chunks must become ONE line break, not two.
+          // This also preserves Unicode characters split by TextDecoder.
+          const decoded = decoder.decode(value, { stream: true })
+          let normalized = ''
+          for (const char of decoded) {
+            if (afterCR && char === '\n') { afterCR = false; continue }
+            afterCR = char === '\r'
+            normalized += char === '\r' ? '\n' : char
+          }
+          buffer += normalized
           if (buffer.length > 1_048_576) throw new BridgeError('cos_frame_overflow', 502)
           let index
           while ((index = buffer.indexOf('\n\n')) !== -1) {
