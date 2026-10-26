@@ -75,10 +75,10 @@ if (process.argv[2] === '--gateway-worker') {
   assert.ok(existsSync(executable), 'packaged Electron must already be built')
   const home = await mkdtemp(path.join(os.tmpdir(), 'coo-provider-e2e-gateway-env-'))
   try {
-    for (const variant of ['native-home', 'full', 'standalone-cli']) {
+    for (const variant of ['native-home', 'isolated-opencode']) {
       const dir = path.join(home, variant)
       const profile = path.join(dir, 'isolated')
-      for (const name of ['home', 'appdata', 'localappdata', 'config', 'data', 'cache', 'workspace']) {
+      for (const name of ['appdata', 'localappdata', 'config', 'data', 'cache', 'workspace']) {
         await mkdir(path.join(dir, name), { recursive: true })
       }
       const fixture = spawnSync('bun', ['run', 'scripts/provider-isolated-profile.ts', profile], {
@@ -86,29 +86,20 @@ if (process.argv[2] === '--gateway-worker') {
         encoding: 'utf8', timeout: 15000,
       })
       assert.equal(fixture.status, 0, 'isolated profile fixture failed')
-      // The CLI runner deliberately replaces HOME/APPDATA and removes unrelated
-      // process variables. Both cases must start the SAME real packaged helper.
-      const env = variant === 'standalone-cli' ? {} : { ...process.env }
-      if (variant === 'standalone-cli') {
-        for (const [name, value] of Object.entries(process.env)) {
-          if (/^(PATH|PATHEXT|SystemRoot|WINDIR|COMSPEC|TEMP|TMP|PROCESSOR_ARCHITECTURE|NUMBER_OF_PROCESSORS)$/i.test(name)) env[name] = value
-        }
-      }
+      // Preserve Windows' coherent HOME/USERPROFILE and OS process environment.
+      // OpenCode and Electron data still live only under this disposable CI root.
+      const env = { ...process.env }
       for (const name of Object.keys(env)) {
         if (/^(CHAT_ON_OPENCODE_|COS_|ELECTRON_)/.test(name)) delete env[name]
       }
-      // Native-home preserves the runner's coherent Windows HOME/USERPROFILE,
-      // while isolating Electron's APPDATA and all provider files. The other
-      // variants deliberately reproduce the problematic CLI-style relocation.
-      const isolation = {
+      Object.assign(env, {
         APPDATA: path.join(dir, 'appdata'), LOCALAPPDATA: path.join(dir, 'localappdata'),
-      }
-      if (variant !== 'native-home') Object.assign(isolation, {
-        HOME: path.join(dir, 'home'), USERPROFILE: path.join(dir, 'home'),
-        XDG_CONFIG_HOME: path.join(dir, 'config'), XDG_DATA_HOME: path.join(dir, 'data'),
-        XDG_CACHE_HOME: path.join(dir, 'cache'),
       })
-      Object.assign(env, isolation)
+      if (variant === 'isolated-opencode') Object.assign(env, {
+        XDG_CONFIG_HOME: path.join(dir, 'config'), XDG_DATA_HOME: path.join(dir, 'data'),
+        XDG_CACHE_HOME: path.join(dir, 'cache'), OPENCODE_CONFIG_DIR: path.join(dir, 'config'),
+        OPENCODE_CONFIG_PROJECT_DISABLE: '1', OPENCODE_DISABLE_AUTOUPDATE: '1',
+      })
       const port = await freePort()
       const child = spawn(process.execPath, [fileURLToPath(import.meta.url),
         '--gateway-worker', profile, String(port)], {
