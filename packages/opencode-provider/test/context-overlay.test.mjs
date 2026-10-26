@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { raiseLegacyCoSContext } from '../addons/context-overlay/overlay.mjs'
+import { raiseLegacyCoSContext } from '../src/context-overlay/overlay.mjs'
 
 function fixture(context = 16_384, output = 2_048, provider = 'chat-on-opencode', id = 'chatgpt-default') {
   const target = { providerID: provider, id, limit: { context, output } }
