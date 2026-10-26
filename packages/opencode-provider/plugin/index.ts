@@ -7,6 +7,7 @@ import { enforceTextOnlyContext } from './text-only.mjs'
 import { provideLocalTitle, requirePrimaryKind } from './auxiliary.mjs'
 import { provideExtractiveCompaction } from './compaction.mjs'
 import { registerNativeSIWC } from './native-siwc.mjs'
+import { registerNativeHTTPText } from './native-text-http.mjs'
 
 // OpenCode V2 is the only frontend/session owner. The helper starts on the first *selected*
 // model request, not on plugin import, so other providers remain completely unaffected.
@@ -16,12 +17,14 @@ export default Plugin.define({
     // Opt-in preview only. The native OAuth method has validated login flow
     // components but full model-transport/refresh parity is not yet qualified.
     if (ctx.options.nativeOAuth === 'preview') await registerNativeSIWC(ctx)
+    const nativeText = ctx.options.nativeOAuth === 'preview' && ctx.options.nativeInference === 'text'
+    if (nativeText) await registerNativeHTTPText(ctx)
     const identities = new MessageIdentity()
     const option = (key: string) => typeof ctx.options[key] === 'string' ? ctx.options[key] as string : undefined
     // One unpredictable bearer per plugin instance. Neither Desktop startup nor
     // OpenCode's persisted provider configuration needs an external credential.
     const key = randomBytes(32).toString('hex')
-    const readEnabled = option('nativeTools') === 'read'
+    const readEnabled = !nativeText && option('nativeTools') === 'read'
     const port = Number(option('port') ?? '45861')
     const service = new GatewayLifecycle({
       entry: fileURLToPath(new URL('../src/server.mjs', import.meta.url)),
@@ -48,6 +51,7 @@ export default Plugin.define({
       { providerID: 'chat-on-opencode' })
     await ctx.session.hook('model.request', async event => {
       if (event.model.providerID !== 'chat-on-opencode') return
+      if (nativeText) return // Native V3 Responses, never CoS gateway
       requirePrimaryKind(event.kind)
       identities.require(event.sessionID)
       await service.ensure()
@@ -56,6 +60,7 @@ export default Plugin.define({
     }, { providerID: 'chat-on-opencode' })
     await ctx.session.hook('http.request', event => {
       if (event.model.providerID !== 'chat-on-opencode') return
+      if (nativeText) return
       requirePrimaryKind(event.kind)
       event.request.headers.set('x-opencode-session-id', event.sessionID)
       event.request.headers.set('x-opencode-message-id', identities.require(event.sessionID))

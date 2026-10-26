@@ -19,7 +19,7 @@ function contains(parent, child) {
 }
 
 /** Generate OpenCode V2 config without touching a real OpenCode profile or serializing secrets. */
-export function createOpenCodeConfig({ runtimeExecutable, runtimeData, nodeExecutable, pluginDir, personalCoSData, port = 45861, nativeTools = 'off' }) {
+export function createOpenCodeConfig({ runtimeExecutable, runtimeData, nodeExecutable, pluginDir, personalCoSData, port = 45861, nativeTools = 'off', nativeInference = 'off', nativeModelID }) {
   const executable = absoluteExisting(runtimeExecutable, 'runtime_executable')
   const data = absoluteExisting(runtimeData, 'runtime_data')
   const node = absoluteExisting(nodeExecutable, 'node_executable')
@@ -42,18 +42,25 @@ export function createOpenCodeConfig({ runtimeExecutable, runtimeData, nodeExecu
       config?.controlApi?.allowActions !== true) throw new Error('isolated_profile_service_opt_in_required')
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('provider_port_invalid')
   if (!['off', 'read'].includes(nativeTools)) throw new Error('native_tools_mode_invalid')
+  if (!['off','text'].includes(nativeInference) || (nativeInference === 'text' &&
+    (nativeTools !== 'off' || typeof nativeModelID !== 'string' ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(nativeModelID))) ||
+    (nativeInference === 'off' && nativeModelID !== undefined)) {
+    throw new Error('native_inference_requires_verified_text_model')
+  }
 
   return {
     ...(nativeTools === 'read' ? { permissions: [{ action: 'read', resource: '*', effect: 'ask' }] } : {}),
     plugins: [{ package: path.join(plugin, 'plugin'), options: {
       runtimeExecutable: executable, runtimeData: data, nodeExecutable: node, port: String(port),
       nativeTools,
+      ...(nativeInference === 'text' ? { nativeOAuth:'preview', nativeInference:'text' } : {}),
     } }],
     providers: { 'chat-on-opencode': {
       name: 'Chat On OpenCode',
-      package: '@opencode/ai/providers/openai-compatible',
-      settings: { baseURL: 'http://127.0.0.1:' + port + '/v1' },
-      models: { 'chatgpt-default': {
+      package: nativeInference === 'text' ? '@opencode/ai/providers/openai' : '@opencode/ai/providers/openai-compatible',
+      settings: { baseURL: nativeInference === 'text' ? 'https://api.openai.com/v1' : 'http://127.0.0.1:' + port + '/v1' },
+      models: { [nativeInference === 'text' ? nativeModelID : 'chatgpt-default']: {
         name: nativeTools === 'read' ? 'ChatGPT via Chat On OpenCode (native read preview)' : 'ChatGPT via Chat On OpenCode (text only)',
         capabilities: { tools: nativeTools === 'read', input: ['text'], output: ['text'] },
         limit: { context: 16384, output: 2048 },

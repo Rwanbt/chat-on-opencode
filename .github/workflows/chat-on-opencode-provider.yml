@@ -142,3 +142,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $env:CHAT_ON_OPENCODE_TEST_CLI)) { throw 'Pinned OpenCode CLI was not installed' }
           node --test --test-concurrency=1 packages/opencode-provider/test/opencode-v2-cli.e2e.mjs packages/opencode-provider/test/opencode-v2-native-read.e2e.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ('${{ matrix.cli_version }}' -eq '2.1.4') {
+            node --test packages/opencode-provider/test/official-native-text.e2e.mjs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

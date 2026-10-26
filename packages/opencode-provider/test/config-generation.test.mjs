@@ -57,6 +57,22 @@ test('CLI emits only configuration and refuses any secret-like argument', () => 
   })
 })
 
+test('explicit native text generates reversible OAuth-only candidate without API key or CoS substitution', () => {
+  fixture(opts => {
+    const conf=createOpenCodeConfig({...opts,nativeInference:'text',nativeModelID:'synthetic-gpt-model'})
+    assert.equal(conf.plugins[0].options.nativeOAuth,'preview')
+    assert.equal(conf.plugins[0].options.nativeInference,'text')
+    assert.equal(conf.providers['chat-on-opencode'].package,'@opencode/ai/providers/openai')
+    assert.equal(conf.providers['chat-on-opencode'].settings.baseURL,'https://api.openai.com/v1')
+    assert.ok(conf.providers['chat-on-opencode'].models['synthetic-gpt-model'])
+    assert.equal(conf.providers['chat-on-opencode'].models['synthetic-gpt-model'].capabilities.tools,false)
+    assert.equal(JSON.stringify(conf).includes('apiKey'),false)
+    assert.throws(()=>createOpenCodeConfig({...opts,nativeInference:'text'}),/native_inference_requires_verified_text_model/)
+    assert.throws(()=>createOpenCodeConfig({...opts,nativeInference:'text',nativeModelID:'../../bad'}),/native_inference_requires_verified_text_model/)
+    assert.throws(()=>createOpenCodeConfig({...opts,nativeInference:'text',nativeModelID:'safe',nativeTools:'read'}),/native_inference_requires_verified_text_model/)
+  })
+})
+
 test('rejects personal alias, invalid profile, missing runtime and unsafe port', () => {
   fixture(opts => {
     assert.throws(() => createOpenCodeConfig({ ...opts, personalCoSData: opts.data }), /profile_overlaps_personal_userdata/)
