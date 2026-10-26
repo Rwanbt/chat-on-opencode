@@ -63,7 +63,12 @@ $bounded = $bounded -replace '[^a-zA-Z0-9._ +\\r\\n-]', '?'
 Write-Output ("OFFICIAL_DESKTOP_CLI_EXACT_VERSION_DIAGNOSTIC=" +
   ($bounded -replace '[\\r\\n]+', ' ') + ";exit=" + $cliExit +
   ";resourceVersion=" + ($metadataVersion -replace '[^a-zA-Z0-9._-]', '?'))
-if ($cliExit -ne 0 -or $reply -ne $version) {
+# Desktop 2.1.4's bundled CLI reports a labeled v2.1.4, not just
+# "2.1.4". Keep the package-manifest source of truth exact and independently
+# require the same semantic version as an isolated token in --version output.
+$exactVersionToken = '(?<![0-9.])v?2\\.1\\.4(?![0-9.])'
+if ($cliExit -ne 0 -or $metadataVersion -ne $version -or
+    $reply -notmatch $exactVersionToken) {
   throw 'official_desktop_bundled_cli_wrong_version'
 }
 $cliDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $cli).Hash.ToLowerInvariant()
