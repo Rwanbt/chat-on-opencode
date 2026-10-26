@@ -4,7 +4,7 @@ import path from 'node:path'
 import { CoSControl } from '../src/control.mjs'
 
 function endpointFrom(chunks) {
-  const bytes = chunks.map(chunk => new TextEncoder().encode(chunk))
+  const bytes = chunks.map(chunk => typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk)
   const body = new ReadableStream({
     start(controller) {
       for (const bytesPart of bytes) controller.enqueue(bytesPart)
@@ -48,8 +48,9 @@ for (const [name, separator] of [
 }
 
 test('CoS event decoder preserves CRLF delimiters split at every byte boundary', async () => {
-  const event = { seq: 5, kind: 'user_message', inputId: 'test-input' }
-  const source = 'event: user_message\r\ndata: ' + JSON.stringify(event) + '\r\n\r\n'
-  const result = await firstEvent([...source])
+  const event = { seq: 5, kind: 'assistant_message', message: { text: 'café' } }
+  const source = 'event: assistant_message\r\ndata: ' + JSON.stringify(event) + '\r\n\r\n'
+  const chunks = [...new TextEncoder().encode(source)].map(byte => Uint8Array.of(byte))
+  const result = await firstEvent(chunks)
   assert.deepEqual(result, { value: event, done: false })
 })
