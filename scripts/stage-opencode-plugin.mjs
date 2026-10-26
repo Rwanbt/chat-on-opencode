@@ -26,24 +26,50 @@ export function stageStandaloneProvider(destination = path.join(repository, 'rel
   safeDirectory(release)
   safeDirectory(parent)
   safeDirectory(destination)
-  const expected = new Map([['', new Set([...files, ...folders])]])
-  for (const folder of folders) {
-    safeDirectory(path.join(destination, folder))
-    expected.set(folder, new Set(readdirSync(path.join(source, folder))))
-  }
-  for (const [folder, names] of expected) {
-    for (const name of readdirSync(path.join(destination, folder))) {
+  // Reject symlinks, irregular files and stale entries at *every* depth.
+  // Addons nested under src/ must be staged, not accidentally omitted.
+  function stageTree(relative = '') {
+    const inputDir = path.join(source, relative)
+    const outputDir = path.join(destination, relative)
+    safeDirectory(outputDir)
+    const entries = readdirSync(inputDir)
+    const names = new Set(entries)
+    for (const name of readdirSync(outputDir)) {
       if (!names.has(name)) throw new Error('standalone_plugin_unexpected_existing_file')
     }
+    for (const name of entries) {
+      const relativeEntry = path.join(relative, name)
+      const input = path.join(source, relativeEntry)
+      const output = path.join(destination, relativeEntry)
+      const info = lstatSync(input)
+      if (info.isSymbolicLink()) throw new Error('standalone_plugin_unsafe_file_type')
+      if (info.isDirectory()) {
+        if (existsSync(output) && !lstatSync(output).isDirectory()) {
+          throw new Error('standalone_plugin_unsafe_file_type')
+        }
+        stageTree(relativeEntry)
+      } else if (info.isFile()) {
+        if (existsSync(output) && (!lstatSync(output).isFile() || lstatSync(output).isSymbolicLink())) {
+          throw new Error('standalone_plugin_unsafe_file_type')
+        }
+        copyFileSync(input, output)
+      } else throw new Error('standalone_plugin_unsafe_file_type')
+    }
   }
-  for (const file of [...files, ...folders.flatMap(folder => [...expected.get(folder)].map(name => path.join(folder, name)))]) {
+  const rootExpected = new Set([...files, ...folders])
+  for (const name of readdirSync(destination)) {
+    if (!rootExpected.has(name)) throw new Error('standalone_plugin_unexpected_existing_file')
+  }
+  for (const file of files) {
     const input = path.join(source, file)
     const output = path.join(destination, file)
-    if (!lstatSync(input).isFile() || (existsSync(output) && !lstatSync(output).isFile())) {
+    if (!lstatSync(input).isFile() || lstatSync(input).isSymbolicLink() ||
+      (existsSync(output) && (!lstatSync(output).isFile() || lstatSync(output).isSymbolicLink()))) {
       throw new Error('standalone_plugin_unsafe_file_type')
     }
     copyFileSync(input, output)
   }
+  for (const folder of folders) stageTree(folder)
   const pkg = JSON.parse(readFileSync(path.join(destination, 'package.json'), 'utf8'))
   if (pkg.name !== 'chat-on-opencode-provider' || !pkg.bin?.['chat-on-opencode-config']) {
     throw new Error('standalone_plugin_package_manifest_invalid')
