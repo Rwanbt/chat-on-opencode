@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -110,6 +110,24 @@ try {
     try { const event = JSON.parse(line); return event.type === 'text' ? [event.part?.text ?? ''] : [] }
     catch { return [] }
   }).join('')
+  let journal = ''
+  try { journal = await readFile(path.join(paths.data, 'opencode', 'log', 'opencode.log'), 'utf8') } catch {}
+  const eventCounts = {}
+  for (const line of stdout.split(/\\r?\\n/)) {
+    try {
+      const event = JSON.parse(line)
+      const type = typeof event.type === 'string' ? event.type : 'unknown'
+      eventCounts[type] = (eventCounts[type] ?? 0) + 1
+    } catch {}
+  }
+  const has = expression => expression.test(journal)
+  process.stdout.write('OFFICIAL_CLI_CATEGORICAL_DIAG=' + JSON.stringify({
+    gatewayReached, refusalObserved, exited: child.exitCode !== null,
+    stdoutNonempty: !!stdout.length, stderrNonempty: !!stderr.length,
+    events: eventCounts, logModelRequest: has(/model\\.request/),
+    logHttpRequest: has(/http\\.request/), logCompaction: has(/compaction/),
+    logError: has(/\\b(ERROR|WARN)\\b/i), logRefusal: has(/chatgpt_sign_in_required|cos_companion_unpaired/)
+  }) + '\\n')
   assert.equal(emittedText.length, 0, 'an unpaired provider must never return assistant inference')
   assert.equal(gatewayReached, true, 'official CLI did not reach real packaged Electron-owned gateway')
   assert.equal(refusalObserved, true, 'unpaired official CLI must surface typed ChatGPT sign-in refusal')
