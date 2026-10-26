@@ -6,12 +6,16 @@ import { MessageIdentity } from './message-identity.mjs'
 import { enforceTextOnlyContext } from './text-only.mjs'
 import { provideLocalTitle, requirePrimaryKind } from './auxiliary.mjs'
 import { provideExtractiveCompaction } from './compaction.mjs'
+import { registerNativeSIWC } from './native-siwc.mjs'
 
 // OpenCode V2 is the only frontend/session owner. The helper starts on the first *selected*
 // model request, not on plugin import, so other providers remain completely unaffected.
 export default Plugin.define({
   id: 'chat-on-opencode',
   async setup(ctx) {
+    // Opt-in preview only. The native OAuth method has validated login flow
+    // components but full model-transport/refresh parity is not yet qualified.
+    if (ctx.options.nativeOAuth === 'preview') await registerNativeSIWC(ctx)
     const identities = new MessageIdentity()
     const option = (key: string) => typeof ctx.options[key] === 'string' ? ctx.options[key] as string : undefined
     // One unpredictable bearer per plugin instance. Neither Desktop startup nor
