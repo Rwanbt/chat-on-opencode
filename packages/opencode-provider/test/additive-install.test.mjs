@@ -85,3 +85,19 @@ test('only the exact pinned configuration may remove an installed pair', () => {
     assert.throws(() => removeAdditive(config, bundle, { idle }), /additive_source_or_configuration_changed/)
   })
 })
+
+test('race: OpenCode starts during staging, publishing is refused and pending files recover', () => {
+  rootFor(({ root, config, sha, original }) => {
+    let probes = 0
+    assert.throws(() => installAdditive(config, bundle, sha, sourceSha, {
+      idle: () => { if (++probes === 2) throw Error('late_opencode_started') },
+    }), /late_opencode_started/)
+    assert.equal(probes, 2)
+    assert.equal(additiveStatus(config, bundle).state, 'pending_recovery')
+    assert.equal(existsSync(path.join(root, 'agents', 'chat-on-opencode-text.md')), false)
+    assert.equal(existsSync(path.join(root, 'plugins', 'chat-on-opencode-context-overlay')), false)
+    assert.equal(removeAdditive(config, bundle, { idle }).recoveredPending, true)
+    assert.equal(additiveStatus(config, bundle).state, 'absent')
+    assert.deepEqual(readFileSync(config), original)
+  })
+})
