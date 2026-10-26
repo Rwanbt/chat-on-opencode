@@ -37,6 +37,15 @@ Object.assign(env, {
   NO_PROXY: '127.0.0.1,localhost',
 })
 let child
+// The official Desktop is an independently packaged GUI; bound the entire CI
+// smoke even when Electron keeps native handles alive after the owned window
+// has closed. This watchdog never runs on, or targets, a personal Windows PC.
+const watchdog = setTimeout(() => {
+  process.stderr.write('OFFICIAL_DESKTOP_GUI_TEST_WALL_TIMEOUT\\n')
+  if (child?.exitCode === null) child.kill('SIGTERM')
+  child?.unref()
+  process.exit(1)
+}, 115_000)
 function ownedProbe(close = false) {
   const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-File', probe, '-OwnerProcessId', String(child.pid)]
@@ -70,7 +79,7 @@ try {
   assert.equal(existsSync(path.join(testRoot, 'desktop')), true,
     'official_desktop_test_root_not_used')
   assert.equal(ownedProbe(true), 'OWNED_WM_CLOSE_SENT')
-  const exited = await Promise.race([
+  const exited = child.exitCode !== null || await Promise.race([
     new Promise(resolve => child.once('exit', () => resolve(true))),
     delay(15000).then(() => false),
   ])
@@ -82,6 +91,11 @@ try {
     // CI-owned disposable process only. No kill or signal to any personal app.
     child.kill('SIGTERM')
     await Promise.race([new Promise(resolve => child.once('exit', resolve)), delay(3500)])
+    if (child.exitCode === null) {
+      process.stderr.write('OFFICIAL_DESKTOP_GUI_CHILD_STILL_LIVE_AFTER_TERM\\n')
+      child.unref()
+    }
   }
   await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 })
+  clearTimeout(watchdog)
 }
