@@ -103,7 +103,9 @@ function entry(root, data) {
   const { plugins, agents, target, agent } = root
   return { target, agent,
     pluginStage: path.join(plugins, '.' + NAME + '.' + data.nonce + '.stage'),
-    agentStage: path.join(agents, '.' + AGENT + '.' + data.nonce + '.stage') }
+    agentStage: path.join(agents, '.' + AGENT + '.' + data.nonce + '.stage'),
+    pluginRetired: path.join(plugins, '.' + NAME + '.' + data.nonce + '.retired'),
+    agentRetired: path.join(agents, '.' + AGENT + '.' + data.nonce + '.retired') }
 }
 
 function assertIdle(probe) {
@@ -126,7 +128,8 @@ function ensurePinned(cfg, data, expectedDigest) {
 function ownedState(cfg, record, expected) {
   const p = entry(cfg, record)
   return { installedPlugin: exactDir(p.target, expected), installedAgent: exactAgent(p.agent, expected),
-    stagedPlugin: exactDir(p.pluginStage, expected, true), stagedAgent: exactAgent(p.agentStage, expected) }
+    stagedPlugin: exactDir(p.pluginStage, expected, true), stagedAgent: exactAgent(p.agentStage, expected),
+    retiredPlugin: exactDir(p.pluginRetired, expected, true), retiredAgent: exactAgent(p.agentRetired, expected) }
 }
 
 /** Files are pinned and published separately; durable receipt is the commit marker. */
@@ -175,10 +178,25 @@ export function additiveStatus(config, bundle) {
 
 function removeOwned(cfg, record, expected) {
   const p = entry(cfg, record)
-  // Validate every existing file before deleting any of them.
+  // Validate all live, staged and retired paths before changing anything.
   const present = ownedState(cfg, record, expected)
-  if (present.installedPlugin) rmSync(p.target, { recursive: true })
-  if (present.installedAgent) unlinkSync(p.agent)
+  if ((present.installedPlugin && present.retiredPlugin) ||
+      (present.installedAgent && present.retiredAgent)) {
+    throw Error('additive_conflicting_recovery_paths')
+  }
+  // Stop auto-discovery with same-volume renames before recursive deletion.
+  // On a crash halfway through deletion, the receipt/journal remains; retry
+  // can safely remove a subset of these verified, retired files.
+  if (present.installedPlugin) renameSync(p.target, p.pluginRetired)
+  if (present.installedAgent) renameSync(p.agent, p.agentRetired)
+  if (stat(p.pluginRetired)) {
+    exactDir(p.pluginRetired, expected, true)
+    rmSync(p.pluginRetired, { recursive: true })
+  }
+  if (stat(p.agentRetired)) {
+    exactAgent(p.agentRetired, expected)
+    unlinkSync(p.agentRetired)
+  }
   if (present.stagedPlugin) rmSync(p.pluginStage, { recursive: true })
   if (present.stagedAgent) unlinkSync(p.agentStage)
 }
