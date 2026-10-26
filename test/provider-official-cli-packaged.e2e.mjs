@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -17,6 +17,7 @@ assert.equal(process.platform, 'win32', 'packaged Windows CLI integration only')
 const cli = process.env.CHAT_ON_OPENCODE_TEST_CLI
 assert.ok(cli && path.isAbsolute(cli) && existsSync(cli), 'official CLI 2.1.4 missing')
 const rootRepo = fileURLToPath(new URL('..', import.meta.url))
+const legacyOverlay = process.env.CHAT_ON_OPENCODE_TEST_LEGACY_OVERLAY === '1'
 const packaged = path.join(rootRepo, 'release', 'provider')
 const binary = path.join(packaged, 'win-unpacked', 'Chat On OpenCode Provider.exe')
 const plugin = path.join(packaged, 'opencode-plugin')
@@ -64,6 +65,26 @@ try {
   const config = JSON.parse(generated.stdout)
   assert.equal(config.providers['chat-on-opencode'].models['chatgpt-default'].limit.context, 65536)
   config.plugins[0].options.nativeOAuth = 'off' // native OAuth always requires explicit consent
+  let originalConfig = null
+  if (legacyOverlay) {
+    // Exactly the historical 16k definition in the user's format-1 config.
+    // The add-only globally discovered overlay repairs it in-memory.
+    config.providers['chat-on-opencode'].models['chatgpt-default'].limit.context = 16384
+    delete config.agents['chat-on-opencode-text']
+    const overlaySource = path.join(plugin, 'src', 'context-overlay')
+    const overlayTarget = path.join(paths.config, 'plugins', 'chat-on-opencode-context-overlay')
+    const agents = path.join(paths.config, 'agents')
+    await mkdir(overlayTarget, { recursive: true })
+    await mkdir(agents, { recursive: true })
+    for (const name of ['index.ts', 'overlay.mjs']) {
+      await copyFile(path.join(overlaySource, name), path.join(overlayTarget, name))
+    }
+    await copyFile(path.join(overlaySource, 'chat-on-opencode-browser-text.md'),
+      path.join(agents, 'chat-on-opencode-text.md'))
+    // A disposable stand-in for opencode.jsonc proves this path never edits it.
+    originalConfig = '{\n  // Existing config and plugin settings are managed separately\n}\n'
+    await writeFile(path.join(paths.config, 'opencode.jsonc'), originalConfig, { flag: 'wx' })
+  }
   // Preserve the coherent Windows HOME/USERPROFILE that Electron requires.
   // Only the per-process OpenCode and provider data move to disposable folders.
   const env = { ...process.env }
@@ -131,6 +152,11 @@ try {
   assert.equal(emittedText.length, 0, 'an unpaired provider must never return assistant inference')
   assert.equal(gatewayReached, true, 'official CLI did not reach real packaged Electron-owned gateway')
   assert.equal(refusalObserved, true, 'unpaired official CLI must surface typed ChatGPT sign-in refusal')
+  if (legacyOverlay) {
+    assert.equal(await readFile(path.join(paths.config, 'opencode.jsonc'), 'utf8'),
+      originalConfig, 'global legacy overlay must not rewrite opencode.jsonc')
+    process.stdout.write('LEGACY_16K_CONTEXT_ADDITIVE_OVERLAY=PASS\n')
+  }
   process.stdout.write('OFFICIAL_CLI_2_1_4_PACKAGED_ELECTRON_GATEWAY=PASS\n')
   process.stdout.write('UNPAIRED_AUTH_REFUSAL=PASS\n')
 } finally {

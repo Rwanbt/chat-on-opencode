@@ -38,6 +38,43 @@ test('pinned additive pair installs, verifies and removes without mutating JSONC
   })
 })
 
+test('additive overlay preserves Goal/Loop/Daemon/Scheduler and existing swap generations byte for byte', () => {
+  rootFor(({ root, config, sha, original }) => {
+    const plugins = path.join(root, 'plugins')
+    mkdirSync(plugins)
+    const preserved = new Map()
+    for (const name of ['Goal', 'Loop', 'Daemon', 'Scheduler']) {
+      const dir = path.join(plugins, name)
+      mkdirSync(dir)
+      const file = path.join(dir, 'index.ts')
+      const content = 'export const plugin = ' + JSON.stringify(name) + '\n'
+      writeFileSync(file, content)
+      preserved.set(file, Buffer.from(content))
+    }
+    const previous = path.join(root, '.chat-on-opencode-directory-previous')
+    mkdirSync(previous)
+    const oldBundle = path.join(previous, 'previous-plugin.js')
+    writeFileSync(oldBundle, 'IMMUTABLE PRIOR GENERATION\n')
+    preserved.set(oldBundle, readFileSync(oldBundle))
+    const journal = path.join(root, '.chat-on-opencode-directory-switch.json')
+    writeFileSync(journal, JSON.stringify({ version: 3, phase: 'active', retain: 'all' }))
+    preserved.set(journal, readFileSync(journal))
+    const backup = path.join(root, 'open-code-config-multigeneration.backup')
+    writeFileSync(backup, original)
+    preserved.set(backup, readFileSync(backup))
+
+    assert.equal(installAdditive(config, bundle, sha, sourceSha, { idle }).installed, true)
+    assert.equal(additiveStatus(config, bundle).state, 'installed')
+    for (const [file, bytes] of preserved) assert.deepEqual(readFileSync(file), bytes)
+    assert.deepEqual(readFileSync(config), original)
+
+    assert.equal(removeAdditive(config, bundle, { idle }).removed, true)
+    assert.equal(additiveStatus(config, bundle).state, 'absent')
+    for (const [file, bytes] of preserved) assert.deepEqual(readFileSync(file), bytes)
+    assert.deepEqual(readFileSync(config), original)
+  })
+})
+
 test('never mutates profile when a process is active, digest differs or name collides', () => {
   rootFor(({ root, config, sha, original }) => {
     assert.throws(() => installAdditive(config, bundle, sha, sourceSha, {
