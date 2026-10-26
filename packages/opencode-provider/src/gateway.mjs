@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto'
 import http from 'node:http'
 import { BridgeError } from './control.mjs'
 import { READ_INSTRUCTIONS, validateNativeTools, readResultPrompt, parseReadCall } from './native-read.mjs'
+import { NativeReadCustody } from './native-read-custody.mjs'
 
 // Deterministic names survive restart; never infer session identity from prompt text.
 export function stableUUID(value) {
@@ -119,7 +120,7 @@ export function createGateway({ control, key, nativeTools = 'off' }) {
   // Volatile custody for a *generated* tool call. An authenticated caller may
   // not invent a tool-result message and have it forwarded into ChatGPT.
   // Gateway restart loses custody and intentionally refuses the result.
-  const issuedReads = new Map()
+  const issuedReads = new NativeReadCustody()
   const secret = Buffer.from('Bearer ' + key)
   // Protected /health gives only categorical diagnostics. No prompt, path, headers or secrets.
   const diagnostics = { attempted: 0, authRefused: 0, lastFailure: null }
@@ -169,15 +170,10 @@ export function createGateway({ control, key, nativeTools = 'off' }) {
       if (!body || typeof body !== 'object') throw new BridgeError('invalid_body', 400)
       const isToolResult = body.messages?.at(-1)?.role === 'tool'
       if (isToolResult) {
-        const issued = issuedReads.get(sessionKey)
-        const previous = body.messages.at(-2)?.tool_calls
-        if (!issued || issued.messageKey !== messageKey || previous?.length !== 1 ||
-            previous[0]?.id !== issued.id || body.messages.at(-1).tool_call_id !== issued.id) {
-          throw new BridgeError('native_tool_result_not_issued', 403)
-        }
+        issuedReads.claim(sessionKey, messageKey, body.messages)
       } else if (issuedReads.has(sessionKey)) {
         // A later user prompt supersedes an unanswered tool request.
-        issuedReads.delete(sessionKey)
+        issuedReads.abandon(sessionKey)
       }
       const stream = body.stream === true
       const cancel = new AbortController()
@@ -196,9 +192,7 @@ export function createGateway({ control, key, nativeTools = 'off' }) {
       if (typeof result === 'object' && result?.toolCall) {
         if (res.headersSent) throw new BridgeError('native_tool_call_after_text', 502)
         const call = result.toolCall
-        issuedReads.delete(sessionKey)
-        issuedReads.set(sessionKey, { id: call.id, messageKey })
-        while (issuedReads.size > 1024) issuedReads.delete(issuedReads.keys().next().value)
+        issuedReads.issue(sessionKey, messageKey, call)
         if (stream) {
           res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
           res.end('data: ' + JSON.stringify(chunk({ tool_calls: [{
@@ -210,7 +204,7 @@ export function createGateway({ control, key, nativeTools = 'off' }) {
         })
         return
       }
-      if (isToolResult) issuedReads.delete(sessionKey)
+      if (isToolResult) issuedReads.consume(sessionKey)
       if (stream) {
         if (!res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
         res.end('data: ' + JSON.stringify(chunk({}, 'stop')) + '\n\ndata: [DONE]\n\n')
