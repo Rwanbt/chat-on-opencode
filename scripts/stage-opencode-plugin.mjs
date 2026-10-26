@@ -31,6 +31,10 @@ export function stageStandaloneProvider(destination = path.join(repository, 'rel
   function stageTree(relative = '') {
     const inputDir = path.join(source, relative)
     const outputDir = path.join(destination, relative)
+    const sourceInfo = lstatSync(inputDir)
+    if (!sourceInfo.isDirectory() || sourceInfo.isSymbolicLink()) {
+      throw new Error('standalone_plugin_unsafe_file_type')
+    }
     safeDirectory(outputDir)
     const entries = readdirSync(inputDir)
     const names = new Set(entries)
