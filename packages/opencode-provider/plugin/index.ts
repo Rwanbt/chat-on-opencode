@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { GatewayLifecycle } from '../src/lifecycle.mjs'
 import { MessageIdentity } from './message-identity.mjs'
 import { enforceTextOnlyContext } from './text-only.mjs'
+import { provideLocalTitle, requirePrimaryKind } from './auxiliary.mjs'
 
 // OpenCode V2 is the only frontend/session owner. The helper starts on the first *selected*
 // model request, not on plugin import, so other providers remain completely unaffected.
@@ -32,9 +33,12 @@ export default Plugin.define({
     await ctx.session.hook('prompt', event => {
       identities.remember(event.sessionID, event.messageID)
     })
+    // The V2 title hook accepts a string result. No gateway request should be
+    // made for a title: it lacks a primary message ID and approval context.
+    await ctx.session.hook('title', event => { provideLocalTitle(event) }, { providerID: 'chat-on-opencode' })
     await ctx.session.hook('model.request', async event => {
       if (event.model.providerID !== 'chat-on-opencode') return
-      if (event.kind !== 'primary') throw new Error('chat_on_opencode_auxiliary_requests_not_supported')
+      requirePrimaryKind(event.kind)
       identities.require(event.sessionID)
       await service.ensure()
       event.baseURL = `http://127.0.0.1:${port}/v1`
@@ -42,7 +46,7 @@ export default Plugin.define({
     }, { providerID: 'chat-on-opencode' })
     await ctx.session.hook('http.request', event => {
       if (event.model.providerID !== 'chat-on-opencode') return
-      if (event.kind !== 'primary') throw new Error('chat_on_opencode_auxiliary_requests_not_supported')
+      requirePrimaryKind(event.kind)
       event.request.headers.set('x-opencode-session-id', event.sessionID)
       event.request.headers.set('x-opencode-message-id', identities.require(event.sessionID))
       event.request.headers.set('Authorization', `Bearer ${key}`)

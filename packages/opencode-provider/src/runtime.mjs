@@ -82,7 +82,8 @@ export class CoSRuntime {
           return control
         } catch (error) {
           // Invalid identity may indicate an unrelated stale endpoint: never adopt it.
-          if (error instanceof BridgeError && error.code === 'runtime_endpoint_pid_mismatch') throw error
+          if (error instanceof BridgeError &&
+              ['runtime_endpoint_pid_mismatch', 'cos_provider_runtime_incompatible'].includes(error.code)) throw error
         }
         if (Date.now() >= deadline) throw new BridgeError('runtime_start_timeout', 503)
         await this.clock(250, undefined, { signal: signal.signal }).catch(() => {

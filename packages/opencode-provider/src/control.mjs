@@ -33,6 +33,15 @@ export class CoSControl {
     this.token = token.trim()
     const health = await this.json('GET', '/v1/health')
     if (health.protocol !== 1 || !health.ok || !health.actions?.enabled) throw new BridgeError('cos_actions_unavailable', 503)
+    // A prior CoS binary can expose protocol 1 but still lack the provider-only
+    // readiness or stream routes. Reject before accepting an OpenCode prompt.
+    const requiredReads = ['/v1/provider/readiness', '/v1/sessions/{id}/events/stream']
+    const requiredActions = ['POST /v1/inputs', 'POST /v1/sessions/{id}/stop', 'POST /v1/inputs/{id}/cancel']
+    if (!Array.isArray(health.routes) || !Array.isArray(health.actions.routes) ||
+        !requiredReads.every(route => health.routes.includes(route)) ||
+        !requiredActions.every(route => health.actions.routes.includes(route))) {
+      throw new BridgeError('cos_provider_runtime_incompatible', 503)
+    }
   }
 
   async request(method, route, body, { signal, stream = false } = {}) {
