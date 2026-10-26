@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 import { createOpenCodeConfig } from '../src/config.mjs'
 
 const args = process.argv.slice(2)
-const known = new Set(['--runtime', '--data', '--node', '--plugin-dir', '--personal-cos-data', '--port', '--native-tools'])
+const known = new Set(['--runtime', '--data', '--node', '--plugin-dir', '--personal-cos-data', '--port', '--native-tools', '--native-inference', '--native-model'])
 const values = new Map()
 try {
   for (let i = 0; i < args.length; i += 2) {
@@ -18,6 +18,8 @@ try {
     personalCoSData: values.get('--personal-cos-data'),
     port: values.has('--port') ? Number(values.get('--port')) : undefined,
     nativeTools: values.get('--native-tools') ?? 'off',
+    nativeInference: values.get('--native-inference') ?? 'off',
+    nativeModelID: values.get('--native-model'),
   })
   process.stdout.write(JSON.stringify(result, null, 2) + '\n')
 } catch (error) {
