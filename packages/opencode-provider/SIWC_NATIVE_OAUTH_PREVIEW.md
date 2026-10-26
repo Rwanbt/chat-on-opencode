@@ -49,5 +49,9 @@ node --test test/official-native-siwc.e2e.mjs
 The latter starts a separate official CLI server under synthetic HOME,
 APPDATA, XDG folders and checks only read-only integration metadata on a
 127.0.0.1 port. It does not open a sign-in browser or submit a model prompt.
-Its result must be reported precisely; absence of the method is a failed
-integration test, **not** a completed installation.
+It also creates and explicitly cancels one native OAuth *attempt*, without
+opening its authorization URL or exchanging any real tokens. The installed
+official Windows OpenCode CLI **2.1.4 passed** these checks on 26 October 2026;
+the CI Windows 2.1.4 job repeats them at the PR's exact SHA. This is proof of
+native method discovery and controlled attempt cleanup, **not** real-account
+authentication, model inference or a completed personal installation.
