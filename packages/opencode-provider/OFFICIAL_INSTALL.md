@@ -71,11 +71,13 @@ It first stores a same-directory exact-byte backup named
 `.chat-on-opencode-managed/`, and atomically replaces the config. No bearer,
 `apiKey` or login cookie is stored in the generated config.
 
-Rollback is compare-and-swap: a manifest pins the exact installed-config and
+Rollback is guarded by precondition hashes: a manifest pins the exact installed-config and
 backup hashes. If any intervening edit or backup corruption is found,
 **rollback refuses to overwrite the user's changes**. On successful rollback,
 the original JSONC is restored byte-for-byte and the managed payload removed;
 the historic backup is retained. A fresh installation can create a new backup.
+The hash check and following filesystem rename are separate operations, so
+they are not a true atomic interprocess compare-and-swap.
 If interrupted while installing, the backup remains for recovery. Do not use
 this procedure to replace an official OpenCode application, update or reset
 running services, or extract an account token.
@@ -105,6 +107,37 @@ or early crash returns nonzero. Neither command logs or persists the key.
 These checks **do not** exercise a ChatGPT account, model inference, native
 Desktop selection or any UI permission dialog. They do not restart a running
 Desktop process or inject its previously missing environment key.
+
+## Native OAuth bootstrap for a previously installed provider
+
+An updated, user-approved managed plugin bundle offers OpenCode's native
+`Continue with ChatGPT` method when the existing provider options omit
+`nativeOAuth`. Registration only exposes the method; it does not begin sign-in
+or obtain a credential. `nativeOAuth: "off"` explicitly disables the method.
+The existing browser gateway and `chatgpt-default` model remain unchanged.
+Native text inference still requires `nativeOAuth: "preview"`,
+`nativeInference: "text"`, and a model slug independently verified from the
+authorized account's visible catalog.
+
+To stage a reviewed updated bundle, use the existing offline
+`bin/official-managed-swap.mjs --stage <absolute-config> <absolute-bundle>`
+operation. Its separate `--activate` and `--rollback` operations require a
+quiescent Windows OpenCode process and retain the original managed bytes for
+rollback. They do not modify `opencode.jsonc`, so the saved installation
+manifest continues to verify the same config hash. Do not attempt activation
+while the official Desktop is running.
+
+The optional `bin/official-native-activation.mjs --plan --config
+<absolute-config> --mode oauth` command previews a strictly scoped JSONC
+change and returns only original/proposed SHA-256 digests and changed field
+names. It does not emit the configuration's contents. The corresponding
+programmatic `previewNativeActivation` supports a text proposal only with
+an account-bound verified model catalog; a model slug supplied on the CLI
+alone cannot establish that authority. **There is no write/approve command**:
+native rename cannot atomically compare and replace a file, and updating both
+the config and its installation manifest without an interprocess CAS would
+risk overwriting a concurrent edit. Its output remains
+`NO_GO_ATOMIC_CONFIG_CAS_UNPROVEN`.
 
 **Important:** Installing the provider registration does not establish
 production-ready inference. Desktop model-picker appearance, verified
