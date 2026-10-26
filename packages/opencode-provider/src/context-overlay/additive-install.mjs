@@ -60,11 +60,14 @@ function writeNew(file, bytes) {
   try { writeFileSync(fd, bytes); fsyncSync(fd) } finally { closeSync(fd) }
 }
 
-function exactDir(dir, expected) {
+function exactDir(dir, expected, allowPartial = false) {
   if (!stat(dir)) return false
   regular(dir, 'dir')
   const names = readdirSync(dir).sort()
-  if (names.join('\0') !== ['index.ts', 'overlay.mjs'].join('\0')) throw Error('additive_unexpected_plugin_content')
+  if (allowPartial ? names.some(name => !['index.ts', 'overlay.mjs'].includes(name))
+    : names.join('\0') !== ['index.ts', 'overlay.mjs'].join('\0')) {
+    throw Error('additive_unexpected_plugin_content')
+  }
   for (const name of names) {
     if (hash(readFileSync(regular(path.join(dir, name)))) !== hash(expected.get(name))) {
       throw Error('additive_plugin_modified')
@@ -121,7 +124,7 @@ function ensurePinned(cfg, data, expectedDigest) {
 function ownedState(cfg, record, expected) {
   const p = entry(cfg, record)
   return { installedPlugin: exactDir(p.target, expected), installedAgent: exactAgent(p.agent, expected),
-    stagedPlugin: exactDir(p.pluginStage, expected), stagedAgent: exactAgent(p.agentStage, expected) }
+    stagedPlugin: exactDir(p.pluginStage, expected, true), stagedAgent: exactAgent(p.agentStage, expected) }
 }
 
 /** Files are pinned and published separately; durable receipt is the commit marker. */
