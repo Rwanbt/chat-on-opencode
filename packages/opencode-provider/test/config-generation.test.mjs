@@ -40,6 +40,8 @@ test('generates installable OpenCode 2 configuration without secrets or profile 
     assert.equal(serialized.includes('CHAT_ON_OPENCODE_GATEWAY_KEY'), false)
     assert.equal(serialized.includes(opts.personal), false)
     assert.equal(conf.providers['chat-on-opencode'].models['chatgpt-default'].capabilities.tools, false)
+    assert.equal(conf.providers['chat-on-opencode'].models['chatgpt-default'].limit.context, 65536,
+      'OpenCode 2.1.4 must have space above its initial compaction reserve')
   })
 })
 
@@ -66,6 +68,7 @@ test('explicit native text generates reversible OAuth-only candidate without API
     assert.equal(conf.providers['chat-on-opencode'].settings.baseURL,'https://api.openai.com/v1')
     assert.ok(conf.providers['chat-on-opencode'].models['synthetic-gpt-model'])
     assert.equal(conf.providers['chat-on-opencode'].models['synthetic-gpt-model'].capabilities.tools,false)
+    assert.equal(conf.providers['chat-on-opencode'].models['synthetic-gpt-model'].limit.context,65536)
     assert.equal(JSON.stringify(conf).includes('apiKey'),false)
     assert.throws(()=>createOpenCodeConfig({...opts,nativeInference:'text'}),/native_inference_requires_verified_text_model/)
     assert.throws(()=>createOpenCodeConfig({...opts,nativeInference:'text',nativeModelID:'../../bad'}),/native_inference_requires_verified_text_model/)

@@ -64,6 +64,8 @@ test('actual OpenCode V2 CLI loads provider plugin, starts owned gateway and rec
     })
     assert.equal(generated.status, 0, `config generation failed: ${generated.stderr?.slice(-500)}`)
     const configuration = JSON.parse(generated.stdout)
+    assert.equal(configuration.providers['chat-on-opencode'].models['chatgpt-default'].limit.context,65536,
+      'a fresh official 2.1.4 turn must not start by requesting compaction')
     assert.equal(configuration.providers['chat-on-opencode'].settings.apiKey, undefined)
     assert.equal(configuration.providers['chat-on-opencode'].env, undefined)
     const safeEnv = {}

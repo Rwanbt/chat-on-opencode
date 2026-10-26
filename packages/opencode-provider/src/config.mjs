@@ -63,7 +63,9 @@ export function createOpenCodeConfig({ runtimeExecutable, runtimeData, nodeExecu
       models: { [nativeInference === 'text' ? nativeModelID : 'chatgpt-default']: {
         name: nativeTools === 'read' ? 'ChatGPT via Chat On OpenCode (native read preview)' : 'ChatGPT via Chat On OpenCode (text only)',
         capabilities: { tools: nativeTools === 'read', input: ['text'], output: ['text'] },
-        limit: { context: 16384, output: 2048 },
+        // OpenCode 2.1.4 reserves roughly 16k tokens for compaction; a 16k
+        // context forces an auxiliary request before the first primary turn.
+        limit: { context: 65536, output: 2048 },
       } },
     } },
   }
