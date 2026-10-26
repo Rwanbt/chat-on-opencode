@@ -12,6 +12,7 @@ on:
       - 'scripts/verify-provider-packaged-electron.mjs'
       - 'scripts/verify-provider-packaged-sign-in.mjs'
       - 'test/provider-packaged-gateway-env.e2e.mjs'
+      - 'test/provider-official-cli-packaged.e2e.mjs'
       - 'scripts/provider-windows-window-probe.ps1'
       - 'package.json'
       - 'test/provider-packaging.test.ts'
@@ -119,6 +120,19 @@ jobs:
         run: node test/provider-packaged-gateway-env.e2e.mjs
       - name: Qualify hidden service and explicit isolated sign-in against packaged Electron
         run: node scripts/verify-provider-packaged-sign-in.mjs
+      - name: Install official OpenCode 2.1.4 in runner temp only
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:RUNNER_TEMP 'chat-on-opencode-cli'
+          npm install --prefix $prefix --no-save --no-audit --no-fund "@opencode/cli@2.1.4"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Official OpenCode 2.1.4 to packaged Electron (unpaired fail-closed)
+        shell: pwsh
+        run: |
+          $env:CHAT_ON_OPENCODE_TEST_CLI = Join-Path $env:RUNNER_TEMP 'chat-on-opencode-cli/node_modules/@opencode/cli/bin/opencode.exe'
+          if (-not (Test-Path -LiteralPath $env:CHAT_ON_OPENCODE_TEST_CLI)) { throw 'Official CLI binary missing' }
+          node test/provider-official-cli-packaged.e2e.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Publish portable provider bundle after runtime smoke
         uses: actions/upload-artifact@v4
         with:
