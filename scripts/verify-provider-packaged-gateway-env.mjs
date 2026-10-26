@@ -56,7 +56,7 @@ if (process.argv[2] === '--gateway-worker') {
 } else {
   assert.equal(process.platform, 'win32', 'Windows packaged runtime required')
   assert.ok(existsSync(executable), 'packaged Electron must already be built')
-  const home = await mkdtemp(path.join(os.tmpdir(), 'coo-packaged-gateway-env-'))
+  const home = await mkdtemp(path.join(os.tmpdir(), 'coo-provider-e2e-gateway-env-'))
   try {
     for (const variant of ['full', 'standalone-cli']) {
       const dir = path.join(home, variant)
