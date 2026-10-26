@@ -220,6 +220,12 @@ hidden-service gate. A failed/denied network request proves only that the browse
 attempted the ChatGPT host; the exact login path is separately covered by the host
 unit test. No real login, auth cookie or model inference is used.
 
+The Windows portable-provider CI additionally runs the real executable through
+`packaged-first-use.e2e.mjs` under a fresh, real-schema, capabilities-off profile.
+It verifies that the private service is owned and ready to answer its control API,
+but that a first unpaired ChatGPT turn is rejected before durable input admission.
+This is a **negative authentication safety proof**, not proof of model inference.
+
 
 1. Qualify the packaged sign-in window and its existing Google handoff with a user-controlled
    isolated browser profile, then prove the returning headless provider observes that login.
