@@ -21,7 +21,7 @@ test('provider service and isolated sign-in use only their own published bridge 
 });
 
 test('unpublished or invalid provider port fails closed without falling back to a personal listener', () => {
-  for (const port of [null, 0, -1, 65536, 3.14, '8766']) {
+  for (const port of [null, 0, -1, 8765, 8767, 18766, 65536, 3.14, '8766']) {
     const policy = providerBrowserDiscoveryPolicy(['app.exe', PROVIDER_SERVICE_SWITCH], port);
     assert.deepEqual(bridgeDiscoveryPlan(policy, NORMAL_PORTS, 8765), { candidates: [], forgetCredential: true });
   }
