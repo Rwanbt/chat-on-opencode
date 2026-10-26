@@ -205,3 +205,54 @@ test('deterministic failpoints: each removal phase can be retried without touchi
     assert.deepEqual(readFileSync(config), original)
   })
 })
+
+test('real child-process termination mid-publication leaves recoverable owned state', () => {
+  const moduleURL = new URL('../src/context-overlay/additive-install.mjs', import.meta.url).href
+  for (const point of ['journal-written', 'agent-published', 'plugin-published', 'receipt-published']) {
+    rootFor(({ root, config, sha, original }) => {
+      const source = [
+        'import { installAdditive } from ' + JSON.stringify(moduleURL),
+        'installAdditive(' + [config, bundle, sha, sourceSha].map(JSON.stringify).join(',') +
+          ', { idle: () => {}, phase: at => { if (at === ' + JSON.stringify(point) +
+          ') process.exit(93) } })',
+      ].join(';')
+      const child = spawnSync(process.execPath, ['--input-type=module', '--eval', source], {
+        encoding: 'utf8', timeout: 8_000, windowsHide: true, shell: false,
+      })
+      assert.equal(child.status, 93, 'child must terminate at exact step: ' + point)
+      const state = point === 'receipt-published' ? 'installed' : 'pending_recovery'
+      assert.equal(additiveStatus(config, bundle).state, state)
+      assert.equal(removeAdditive(config, bundle, { idle }).removed, true)
+      assert.equal(additiveStatus(config, bundle).state, 'absent')
+      assert.deepEqual(readFileSync(config), original)
+      assert.equal(existsSync(path.join(root, 'agents', 'chat-on-opencode-text.md')), false)
+    })
+  }
+})
+
+test('real child-process termination mid-removal preserves foreign agent and retries safely', () => {
+  const moduleURL = new URL('../src/context-overlay/additive-install.mjs', import.meta.url).href
+  for (const point of ['plugin-retired', 'agent-retired', 'plugin-deleted', 'agent-deleted']) {
+    rootFor(({ root, config, sha, original }) => {
+      installAdditive(config, bundle, sha, sourceSha, { idle })
+      const foreign = path.join(root, 'agents', 'foreign-agent.md')
+      writeFileSync(foreign, 'KEEP')
+      const source = [
+        'import { removeAdditive } from ' + JSON.stringify(moduleURL),
+        'removeAdditive(' + JSON.stringify(config) + ',' + JSON.stringify(bundle) +
+          ', { idle: () => {}, phase: at => { if (at === ' + JSON.stringify(point) +
+          ') process.exit(94) } })',
+      ].join(';')
+      const child = spawnSync(process.execPath, ['--input-type=module', '--eval', source], {
+        encoding: 'utf8', timeout: 8_000, windowsHide: true, shell: false,
+      })
+      assert.equal(child.status, 94, 'child must terminate at exact step: ' + point)
+      assert.equal(additiveStatus(config, bundle).state, 'partial_removal')
+      assert.equal(readFileSync(foreign, 'utf8'), 'KEEP')
+      assert.equal(removeAdditive(config, bundle, { idle }).removed, true)
+      assert.equal(additiveStatus(config, bundle).state, 'absent')
+      assert.equal(readFileSync(foreign, 'utf8'), 'KEEP')
+      assert.deepEqual(readFileSync(config), original)
+    })
+  }
+})
