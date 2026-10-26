@@ -133,7 +133,8 @@ function ownedState(cfg, record, expected) {
 }
 
 /** Files are pinned and published separately; durable receipt is the commit marker. */
-export function installAdditive(config, bundle, expectedConfigSha, expectedSourceSha, { idle } = {}) {
+export function installAdditive(config, bundle, expectedConfigSha, expectedSourceSha,
+  { idle, phase = () => {} } = {}) {
   assertIdle(idle)
   const cfg = profile(config), source = sourceFiles(bundle)
   if (!SHA.test(expectedConfigSha) || !SHA.test(expectedSourceSha) ||
@@ -147,11 +148,16 @@ export function installAdditive(config, bundle, expectedConfigSha, expectedSourc
   const locations = entry(cfg, data)
   const manifest = { ...data, checksum: hash(JSON.stringify(data)) }
   writeNew(cfg.journal, JSON.stringify(manifest))
+  phase('journal-written')
   // On crash, leave the journal for explicit integrity-checked recovery.
   mkdirSync(locations.pluginStage)
+  phase('plugin-stage-created')
   writeNew(path.join(locations.pluginStage, 'index.ts'), source.found.get('index.ts'))
+  phase('index-staged')
   writeNew(path.join(locations.pluginStage, 'overlay.mjs'), source.found.get('overlay.mjs'))
+  phase('overlay-staged')
   writeNew(locations.agentStage, source.found.get('chat-on-opencode-browser-text.md'))
+  phase('agent-staged')
   ensurePinned(profile(config), data, expectedSourceSha)
   ownedState(cfg, data, source.found)
   // Recheck quiescence immediately before either global file becomes visible.
@@ -159,8 +165,11 @@ export function installAdditive(config, bundle, expectedConfigSha, expectedSourc
   // explicit recovery rather than publishing into a running official app.
   assertIdle(idle)
   renameSync(locations.agentStage, cfg.agent)
+  phase('agent-published')
   renameSync(locations.pluginStage, cfg.target)
+  phase('plugin-published')
   renameSync(cfg.journal, cfg.receipt)
+  phase('receipt-published')
   return { installed: true, configUnchanged: true, sourceSha256: source.digest }
 }
 
@@ -176,7 +185,7 @@ export function additiveStatus(config, bundle) {
     configUnchanged: true }
 }
 
-function removeOwned(cfg, record, expected) {
+function removeOwned(cfg, record, expected, phase) {
   const p = entry(cfg, record)
   // Validate all live, staged and retired paths before changing anything.
   const present = ownedState(cfg, record, expected)
@@ -187,22 +196,24 @@ function removeOwned(cfg, record, expected) {
   // Stop auto-discovery with same-volume renames before recursive deletion.
   // On a crash halfway through deletion, the receipt/journal remains; retry
   // can safely remove a subset of these verified, retired files.
-  if (present.installedPlugin) renameSync(p.target, p.pluginRetired)
-  if (present.installedAgent) renameSync(p.agent, p.agentRetired)
+  if (present.installedPlugin) { renameSync(p.target, p.pluginRetired); phase('plugin-retired') }
+  if (present.installedAgent) { renameSync(p.agent, p.agentRetired); phase('agent-retired') }
   if (stat(p.pluginRetired)) {
     exactDir(p.pluginRetired, expected, true)
     rmSync(p.pluginRetired, { recursive: true })
+    phase('plugin-deleted')
   }
   if (stat(p.agentRetired)) {
     exactAgent(p.agentRetired, expected)
     unlinkSync(p.agentRetired)
+    phase('agent-deleted')
   }
   if (present.stagedPlugin) rmSync(p.pluginStage, { recursive: true })
   if (present.stagedAgent) unlinkSync(p.agentStage)
 }
 
 /** Refuse foreign files and all changed source/configuration bytes. */
-export function removeAdditive(config, bundle, { idle } = {}) {
+export function removeAdditive(config, bundle, { idle, phase = () => {} } = {}) {
   assertIdle(idle)
   const cfg = profile(config), source = sourceFiles(bundle)
   const pending = Boolean(stat(cfg.journal))
@@ -212,8 +223,9 @@ export function removeAdditive(config, bundle, { idle } = {}) {
   ensurePinned(cfg, data, source.digest)
   // A restart during the integrity scan invalidates a removal attempt.
   assertIdle(idle)
-  removeOwned(cfg, data, source.found)
+  removeOwned(cfg, data, source.found, phase)
   unlinkSync(recordFile)
+  phase('receipt-deleted')
   return { removed: true, recoveredPending: pending, configUnchanged: true }
 }
 
