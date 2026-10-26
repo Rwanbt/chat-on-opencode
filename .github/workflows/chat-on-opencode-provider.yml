@@ -12,6 +12,8 @@ on:
       - 'scripts/verify-provider-packaged-electron.mjs'
       - 'scripts/provider-window-probe-runner.mjs'
       - 'scripts/verify-official-desktop-bundle.ps1'
+      - 'scripts/probe-official-desktop-window.ps1'
+      - 'test/provider-official-desktop-gui.e2e.mjs'
       - 'test/provider-window-probe-runner.test.mjs'
       - 'scripts/verify-provider-packaged-sign-in.mjs'
       - 'test/provider-packaged-gateway-env.e2e.mjs'
