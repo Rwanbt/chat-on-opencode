@@ -256,3 +256,29 @@ test('real child-process termination mid-removal preserves foreign agent and ret
     })
   }
 })
+
+test('Windows CLI performs real pinned install/status/rollback against temporary OpenCode profile', {
+  skip: process.platform !== 'win32' ? 'Windows-only process quiescence gate' : false,
+  timeout: 65_000,
+}, () => {
+  rootFor(({ config, sha, original }) => {
+    const cli = fileURLToPath(new URL('../bin/additive-context.mjs', import.meta.url))
+    const run = (...args) => spawnSync(process.execPath, [cli, ...args], {
+      encoding: 'utf8', shell: false, windowsHide: true, timeout: 22_000,
+    })
+    const install = run('--install', '--config', config, '--bundle', bundle,
+      '--config-sha256', sha, '--source-sha256', sourceSha)
+    assert.equal(install.status, 0, install.stderr)
+    assert.equal(JSON.parse(install.stdout).installed, true)
+    const installed = run('--status', '--config', config, '--bundle', bundle)
+    assert.equal(installed.status, 0, installed.stderr)
+    assert.equal(JSON.parse(installed.stdout).state, 'installed')
+    const remove = run('--remove', '--config', config, '--bundle', bundle)
+    assert.equal(remove.status, 0, remove.stderr)
+    assert.equal(JSON.parse(remove.stdout).removed, true)
+    const clean = run('--status', '--config', config, '--bundle', bundle)
+    assert.equal(clean.status, 0, clean.stderr)
+    assert.equal(JSON.parse(clean.stdout).state, 'absent')
+    assert.deepEqual(readFileSync(config), original)
+  })
+})
