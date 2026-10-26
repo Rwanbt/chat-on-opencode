@@ -153,3 +153,55 @@ test('interrupted removal recovers verified retired plugin with a missing file',
     assert.deepEqual(readFileSync(config), original)
   })
 })
+
+test('deterministic failpoints: every installation publication phase is recoverable', () => {
+  const phases = [
+    'journal-written', 'plugin-stage-created', 'index-staged',
+    'overlay-staged', 'agent-staged', 'agent-published',
+    'plugin-published', 'receipt-published',
+  ]
+  for (const point of phases) rootFor(({ root, config, sha, original }) => {
+    let injected = 0
+    assert.throws(() => installAdditive(config, bundle, sha, sourceSha, {
+      idle,
+      phase: at => { if (at === point) { injected++; throw Error('injected_crash_' + point) } },
+    }), new RegExp('injected_crash_' + point))
+    assert.equal(injected, 1, 'failpoint must execute exactly once: ' + point)
+    assert.deepEqual(readFileSync(config), original)
+    const expectedState = point === 'receipt-published' ? 'installed' : 'pending_recovery'
+    assert.equal(additiveStatus(config, bundle).state, expectedState)
+    const removed = removeAdditive(config, bundle, { idle })
+    assert.equal(removed.recoveredPending, expectedState !== 'installed')
+    assert.equal(additiveStatus(config, bundle).state, 'absent')
+    assert.equal(existsSync(path.join(root, 'agents', 'chat-on-opencode-text.md')), false)
+    assert.equal(existsSync(path.join(root, 'plugins', 'chat-on-opencode-context-overlay')), false)
+    assert.deepEqual(readFileSync(config), original)
+  })
+})
+
+test('deterministic failpoints: each removal phase can be retried without touching other files', () => {
+  const phases = [
+    'plugin-retired', 'agent-retired', 'plugin-deleted',
+    'agent-deleted', 'receipt-deleted',
+  ]
+  for (const point of phases) rootFor(({ root, config, sha, original }) => {
+    installAdditive(config, bundle, sha, sourceSha, { idle })
+    const unrelated = path.join(root, 'agents', 'unrelated-user-agent.md')
+    writeFileSync(unrelated, 'PRESERVE USER CONTENT')
+    let injected = 0
+    assert.throws(() => removeAdditive(config, bundle, {
+      idle,
+      phase: at => { if (at === point) { injected++; throw Error('injected_crash_' + point) } },
+    }), new RegExp('injected_crash_' + point))
+    assert.equal(injected, 1, 'failpoint must execute exactly once: ' + point)
+    assert.deepEqual(readFileSync(config), original)
+    assert.equal(readFileSync(unrelated, 'utf8'), 'PRESERVE USER CONTENT')
+    if (point !== 'receipt-deleted') {
+      assert.equal(additiveStatus(config, bundle).state, 'partial_removal')
+      assert.equal(removeAdditive(config, bundle, { idle }).removed, true)
+    }
+    assert.equal(additiveStatus(config, bundle).state, 'absent')
+    assert.equal(readFileSync(unrelated, 'utf8'), 'PRESERVE USER CONTENT')
+    assert.deepEqual(readFileSync(config), original)
+  })
+})
