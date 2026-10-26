@@ -66,7 +66,7 @@ Write-Output ("OFFICIAL_DESKTOP_CLI_EXACT_VERSION_DIAGNOSTIC=" +
 # Desktop 2.1.4's bundled CLI reports a labeled v2.1.4, not just
 # "2.1.4". Keep the package-manifest source of truth exact and independently
 # require the same semantic version as an isolated token in --version output.
-$exactVersionToken = '(?<![0-9.])v?2\\.1\\.4(?![0-9.])'
+$exactVersionToken = '(?<![0-9.])v?2\.1\.4(?![0-9.])'
 if ($cliExit -ne 0 -or $metadataVersion -ne $version -or
     $reply -notmatch $exactVersionToken) {
   throw 'official_desktop_bundled_cli_wrong_version'
