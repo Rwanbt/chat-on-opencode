@@ -23,6 +23,8 @@ test('registration is inert until explicit OAuth authorize is requested', async 
   })
   assert.deepEqual(method.method, { id: 'chatgpt', type: 'oauth', label: 'Continue with ChatGPT' })
   assert.equal(method.integrationID, 'chat-on-opencode')
+  assert.equal(Object.hasOwn(method, 'refresh'), false,
+    'do not wire rotating refresh until cross-process credential replacement is atomic')
   assert.deepEqual([started,exchanged,cancelled],[0,0,0])
   const authorization = await method.authorize()
   assert.equal(authorization.mode, 'auto')

@@ -55,7 +55,8 @@ function verifyIdentity(idToken, jwks, { clientID, nonce, clock }) {
   } catch { fail('siwc_identity_invalid') }
   if (!valid) fail('siwc_identity_signature_invalid')
   const at = Math.floor(clock() / 1000)
-  if (claims.iss !== ISSUER || claims.aud !== clientID || claims.nonce !== nonce ||
+  if (claims.iss !== ISSUER || claims.aud !== clientID ||
+    (nonce !== undefined && claims.nonce !== nonce) ||
     !isString(claims.sub, 512) || !Number.isInteger(claims.iat) ||
     !Number.isInteger(claims.exp) || claims.exp <= at - 5 || claims.iat > at + 5 ||
     (claims.nbf !== undefined && (!Number.isInteger(claims.nbf) || claims.nbf > at + 5))) {
@@ -107,4 +108,56 @@ export async function exchangeSIWCCode({ callback, fetchImpl = fetch, clock = Da
   return { ...identity, clientID: callback.clientID, scopes, canUsePlan,
     accessToken: raw.access_token, refreshToken: raw.refresh_token, idToken: raw.id_token,
     expiresAt: clock() + raw.expires_in * 1000 }
+}
+
+// Standalone, fail-closed refresh proof. Not wired to native OAuth until the host
+// proves atomic rotating-credential replacement across all running processes.
+const refreshing = new Set()
+export async function refreshSIWCGrant({ prior, fetchImpl = fetch, clock = Date.now,
+  signal } = {}) {
+  const key = prior && JSON.stringify([prior.clientID, prior.subject])
+  if (!prior || !CLIENT.test(prior.clientID ?? '') || !isString(prior.subject, 512) ||
+      prior.issuer !== ISSUER || !VALUE.test(prior.refreshToken ?? '') ||
+      !Array.isArray(prior.scopes) ||
+      ![...REQUIRED, 'offline_access'].every(s => prior.scopes.includes(s)) ||
+      typeof fetchImpl !== 'function' || typeof clock !== 'function' || signal?.aborted) {
+    fail('siwc_refresh_options_invalid')
+  }
+  if (refreshing.has(key)) fail('siwc_refresh_already_running')
+  refreshing.add(key)
+  try {
+    const body = new URLSearchParams({ grant_type: 'refresh_token',
+      client_id: prior.clientID, refresh_token: prior.refreshToken, resource: RESOURCE })
+    let raw
+    try {
+      raw = await boundedJSON(await fetchImpl(TOKEN, {
+        method: 'POST', redirect: 'error', credentials: 'omit', cache: 'no-store',
+        referrerPolicy: 'no-referrer', signal,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+        body: body.toString(),
+      }), 'siwc_refresh_refused')
+    } catch (e) { if (e instanceof SIWCExchangeError) throw e; fail('siwc_refresh_unavailable') }
+    if (signal?.aborted) fail('siwc_refresh_aborted')
+    if (!raw || raw.token_type !== 'Bearer' || !isString(raw.access_token) ||
+        !VALUE.test(raw.refresh_token ?? '') || raw.refresh_token === prior.refreshToken ||
+        !isString(raw.id_token, 20_000) ||
+        !Number.isInteger(raw.expires_in) || raw.expires_in < 1 || raw.expires_in > 86400 ||
+        typeof raw.scope !== 'string' || raw.scope.length > 2048) fail('siwc_refresh_response_invalid')
+    const scopes = [...new Set(raw.scope.split(/\s+/).filter(Boolean))]
+    if (![...REQUIRED, 'offline_access'].every(s => scopes.includes(s))) fail('siwc_refresh_scope_lost')
+    let jwks
+    try {
+      jwks = await boundedJSON(await fetchImpl(JWKS, {
+        method: 'GET', redirect: 'error', credentials: 'omit', cache: 'no-store',
+        referrerPolicy: 'no-referrer', signal, headers: { Accept: 'application/json' },
+      }), 'siwc_refresh_jwks_unavailable')
+    } catch (e) { if (e instanceof SIWCExchangeError) throw e; fail('siwc_refresh_jwks_unavailable') }
+    if (signal?.aborted) fail('siwc_refresh_aborted')
+    const identity = verifyIdentity(raw.id_token, jwks, {
+      clientID: prior.clientID, clock, /* no new PKCE nonce on refresh */ })
+    if (identity.subject !== prior.subject) fail('siwc_refresh_account_changed')
+    return { ...identity, clientID: prior.clientID, scopes, canUsePlan: true,
+      accessToken: raw.access_token, refreshToken: raw.refresh_token,
+      idToken: raw.id_token, expiresAt: clock() + raw.expires_in * 1000 }
+  } finally { refreshing.delete(key) }
 }
