@@ -4,7 +4,7 @@
  */
 import { app, ipcMain, Notification } from 'electron';
 import path from 'node:path';
-import { bridgeStatus, onBridgeChange } from '../bridge.js';
+import { bridgePort, bridgeStatus, onBridgeChange } from '../bridge.js';
 import { getConfig, updateConfig } from '../config.js';
 import { logWarn } from '../logger.js';
 import { mainText } from '../main-texts.js';
@@ -19,6 +19,7 @@ export const cosBrowser = new CosBrowser({
   preloadDir: path.join(out, 'preload'),
   rendererDir: path.join(out, 'renderer'),
   rendererUrl: () => process.env.ELECTRON_RENDERER_URL ?? null,
+  bridgePort,
   onUserHide: showTrayHint,
   minimizeTo: () => getConfig().ui.cosBrowserMinimize === 'tray' ? 'tray' : 'taskbar'
 });

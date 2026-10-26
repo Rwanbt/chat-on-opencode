@@ -22,6 +22,7 @@
 
 import { createBrowserControl } from './browser-control.js';
 import { createActiveTabs } from './active-tabs.js';
+import { bridgeDiscoveryPlan, firstResponsiveBridge } from './bridge-discovery.mjs';
 // Side-effect import: CLF_I18N serves catalogs to content scripts, which cannot read them.
 import './i18n.js';
 
@@ -1163,6 +1164,23 @@ function discover(force = false) {
 
 async function discoverNow(force) {
   await load();
+  // A provider-only Electron browser can coexist with the person's CoS on
+  // 8765. Ask this worker's trusted native host for its own published port;
+  // an unknown host/port fails closed instead of scanning the personal app.
+  let policy = { scope: 'normal' };
+  if (globalThis.__cosBrowserWorker) {
+    try { policy = await globalThis.__cosBrowserWorker.call('bridge.discoveryPolicy', []); }
+    catch { policy = null; }
+  }
+  const { candidates, forgetCredential } = bridgeDiscoveryPlan(policy, PORTS, port);
+  if (forgetCredential) {
+    closeWakeSocket();
+    token = null;
+    port = null;
+    portCheckedAt = 0;
+    await persist();
+  }
+  if (!candidates.length) return null;
   if (port !== null && !force) {
     if (Date.now() - portCheckedAt < PORT_TRUST_MS) return { port, paired: token !== null, compatible: portCompatible !== false, version: appVersion, bridge: appProtocol };
     const body = await hello(port);
@@ -1175,18 +1193,17 @@ async function discoverNow(force) {
       return { port, paired: body.paired === true, compatible: portCompatible, version: appVersion, bridge: appProtocol };
     }
   }
-  for (const candidate of PORTS) {
-    const body = await hello(candidate);
-    if (body) {
-      if (body.disconnected === true) await latchAppDisconnect();
-      port = candidate;
-      portCheckedAt = Date.now();
-      portCompatible = body.compatible !== false && body.bridge === BRIDGE_PROTOCOL;
-      appVersion = typeof body.version === 'string' ? body.version : null;
-      appProtocol = Number.isFinite(Number(body.bridge)) ? Number(body.bridge) : null;
-      await persist();
-      return { port: candidate, paired: body.paired === true, compatible: portCompatible, version: appVersion, bridge: appProtocol };
-    }
+  const discovered = await firstResponsiveBridge(candidates, hello);
+  if (discovered) {
+    const { port: candidate, response: body } = discovered;
+    if (body.disconnected === true) await latchAppDisconnect();
+    port = candidate;
+    portCheckedAt = Date.now();
+    portCompatible = body.compatible !== false && body.bridge === BRIDGE_PROTOCOL;
+    appVersion = typeof body.version === 'string' ? body.version : null;
+    appProtocol = Number.isFinite(Number(body.bridge)) ? Number(body.bridge) : null;
+    await persist();
+    return { port: candidate, paired: body.paired === true, compatible: portCompatible, version: appVersion, bridge: appProtocol };
   }
   port = null;
   portCheckedAt = 0;

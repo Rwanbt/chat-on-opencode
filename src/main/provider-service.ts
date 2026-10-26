@@ -11,6 +11,30 @@ export function providerBrowserUiAllowed(argv: readonly string[]): boolean {
   return !argv.includes(PROVIDER_SERVICE_SWITCH) || argv.includes(PROVIDER_SIGN_IN_SWITCH);
 }
 
+/** Both isolated modes must discover only the bridge opened by this Electron process.
+ * A missing listener fails closed, including when the user's personal CoS is live. */
+export function providerBrowserDiscoveryPolicy(argv: readonly string[], bridgePort: unknown):
+  { scope: 'normal' } | { scope: 'provider'; port: number | null } {
+  if (!argv.includes(PROVIDER_SERVICE_SWITCH) && !argv.includes(PROVIDER_SIGN_IN_SWITCH)) return { scope: 'normal' };
+  return { scope: 'provider', port: typeof bridgePort === 'number' && Number.isInteger(bridgePort) &&
+    bridgePort >= 1 && bridgePort <= 65535 ? bridgePort : null };
+}
+
+/** The hidden helper has no sign-in window or ordinary browser tabs. A single
+ * offscreen ChatGPT page starts the extension's normal document/bridge lifecycle.
+ * The browser host owns its session and its reveal:false presentation gate. */
+export async function bootstrapProviderBrowserTab(argv: readonly string[], browser: {
+  start(): Promise<void>;
+  control: { model: { query(options: { url: string }): readonly unknown[] } };
+  open(url: string, options: { reveal: boolean }): Promise<void>;
+}): Promise<boolean> {
+  if (!argv.includes(PROVIDER_SERVICE_SWITCH) || argv.includes(PROVIDER_SIGN_IN_SWITCH)) return false;
+  await browser.start();
+  if (browser.control.model.query({ url: 'https://chatgpt.com/*' }).length) return false;
+  await browser.open('https://chatgpt.com/', { reveal: false });
+  return true;
+}
+
 /** An orphaned helper must never keep Chromium and its private control API alive. */
 export function providerServiceOwner(raw: string | undefined, currentPID = process.pid): number {
   const value = Number(raw);
