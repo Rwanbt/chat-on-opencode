@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createHash } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync,
-  writeFileSync, existsSync } from 'node:fs'
+  writeFileSync, existsSync, unlinkSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -99,5 +100,39 @@ test('race: OpenCode starts during staging, publishing is refused and pending fi
     assert.equal(removeAdditive(config, bundle, { idle }).recoveredPending, true)
     assert.equal(additiveStatus(config, bundle).state, 'absent')
     assert.deepEqual(readFileSync(config), original)
+  })
+})
+
+test('half-staged journal recovery does not require omitted files to exist', () => {
+  rootFor(({ root, config, sha }) => {
+    installAdditive(config, bundle, sha, sourceSha, { idle })
+    const receipt = path.join(root, '.chat-on-opencode-context-overlay.receipt.json')
+    const record = JSON.parse(readFileSync(receipt, 'utf8'))
+    const journal = path.join(root, '.chat-on-opencode-context-overlay.pending.json')
+    renameSync(receipt, journal)
+    const from = path.join(root, 'plugins', 'chat-on-opencode-context-overlay')
+    const staged = path.join(root, 'plugins',
+      '.chat-on-opencode-context-overlay.' + record.nonce + '.stage')
+    renameSync(from, staged)
+    unlinkSync(path.join(staged, 'overlay.mjs'))
+    assert.equal(removeAdditive(config, bundle, { idle }).recoveredPending, true)
+    assert.equal(additiveStatus(config, bundle).state, 'absent')
+  })
+})
+
+test('CLI parses digest and status independently of live Windows mutation', () => {
+  rootFor(({ config }) => {
+    const cli = fileURLToPath(new URL('../bin/additive-context.mjs', import.meta.url))
+    const digest = spawnSync(process.execPath, [cli, '--digest', '--bundle', bundle], {
+      encoding: 'utf8', timeout: 5000 })
+    assert.equal(digest.status, 0, digest.stderr)
+    assert.equal(JSON.parse(digest.stdout).sourceSha256, sourceSha)
+    const status = spawnSync(process.execPath, [cli, '--status', '--config', config, '--bundle', bundle], {
+      encoding: 'utf8', timeout: 5000 })
+    assert.equal(status.status, 0, status.stderr)
+    assert.equal(JSON.parse(status.stdout).state, 'absent')
+    const invalid = spawnSync(process.execPath, [cli, '--digest', '--status'], {
+      encoding: 'utf8', timeout: 5000 })
+    assert.notEqual(invalid.status, 0)
   })
 })
