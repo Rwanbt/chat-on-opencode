@@ -86,7 +86,7 @@ tool calls, multimodal parity, or unattended inference. Those milestones remain 
 
 ### Additive legacy model context overlay (isolated qualification)
 
-The `addons/context-overlay/` plugin demonstrates OpenCode V2's global plugin
+The `src/context-overlay/` plugin demonstrates OpenCode V2's global plugin
 auto-discovery and **in-memory** model transform. It applies only to the exact
 old `chat-on-opencode/chatgpt-default` model with `context=16384` and
 `output=2048`, raising its advertised context to 65536; other providers,
