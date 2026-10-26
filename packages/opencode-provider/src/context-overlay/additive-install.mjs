@@ -36,6 +36,7 @@ function directory(p) {
 }
 
 function sourceFiles(bundle) {
+  if (typeof bundle !== 'string' || !path.isAbsolute(bundle)) throw Error('additive_absolute_path_required')
   const root = regular(path.resolve(bundle), 'dir')
   const dir = regular(path.join(root, 'src', 'context-overlay'), 'dir')
   const files = ['index.ts', 'overlay.mjs', 'chat-on-opencode-browser-text.md']
@@ -46,6 +47,7 @@ function sourceFiles(bundle) {
 }
 
 function profile(config) {
+  if (typeof config !== 'string' || !path.isAbsolute(config)) throw Error('additive_absolute_path_required')
   const file = regular(path.resolve(config))
   if (path.basename(file) !== 'opencode.jsonc') throw Error('additive_opencode_config_required')
   const root = regular(path.dirname(file), 'dir')
@@ -190,6 +192,8 @@ export function removeAdditive(config, bundle, { idle } = {}) {
   if (!stat(recordFile)) throw Error('additive_not_installed')
   const data = loadRecord(recordFile)
   ensurePinned(cfg, data, source.digest)
+  // A restart during the integrity scan invalidates a removal attempt.
+  assertIdle(idle)
   removeOwned(cfg, data, source.found)
   unlinkSync(recordFile)
   return { removed: true, recoveredPending: pending, configUnchanged: true }
