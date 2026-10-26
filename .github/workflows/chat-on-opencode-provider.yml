@@ -10,6 +10,8 @@ on:
       - 'scripts/smoke-packaged-runtime.mjs'
       - 'scripts/provider-isolated-profile.ts'
       - 'scripts/verify-provider-packaged-electron.mjs'
+      - 'scripts/provider-window-probe-runner.mjs'
+      - 'test/provider-window-probe-runner.test.mjs'
       - 'scripts/verify-provider-packaged-sign-in.mjs'
       - 'test/provider-packaged-gateway-env.e2e.mjs'
       - 'test/provider-official-cli-packaged.e2e.mjs'
@@ -80,6 +82,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Pin isolated bridge and hidden browser lifecycle
         run: node --experimental-strip-types --test test/provider-bridge-isolation.test.mjs test/provider-hidden-bootstrap.test.mjs
+      - name: Bounded owned-window probe timeout and refusal tests
+        run: node --test test/provider-window-probe-runner.test.mjs
       - name: Service profile and UI isolation policy
         run: bun test packages/opencode-provider/test/provider-service.test.ts
       - name: Provider hook bundles for OpenCode V2
