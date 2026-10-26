@@ -42,6 +42,9 @@ const server = http.createServer(async (req, res) => {
     for await (const chunk of req) raw += chunk.toString('utf8')
     const input = JSON.parse(raw)
     if (!/^[a-f0-9-]{36}$/.test(input.id) || typeof input.text !== 'string') return json(422, { error: 'bad_fixture_input' })
+    // Match the real CoS control-actions MAX_TEXT gate: a synthetic assistant
+    // reply must never pass while the actual browser transport would refuse it.
+    if (input.text.length > 64_000) return json(422, { error: 'control_input_text_too_large' })
     const id = input.sessionId ?? input.id
     sessions.add(id)
     const list = events.get(id) ?? []

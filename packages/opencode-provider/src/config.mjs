@@ -51,6 +51,16 @@ export function createOpenCodeConfig({ runtimeExecutable, runtimeData, nodeExecu
 
   return {
     ...(nativeTools === 'read' ? { permissions: [{ action: 'read', resource: '*', effect: 'ask' }] } : {}),
+    // An explicit text-only agent avoids injecting unrelated native tool policies
+    // into the 64k-character CoS action envelope. Never change the default agent.
+    ...(nativeTools === 'off' && nativeInference === 'off' ? { agents: {
+      'chat-on-opencode-text': {
+        description: 'Scoped text-only ChatGPT via CoS; no native tools',
+        model: 'chat-on-opencode/chatgpt-default', mode: 'primary',
+        system: 'Answer the user directly in text. No native tools are available. Do not claim to execute tools.',
+        permissions: [{ action: '*', resource: '*', effect: 'deny' }],
+      },
+    } } : {}),
     plugins: [{ package: path.join(plugin, 'plugin'), options: {
       runtimeExecutable: executable, runtimeData: data, nodeExecutable: node, port: String(port),
       nativeTools,

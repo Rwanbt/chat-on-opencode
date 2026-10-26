@@ -83,7 +83,7 @@ test('actual OpenCode V2 CLI loads provider plugin, starts owned gateway and rec
     })
     assert.equal(safeEnv.CHAT_ON_OPENCODE_GATEWAY_KEY, undefined)
     const args = ['run', '--standalone', '--format', 'json', '--model', 'chat-on-opencode/chatgpt-default',
-      'Say exactly OFFLINE_FORK_OK']
+      '--agent', 'chat-on-opencode-text', 'Say exactly OFFLINE_FORK_OK']
     let child
     const stdout = []
     const stderr = []
