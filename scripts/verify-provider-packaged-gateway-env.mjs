@@ -49,7 +49,7 @@ if (process.argv[2] === '--gateway-worker') {
   try {
     const starting = lifecycle.ensure()
     lifecycle.child?.stderr?.on('data', chunk => {
-      const m = /Chat On OpenCode cannot connect to its CoS runtime:\\s+([a-z0-9_]+)/i.exec(String(chunk))
+      const m = /Chat On OpenCode cannot connect to its CoS runtime:\s+([a-z0-9_]+)/i.exec(String(chunk))
       if (m) gatewayErrorCode = m[1]
     })
     await starting
