@@ -5,6 +5,7 @@ import { GatewayLifecycle } from '../src/lifecycle.mjs'
 import { MessageIdentity } from './message-identity.mjs'
 import { enforceTextOnlyContext } from './text-only.mjs'
 import { provideLocalTitle, requirePrimaryKind } from './auxiliary.mjs'
+import { provideExtractiveCompaction } from './compaction.mjs'
 
 // OpenCode V2 is the only frontend/session owner. The helper starts on the first *selected*
 // model request, not on plugin import, so other providers remain completely unaffected.
@@ -36,6 +37,11 @@ export default Plugin.define({
     // The V2 title hook accepts a string result. No gateway request should be
     // made for a title: it lacks a primary message ID and approval context.
     await ctx.session.hook('title', event => { provideLocalTitle(event) }, { providerID: 'chat-on-opencode' })
+    // Compaction may precede even the first primary turn with a small model
+    // context. It has no primary message identity, so handle it via V2's typed
+    // local result rather than the ChatGPT gateway/outbox.
+    await ctx.session.hook('compaction', event => { provideExtractiveCompaction(event) },
+      { providerID: 'chat-on-opencode' })
     await ctx.session.hook('model.request', async event => {
       if (event.model.providerID !== 'chat-on-opencode') return
       requirePrimaryKind(event.kind)
