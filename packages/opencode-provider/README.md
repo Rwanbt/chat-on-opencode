@@ -120,7 +120,10 @@ Publication stages both resources under hidden names and writes a durable
 receipt marks a fully published pair. If interrupted, `--status` returns
 `pending_recovery`, and `--remove` can undo **only matching owned files**
 after rechecking that OpenCode is stopped; altered or foreign files are never
-deleted. The source bundle must stay unchanged for verification/removal.
+deleted. Removal renames published files into private, same-volume
+`.retired` tombstones before deleting them; if recursive deletion stops
+midway, re-running `--remove` can recover only the verified remaining files.
+The source bundle must stay unchanged for verification/removal.
 This is a Draft candidate until CI, Windows packaging and real Desktop
 rollback qualification are all green; **do not install it on the user's
 active profile as a shortcut**.
