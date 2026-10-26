@@ -136,3 +136,20 @@ test('CLI parses digest and status independently of live Windows mutation', () =
     assert.notEqual(invalid.status, 0)
   })
 })
+
+test('interrupted removal recovers verified retired plugin with a missing file', () => {
+  rootFor(({ root, config, sha, original }) => {
+    installAdditive(config, bundle, sha, sourceSha, { idle })
+    const receipt = JSON.parse(readFileSync(
+      path.join(root, '.chat-on-opencode-context-overlay.receipt.json'), 'utf8'))
+    const plugin = path.join(root, 'plugins', 'chat-on-opencode-context-overlay')
+    const retired = path.join(root, 'plugins',
+      '.chat-on-opencode-context-overlay.' + receipt.nonce + '.retired')
+    renameSync(plugin, retired)
+    unlinkSync(path.join(retired, 'overlay.mjs')) // crash midway through recursive removal
+    assert.equal(additiveStatus(config, bundle).state, 'partial_removal')
+    assert.equal(removeAdditive(config, bundle, { idle }).removed, true)
+    assert.equal(additiveStatus(config, bundle).state, 'absent')
+    assert.deepEqual(readFileSync(config), original)
+  })
+})
