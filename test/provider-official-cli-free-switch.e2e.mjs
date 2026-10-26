@@ -107,39 +107,85 @@ try {
     OPENCODE_DISABLE_DEFAULT_PLUGINS: '1', OPENCODE_DISABLE_AUTOUPDATE: '1',
     OPENCODE_DISABLE_MODELS_FETCH: '1', OPENCODE_CONFIG_PROJECT_DISABLE: '1',
   })
-  const stdout = []
-  let stderrBytes = 0
-  client = spawn(cli, ['run', '--standalone', '--format', 'json',
+  const cliArgs = ['run', '--standalone', '--format', 'json',
     '--model', 'foreign-fixture/safe-text', '--agent', 'build',
-    'Reply with FOREIGN_FIXTURE_ONLY'], {
-    cwd: folder('workspace'), env, shell: false, windowsHide: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  client.stdout.on('data', bytes => { if (stdout.join('').length < 120000) stdout.push(String(bytes)) })
-  client.stderr.on('data', bytes => { stderrBytes += bytes.length })
-  const end = Date.now() + 45000
-  let sawText = false
-  while (Date.now() < end && client.exitCode === null) {
-    if (stdout.join('').includes('FOREIGN_FIXTURE_ONLY')) { sawText = true; break }
+    'Reply with FOREIGN_FIXTURE_ONLY']
+  async function runSelectedProvider(runEnv) {
+    const stdout = []
+    let stderrBytes = 0
+    const run = spawn(cli, cliArgs, {
+      cwd: folder('workspace'), env: runEnv, shell: false, windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    client = run
+    run.stdout.on('data', bytes => { if (stdout.join('').length < 120000) stdout.push(String(bytes)) })
+    run.stderr.on('data', bytes => { stderrBytes += bytes.length })
+    const deadline = Date.now() + 45000
+    while (Date.now() < deadline && run.exitCode === null) {
+      if (stdout.join('').includes('FOREIGN_FIXTURE_ONLY')) break
+      await pause(150)
+    }
     await pause(150)
+    const events = stdout.join('').split(/\r?\n/).flatMap(line => {
+      try { return [JSON.parse(line)] } catch { return [] }
+    })
+    const result = {
+      text: events.filter(event => event.type === 'text')
+        .map(event => event.part?.text ?? '').join(''),
+      stderrNonempty: stderrBytes > 0,
+      eventTypes: [...new Set(events.map(event => event.type))].sort(),
+    }
+    if (run.exitCode === null) {
+      run.kill('SIGTERM')
+      await Promise.race([new Promise(resolve => run.once('close', resolve)), pause(2500)])
+      if (run.exitCode === null && run.pid) {
+        // This is only the test's own child in an ephemeral GitHub Windows runner.
+        spawnSync('taskkill', ['/F', '/T', '/PID', String(run.pid)], {
+          shell: false, windowsHide: true, timeout: 8000,
+        })
+      }
+    }
+    client = null
+    return result
   }
-  const items = stdout.join('').split(/\r?\n/).flatMap(line => {
-    try { return [JSON.parse(line)] } catch { return [] }
+
+  const withPlugin = await runSelectedProvider(env)
+  const injected = entries => ({
+    message: entries.some(x => x.injectedMessageIdentity),
+    session: entries.some(x => x.injectedSessionIdentity),
   })
-  const text = items.filter(event => event.type === 'text')
-    .map(event => event.part?.text ?? '').join('')
-  process.stdout.write('FOREIGN_PROVIDER_CATEGORICAL=' + JSON.stringify({
-    outputSeen: sawText, parsedText: text.length > 0, calls: foreignCalls,
-    unwantedConnections: unwantedContacts, stderrNonempty: stderrBytes > 0,
-    eventTypes: [...new Set(items.map(event => event.type))].sort(),
-  }) + '\n')
-  assert.equal(text, 'FOREIGN_FIXTURE_ONLY', 'official CLI did not stream the selected other provider')
-  assert.ok(foreignCalls >= 1, 'foreign provider was never reached')
+  const withPluginHeaders = injected(foreignHeaders)
+  assert.equal(withPlugin.text, 'FOREIGN_FIXTURE_ONLY',
+    'official CLI did not stream the foreign model with Chat On OpenCode installed')
   assert.ok(foreignHeaders.some(x => x.route === '/v1/chat/completions' && x.method === 'POST'))
-  assert.ok(foreignHeaders.every(x => !x.injectedMessageIdentity && !x.injectedSessionIdentity),
-    'Chat On OpenCode hijacked the unrelated provider request headers')
-  assert.equal(unwantedContacts, 0, 'switching providers contacted CoS personal/provider bridge')
-  process.stdout.write('OFFICIAL_CLI_FREE_PROVIDER_SWITCH=PASS\\n')
+  assert.equal(unwantedContacts, 0, 'switching providers contacted a CoS bridge')
+
+  // Control arm: identical official CLI and model, but with this plugin absent.
+  // V2 may set its own session/message headers on every provider request; compare
+  // their PRESENCE instead of incorrectly attributing those native headers to CoS.
+  foreignHeaders = []
+  const withoutPluginConfig = structuredClone(config)
+  withoutPluginConfig.plugins = []
+  const withoutPlugin = await runSelectedProvider({
+    ...env, OPENCODE_CONFIG_CONTENT: JSON.stringify(withoutPluginConfig),
+  })
+  const nativeHeaders = injected(foreignHeaders)
+  assert.equal(withoutPlugin.text, 'FOREIGN_FIXTURE_ONLY',
+    'unmodified official CLI foreign provider baseline failed')
+  assert.deepEqual(withPluginHeaders, nativeHeaders,
+    'Chat On OpenCode added identity headers beyond the official CLI baseline')
+  assert.equal(unwantedContacts, 0,
+    'switching providers contacted personal 8765 or isolated 8766')
+  process.stdout.write('FOREIGN_PROVIDER_CATEGORICAL=' + JSON.stringify({
+    withPlugin: withPlugin.text.length > 0,
+    withoutPlugin: withoutPlugin.text.length > 0,
+    nativeIdentityHeaders: nativeHeaders,
+    foreignRequests: foreignCalls,
+    unwantedConnections: unwantedContacts,
+    withPluginEventTypes: withPlugin.eventTypes,
+    withoutPluginEventTypes: withoutPlugin.eventTypes,
+  }) + '\n')
+  process.stdout.write('OFFICIAL_CLI_FREE_PROVIDER_SWITCH=PASS\n')
 } finally {
   if (client && client.exitCode === null) {
     client.kill('SIGTERM')
