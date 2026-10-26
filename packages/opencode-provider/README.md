@@ -96,8 +96,12 @@ text-only agent below is still needed for its first-turn payload.
 
 The companion files `index.ts` and `overlay.mjs` must remain together in a
 single immediate directory inside OpenCode's global `plugins/` discovery
-directory. The exact real OpenCode 2.1.4 CLI is tested with a disposable
-16k model and this overlay. This is **not an unattended installer or a
+directory. A separate global agent Markdown file, shipped as
+`chat-on-opencode-browser-text.md`, can be placed under the global `agents/`
+directory as `chat-on-opencode-text.md`; this keeps the smaller text-only
+agent available without writing any JSONC. Neither addon changes defaults.
+The real OpenCode 2.1.4 CLI is tested with a disposable 16k legacy model,
+the global model overlay and the global Markdown text agent. This is **not an unattended installer or a
 verified real-account response**. Do not copy it to an active real profile
 until process quiescence, rollback, and integrated Desktop are qualified.
 
