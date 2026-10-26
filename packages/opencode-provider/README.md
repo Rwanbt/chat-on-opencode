@@ -84,6 +84,47 @@ to its existing directory. The provider service rechecks isolation when launched
 This standalone layout is packaging/configuration evidence, not proof of real ChatGPT login,
 tool calls, multimodal parity, or unattended inference. Those milestones remain open.
 
+### Additive installation / rollback (Windows, candidate only)
+
+The standalone `bin/additive-context.mjs` CLI can add **only** the reviewed
+`src/context-overlay/index.ts`, `overlay.mjs` and text-only Markdown agent
+to OpenCode's global plugin/agent discovery directories. It **does not** edit
+`opencode.jsonc`, replace OpenCode, alter the old managed plugin or use any
+ChatGPT credentials. Installation/removal refuses while OpenCode CLI/Desktop or
+the isolated provider process runs, and refuses existing files of the same
+names. A second process check immediately before publication catches a process
+started during file staging, although no check can eliminate every race with a
+simultaneous program launch.
+
+The input pins are mandatory. `--digest --bundle ...` can report the file
+digest, but **must not** be treated as independent authenticity evidence:
+compare it with a separately reviewed, exact-commit artifact hash before
+passing it as `--source-sha256`. Use the SHA256 of the existing
+`opencode.jsonc` as `--config-sha256`. Never use someone else's SHA for
+your own config. With OpenCode and the isolated helper **fully closed**, use:
+
+```powershell
+$bundle = 'D:\\reviewed\\opencode-plugin'
+$config = Join-Path $HOME '.config\\opencode\\opencode.jsonc'
+node "$bundle\\bin\\additive-context.mjs" --digest --bundle $bundle
+node "$bundle\\bin\\additive-context.mjs" --status --config $config --bundle $bundle
+# After independent source digest verification and process quiescence:
+node "$bundle\\bin\\additive-context.mjs" --install --config $config --bundle $bundle `
+  --config-sha256 '<SHA256-of-this-config>' --source-sha256 '<reviewed-source-SHA256>'
+# The same source bundle must remain available for rollback:
+node "$bundle\\bin\\additive-context.mjs" --remove --config $config --bundle $bundle
+```
+
+Publication stages both resources under hidden names and writes a durable
+`*.pending.json` before renaming into the auto-discovered destinations. A
+receipt marks a fully published pair. If interrupted, `--status` returns
+`pending_recovery`, and `--remove` can undo **only matching owned files**
+after rechecking that OpenCode is stopped; altered or foreign files are never
+deleted. The source bundle must stay unchanged for verification/removal.
+This is a Draft candidate until CI, Windows packaging and real Desktop
+rollback qualification are all green; **do not install it on the user's
+active profile as a shortcut**.
+
 ### Additive legacy model context overlay (isolated qualification)
 
 The `src/context-overlay/` plugin demonstrates OpenCode V2's global plugin
