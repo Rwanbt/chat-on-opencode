@@ -81,6 +81,35 @@ it('starts a stopped worker again while the browser runs, but not after it close
   expect(w.sent).toEqual([]);
 });
 
+it('retries a successful but unobserved worker start for a hidden browser, then stops on running status', async () => {
+  vi.useFakeTimers();
+  const w = worker();
+  const reg = registry({ 21: w });
+  const { link: channel } = link(reg.value);
+  channel.send('runtime.onStartup', []);
+  await vi.advanceTimersByTimeAsync(16_000);
+  expect(reg.starts.length).toBeGreaterThan(1);
+  expect(w.sent).toEqual([]);
+  channel.statusChanged(21, 'running');
+  expect(w.sent.map(([name]) => name)).toEqual(['runtime.onStartup']);
+  const count = reg.starts.length;
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(reg.starts).toHaveLength(count);
+  channel.close();
+});
+
+it('bounds hidden bootstrap attempts and cancels pending retries at shutdown', async () => {
+  vi.useFakeTimers();
+  const reg = registry({});
+  const { link: channel } = link(reg.value);
+  channel.send('runtime.onStartup', []);
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(reg.starts).toHaveLength(7);
+  channel.close();
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(reg.starts).toHaveLength(7);
+});
+
 it('never links a worker of another scope, such as chatgpt.com\'s own', () => {
   const page = worker('https://chatgpt.com/');
   const { link: channel } = link(registry({ 9: page }).value);
