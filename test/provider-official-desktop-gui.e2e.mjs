@@ -6,8 +6,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
-import os from 'node:os'
+import { mkdir, mkdtemp } from 'node:fs/promises'
 import path from 'node:path'
 
 assert.equal(process.platform, 'win32')
@@ -18,7 +17,7 @@ assert.ok(runner && desktop && path.isAbsolute(desktop) && existsSync(desktop))
 assert.ok(path.resolve(desktop).toLowerCase().startsWith(path.resolve(runner).toLowerCase() + path.sep),
   'never launch a personal installed OpenCode executable')
 const probe = path.resolve('scripts/probe-official-desktop-window.ps1')
-const root = await mkdtemp(path.join(os.tmpdir(), 'coo-official-desktop-ui-e2e-'))
+const root = await mkdtemp(path.join(runner, 'coo-official-desktop-ui-e2e-'))
 const testRoot = path.join(root, 'official-desktop-test-root')
 const appdata = path.join(root, 'appdata')
 const localappdata = path.join(root, 'localappdata')
@@ -96,6 +95,10 @@ try {
       child.unref()
     }
   }
-  await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 })
+  // The vendor Desktop may leave bundled helper processes briefly holding
+  // Chromium cache files after its owned window/main process exited. Recursive
+  // deletion can hang indefinitely on Windows. The entire test root is under
+  // the disposable GitHub runner's RUNNER_TEMP, which is cleaned on teardown.
+  child?.unref()
   clearTimeout(watchdog)
 }
