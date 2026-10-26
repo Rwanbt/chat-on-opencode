@@ -130,7 +130,9 @@ async function runOfficial(t, v, expectedOAuth) {
   catch (error) { throw Error(error.message + ' startup-output=' + diagnostic.replace(/[A-Z]:\\[^\s]+/gi, '[isolated-path]').slice(0, 400)) }
 }
 
-test('side-by-side OAuth bootstrap changes no config, active payload, manifest or original backup', async t => {
+test('side-by-side OAuth bootstrap changes no config, active payload, manifest or original backup', {
+  skip: process.platform !== 'win32',
+}, async t => {
   const v = await fixture(t), before = preserved(v)
   assert.throws(() => stageOAuthBootstrap(v.config, source, busy),
     /oauth_bootstrap_official_processes_active_or_unknown/)
@@ -148,7 +150,9 @@ test('side-by-side OAuth bootstrap changes no config, active payload, manifest o
   assert.equal(oauthBootstrapStatus(v.config).present, false)
 })
 
-test('a provider that already offers native OAuth refuses competing bootstrap', async t => {
+test('a provider that already offers native OAuth refuses competing bootstrap', {
+  skip: process.platform !== 'win32',
+}, async t => {
   const v = await fixture(t, { oldProvider: false }), before = preserved(v)
   assert.throws(() => stageOAuthBootstrap(v.config, source, quiet),
     /oauth_bootstrap_native_oauth_already_available/)
@@ -156,7 +160,9 @@ test('a provider that already offers native OAuth refuses competing bootstrap', 
   equalPreserved(before, preserved(v))
 })
 
-test('bootstrap refuses tampered versioned files, symlinks and external config mutation', async t => {
+test('bootstrap refuses tampered versioned files, symlinks and external config mutation', {
+  skip: process.platform !== 'win32',
+}, async t => {
   const v = await fixture(t), before = preserved(v)
   stageOAuthBootstrap(v.config, source, quiet)
   const plugin = path.join(v.configDir, 'plugins', 'chat-on-opencode-oauth-bootstrap')
@@ -175,8 +181,19 @@ test('bootstrap refuses tampered versioned files, symlinks and external config m
   assert.ok(existsSync(plugin))
 })
 
+test('non-Windows installer refuses staging even when an injected process probe reports idle', {
+  skip: process.platform === 'win32',
+}, async t => {
+  const v = await fixture(t), before = preserved(v)
+  assert.throws(() => stageOAuthBootstrap(v.config, source, quiet),
+    /oauth_bootstrap_windows_only/)
+  assert.equal(existsSync(path.join(v.configDir, 'plugins')), false)
+  equalPreserved(before, preserved(v))
+})
+
 test('real OpenCode 2.1.4 discovers bootstrap alongside old format-1 provider; OAuth only', {
-  skip: !official ? 'CHAT_ON_OPENCODE_TEST_CLI required' : false,
+  skip: process.platform !== 'win32' ? 'Windows-only managed installer' :
+    !official ? 'CHAT_ON_OPENCODE_TEST_CLI required' : false,
   timeout: 110000,
 }, async t => {
   const v = await fixture(t), before = preserved(v)
