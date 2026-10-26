@@ -13,6 +13,7 @@ on:
       - 'scripts/verify-provider-packaged-sign-in.mjs'
       - 'test/provider-packaged-gateway-env.e2e.mjs'
       - 'test/provider-official-cli-packaged.e2e.mjs'
+      - 'test/provider-official-cli-free-switch.e2e.mjs'
       - 'scripts/provider-windows-window-probe.ps1'
       - 'package.json'
       - 'test/provider-packaging.test.ts'
@@ -141,6 +142,13 @@ jobs:
           $env:CHAT_ON_OPENCODE_TEST_CLI = Join-Path $env:RUNNER_TEMP 'chat-on-opencode-cli/node_modules/@opencode/cli/bin/opencode.exe'
           if (-not (Test-Path -LiteralPath $env:CHAT_ON_OPENCODE_TEST_CLI)) { throw 'Official CLI binary missing' }
           node test/provider-official-cli-packaged.e2e.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Official CLI 2.1.4 foreign provider selection preserves native requests and CoS silence
+        shell: pwsh
+        run: |
+          $env:CHAT_ON_OPENCODE_TEST_CLI = Join-Path $env:RUNNER_TEMP 'chat-on-opencode-cli/node_modules/@opencode/cli/bin/opencode.exe'
+          if (-not (Test-Path -LiteralPath $env:CHAT_ON_OPENCODE_TEST_CLI)) { throw 'Official CLI binary missing' }
+          node test/provider-official-cli-free-switch.e2e.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Publish portable provider bundle after runtime smoke
         uses: actions/upload-artifact@v4
