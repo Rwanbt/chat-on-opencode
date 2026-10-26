@@ -38,6 +38,7 @@ try {
   const deadline = Date.now() + 75_000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`packaged provider exited ${child.exitCode}`);
+    let controlHealthy = false;
     try {
       endpoint = JSON.parse(await readFile(path.join(profile, 'control-api', 'endpoint.json'), 'utf8'));
       token = (await readFile(path.join(profile, 'control-api', 'token'), 'utf8')).trim();
@@ -46,21 +47,43 @@ try {
         headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1500),
       });
       if (response.ok) {
+        controlHealthy = true;
         const health = await response.json();
+        assert.equal(health.protocol, 1, 'provider control protocol changed');
         assert.equal(health.pid, child.pid);
         assert.equal(health.actions?.enabled, true);
+        for (const route of ['/v1/provider/readiness', '/v1/sessions/{id}/events/stream']) {
+          assert.ok(health.routes?.includes(route), `packaged provider lacks ${route}`);
+        }
+        for (const route of ['POST /v1/inputs', 'POST /v1/sessions/{id}/stop']) {
+          assert.ok(health.actions?.routes?.includes(route), `packaged provider lacks ${route}`);
+        }
+        const readinessResponse = await fetch(`http://127.0.0.1:${endpoint.port}/v1/provider/readiness`, {
+          headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(1500),
+        });
+        assert.equal(readinessResponse.status, 200, 'packaged provider readiness route unavailable');
+        const readiness = await readinessResponse.json();
+        assert.ok(['absent', 'unknown', 'present'].includes(readiness.sessionCookie));
+        assert.ok(['connected', 'disconnected'].includes(readiness.extension));
+        assert.equal(typeof readiness.paired, 'boolean');
+        assert.equal(typeof readiness.canAttempt, 'boolean');
+        // A fresh synthetic profile has never been paired or signed into ChatGPT.
+        // Cookie presence alone would never prove an authenticated inference anyway.
+        assert.equal(readiness.canAttempt, false, 'fresh provider profile must not claim model readiness');
         const processInfo = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
           `(Get-Process -Id ${child.pid} -ErrorAction Stop).MainWindowHandle`], {
           windowsHide: true, encoding: 'utf8', timeout: 5000,
         });
         assert.equal(processInfo.status, 0, 'cannot verify Windows window visibility');
         assert.equal(Number(processInfo.stdout.trim()), 0, 'provider service unexpectedly has a visible window');
-        process.stdout.write('Packaged Chat On OpenCode Electron service: owned control API healthy; no visible CoS window.\n');
+        process.stdout.write('Packaged Chat On OpenCode Electron service: control routes and unpaired readiness verified; no visible CoS window.\n');
         healthy = true;
         break;
       }
     } catch (error) {
-      if (/endpoint_pid_or_protocol_mismatch/.test(String(error))) throw error;
+      // Once health has answered, missing routes or malformed readiness are
+      // immutable build incompatibilities, not a transient startup delay.
+      if (controlHealthy || /endpoint_pid_or_protocol_mismatch/.test(String(error))) throw error;
     }
     await new Promise(resolve => setTimeout(resolve, 250));
   }

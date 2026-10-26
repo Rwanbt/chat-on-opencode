@@ -321,12 +321,26 @@ test('control API discovers only a private local protocol-1 endpoint', async t =
   const calls = []
   const cos = new CoSControl({ directory: dir, fetcher: async (url, opts) => {
     calls.push({ url, opts })
-    return new Response(JSON.stringify({ ok: true, protocol: 1, actions: { enabled: true } }), { status: 200 })
+    return new Response(JSON.stringify({ ok: true, protocol: 1,
+      routes: ['/v1/provider/readiness', '/v1/sessions/{id}/events/stream'],
+      actions: { enabled: true, routes: ['POST /v1/inputs', 'POST /v1/sessions/{id}/stop',
+        'POST /v1/inputs/{id}/cancel'] },
+    }), { status: 200 })
   } })
   await cos.connect()
   assert.equal(calls[0].url, 'http://127.0.0.1:45678/v1/health')
   assert.equal(calls[0].opts.headers.Authorization, `Bearer ${'k'.repeat(43)}`)
   assert.equal(calls[0].opts.redirect, 'error')
+  cos.fetcher = async () => new Response(JSON.stringify({ ok: true, protocol: 1,
+    routes: ['/v1/sessions/{id}/events/stream'], actions: { enabled: true,
+      routes: ['POST /v1/inputs', 'POST /v1/sessions/{id}/stop', 'POST /v1/inputs/{id}/cancel'] },
+  }), { status: 200 })
+  await assert.rejects(cos.connect(), /cos_provider_runtime_incompatible/)
+  cos.fetcher = async () => new Response(JSON.stringify({ ok: true, protocol: 1,
+    routes: ['/v1/provider/readiness', '/v1/sessions/{id}/events/stream'],
+    actions: { enabled: true, routes: ['POST /v1/inputs'] },
+  }), { status: 200 })
+  await assert.rejects(cos.connect(), /cos_provider_runtime_incompatible/)
 })
 
 test('control stream resumes frames and fails closed on premature EOF', async () => {
@@ -410,7 +424,11 @@ test('service launcher uses the fork-only flag, owns exact endpoint PID and stop
   const server = createServer((req, res) => {
     assert.equal(req.headers.authorization, `Bearer ${token}`)
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ ok: true, protocol: 1, actions: { enabled: true } }))
+    res.end(JSON.stringify({ ok: true, protocol: 1,
+      routes: ['/v1/provider/readiness', '/v1/sessions/{id}/events/stream'],
+      actions: { enabled: true, routes: ['POST /v1/inputs', 'POST /v1/sessions/{id}/stop',
+        'POST /v1/inputs/{id}/cancel'] },
+    }))
   })
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
@@ -435,6 +453,32 @@ test('service launcher uses the fork-only flag, owns exact endpoint PID and stop
   assert.equal(launch.opts.windowsHide, true)
   assert.equal(launch.opts.shell, false)
   runtime.stop()
+  assert.equal(child.killed, true)
+})
+
+test('service launcher immediately rejects an old advertised API without waiting for readiness timeout', async t => {
+  const profile = await mkdtemp(path.join(os.tmpdir(), 'cos-incompatible-'))
+  t.after(() => rm(profile, { recursive: true, force: true }))
+  await writeFile(path.join(profile, 'config.json'), JSON.stringify({
+    ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
+  }))
+  const server = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ ok: true, protocol: 1, routes: [], actions: { enabled: true, routes: [] } }))
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  t.after(() => server.close())
+  const directory = path.join(profile, 'control-api')
+  await mkdir(directory)
+  await writeFile(path.join(directory, 'endpoint.json'), JSON.stringify({ protocol: 1, port: server.address().port, pid: 12346 }))
+  await writeFile(path.join(directory, 'token'), 'z'.repeat(43))
+  const child = Object.assign(new EventEmitter(), { pid: 12346, exitCode: null, killed: false,
+    kill() { this.killed = true; this.emit('exit', 0) } })
+  const runtime = new CoSRuntime({ executable: process.execPath, profile, startupTimeoutMs: 1000 }, {
+    launcher: () => child,
+  })
+  await assert.rejects(runtime.start(), /cos_provider_runtime_incompatible/)
   assert.equal(child.killed, true)
 })
 

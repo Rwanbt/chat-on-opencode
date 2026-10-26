@@ -183,7 +183,21 @@ node --test test/native-process.e2e.mjs
   bearer secret is never passed into its child Chromium environment.
 - Text-only request adapter, progressive Chat Completions SSE, per-session concurrency guard.
 - Fail-closed unknown model, unapproved/unsupported tool calls, auxiliary requests, non-monotonic output,
-  clipped content, unknown delivery or premature completion.
+  clipped content, unknown delivery or premature completion. OpenCode V2 `title` requests
+  are answered locally with a fixed title, without an inference request or borrowing a
+  primary message identity. `compaction` and `generate` remain explicitly unsupported;
+  they cannot reuse the previous prompt's authorization or message ID.
+
+### Fork runtime contract
+
+Gateway startup now verifies that the actual CoS control API advertises provider
+readiness, the session event stream, input admission, exact turn stop and outbox cancel.
+An older protocol-1 executable missing any route fails as
+`cos_provider_runtime_incompatible` **before** accepting a prompt. The private stream
+still requires `full=1` and the fork's `--chat-on-opencode-provider-service` mode;
+neither should be stripped for compatibility with an older personal CoS build.
+This health check proves the declared interface, not an active ChatGPT login or a
+complete assistant turn.
 
 ## Next integration milestones
 

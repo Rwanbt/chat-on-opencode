@@ -29,7 +29,11 @@ const server = http.createServer(async (req, res) => {
   if (req.headers.host !== `127.0.0.1:${port}` || req.headers.origin || req.headers.authorization !== `Bearer ${token}`) {
     return json(403, { error: 'untrusted_caller' })
   }
-  if (req.method === 'GET' && req.url === '/v1/health') return json(200, { ok: true, protocol: 1, actions: { enabled: true } })
+  if (req.method === 'GET' && req.url === '/v1/health') return json(200, { ok: true, protocol: 1,
+    routes: ['/v1/provider/readiness', '/v1/sessions/{id}/events/stream'],
+    actions: { enabled: true, routes: ['POST /v1/inputs', 'POST /v1/sessions/{id}/stop',
+      'POST /v1/inputs/{id}/cancel'] },
+  })
   if (req.method === 'GET' && req.url === '/v1/provider/readiness') return json(200, {
     sessionCookie: 'present', extension: 'connected', paired: true, canAttempt: true
   })
