@@ -47,14 +47,14 @@ test('additive overlay preserves Goal/Loop/Daemon/Scheduler and existing swap ge
       const dir = path.join(plugins, name)
       mkdirSync(dir)
       const file = path.join(dir, 'index.ts')
-      const content = 'export const plugin = ' + JSON.stringify(name) + '\\n'
+      const content = 'export const plugin = ' + JSON.stringify(name) + '\n'
       writeFileSync(file, content)
       preserved.set(file, Buffer.from(content))
     }
     const previous = path.join(root, '.chat-on-opencode-directory-previous')
     mkdirSync(previous)
     const oldBundle = path.join(previous, 'previous-plugin.js')
-    writeFileSync(oldBundle, 'IMMUTABLE PRIOR GENERATION\\n')
+    writeFileSync(oldBundle, 'IMMUTABLE PRIOR GENERATION\n')
     preserved.set(oldBundle, readFileSync(oldBundle))
     const journal = path.join(root, '.chat-on-opencode-directory-switch.json')
     writeFileSync(journal, JSON.stringify({ version: 3, phase: 'active', retain: 'all' }))
