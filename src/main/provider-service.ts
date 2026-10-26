@@ -16,8 +16,9 @@ export function providerBrowserUiAllowed(argv: readonly string[]): boolean {
 export function providerBrowserDiscoveryPolicy(argv: readonly string[], bridgePort: unknown):
   { scope: 'normal' } | { scope: 'provider'; port: number | null } {
   if (!argv.includes(PROVIDER_SERVICE_SWITCH) && !argv.includes(PROVIDER_SIGN_IN_SWITCH)) return { scope: 'normal' };
-  return { scope: 'provider', port: typeof bridgePort === 'number' && Number.isInteger(bridgePort) &&
-    bridgePort >= 1 && bridgePort <= 65535 ? bridgePort : null };
+  // A provider bridge on any other port must fail closed; 8765 belongs to the
+  // person's CoS and even a native host regression cannot authorize scanning it.
+  return { scope: 'provider', port: bridgePort === 8766 ? 8766 : null };
 }
 
 /** The hidden helper has no sign-in window or ordinary browser tabs. A single
