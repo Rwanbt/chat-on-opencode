@@ -36,7 +36,7 @@ export function requestText(messages, first) {
     ...history.map(p => `[${p.role}]\n${p.content}\n[/${p.role}]`)].join('\n\n')
 }
 
-export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal, nativeTools = 'off' } = {}) {
+export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal, nativeTools = 'off', allowNextRead = false } = {}) {
   if (!sessionKey || sessionKey.length > 256 || /[\r\n]/.test(sessionKey)) throw new BridgeError('opencode_session_id_required', 422)
   if (!messageKey || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
   const readEnabled = validateNativeTools(request, nativeTools === 'read')
@@ -44,7 +44,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
   if (kind !== 'primary') throw new BridgeError('auxiliary_calls_not_yet_supported', 501)
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
   const sessionID = stableUUID('session:' + sessionKey)
-  const result = readResultPrompt(request.messages)
+  const result = readResultPrompt(request.messages, allowNextRead)
   if (result && !readEnabled) throw new BridgeError('native_tool_result_without_consent', 403)
   const turnID = stableUUID('turn:' + sessionKey + ':' + messageKey + (result ? ':' + result.callId : ''))
   const first = !(await control.hasSession(sessionID))
@@ -97,7 +97,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
     if (readEnabled) {
       // Delay every byte until the whole CoS turn has completed and the envelope
       // can be validated. Never stream half a forged tool call as user-visible prose.
-      const toolCall = parseReadCall(textSoFar, !result, sessionKey, messageKey)
+      const toolCall = parseReadCall(textSoFar, !result || allowNextRead, sessionKey, messageKey, result?.callId)
       if (toolCall) return { toolCall }
       await emit(textSoFar)
     }
@@ -169,8 +169,10 @@ export function createGateway({ control, key, nativeTools = 'off' }) {
       try { body = JSON.parse(raw) } catch { throw new BridgeError('invalid_json', 400) }
       if (!body || typeof body !== 'object') throw new BridgeError('invalid_body', 400)
       const isToolResult = body.messages?.at(-1)?.role === 'tool'
+      let allowNextRead = false
       if (isToolResult) {
         issuedReads.claim(sessionKey, messageKey, body.messages)
+        allowNextRead = issuedReads.canContinue(sessionKey, messageKey)
       } else if (issuedReads.has(sessionKey)) {
         // A later user prompt supersedes an unanswered tool request.
         issuedReads.abandon(sessionKey)
@@ -182,7 +184,7 @@ export function createGateway({ control, key, nativeTools = 'off' }) {
       const chunk = (delta, finish = null) => ({ id, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: body.model, choices: [{ index: 0, delta, finish_reason: finish }] })
       let answer = ''
       // Do not announce SSE success until we have validated the request and upstream admission.
-      const result = await runTurn(control, body, { sessionKey, messageKey, nativeTools, signal: cancel.signal, emit: async (delta) => {
+      const result = await runTurn(control, body, { sessionKey, messageKey, nativeTools, allowNextRead, signal: cancel.signal, emit: async (delta) => {
         answer += delta
         if (stream) {
           if (!res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'close' })

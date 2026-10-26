@@ -26,8 +26,11 @@ export class NativeReadCustody {
   issue(session, message, call) {
     if (call?.type !== 'function' || call.function?.name !== 'read' ||
         typeof call.id !== 'string' || !/^[a-zA-Z0-9_-]{8,100}$/.test(call.id)) refuse()
+    const prior = this.#issued.get(session)
+    const continuing = prior?.message === message
+    if (continuing && (prior.depth >= 2 || !prior.resultDigest)) refuse()
     const issued = { message, id: call.id, arguments: signature(call.function.arguments),
-      resultDigest: null, issuedAt: this.now() }
+      resultDigest: null, issuedAt: this.now(), depth: continuing ? prior.depth + 1 : 1 }
     this.#issued.delete(session)
     this.#issued.set(session, issued)
     while (this.#issued.size > this.max) this.#issued.delete(this.#issued.keys().next().value)
@@ -47,6 +50,12 @@ export class NativeReadCustody {
     const next = digest(result.content)
     if (issued.resultDigest && next !== issued.resultDigest) refuse()
     issued.resultDigest = next
+  }
+  canContinue(session, message) {
+    const item = this.#issued.get(session)
+    const now = this.now()
+    return !!item && item.message === message && item.depth < 2 &&
+      !!item.resultDigest && now >= item.issuedAt && now - item.issuedAt <= this.ttlMs
   }
   consume(session) { this.#issued.delete(session) }
 }
