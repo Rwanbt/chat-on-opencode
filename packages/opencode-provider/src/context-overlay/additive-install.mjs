@@ -149,6 +149,10 @@ export function installAdditive(config, bundle, expectedConfigSha, expectedSourc
   writeNew(locations.agentStage, source.found.get('chat-on-opencode-browser-text.md'))
   ensurePinned(profile(config), data, expectedSourceSha)
   ownedState(cfg, data, source.found)
+  // Recheck quiescence immediately before either global file becomes visible.
+  // If another OpenCode instance appeared during staging, leave a journal for
+  // explicit recovery rather than publishing into a running official app.
+  assertIdle(idle)
   renameSync(locations.agentStage, cfg.agent)
   renameSync(locations.pluginStage, cfg.target)
   renameSync(cfg.journal, cfg.receipt)
