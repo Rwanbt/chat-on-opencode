@@ -113,7 +113,7 @@ try {
   let journal = ''
   try { journal = await readFile(path.join(paths.data, 'opencode', 'log', 'opencode.log'), 'utf8') } catch {}
   const eventCounts = {}
-  for (const line of stdout.split(/\\r?\\n/)) {
+  for (const line of stdout.split(/\r?\n/)) {
     try {
       const event = JSON.parse(line)
       const type = typeof event.type === 'string' ? event.type : 'unknown'
@@ -124,10 +124,10 @@ try {
   process.stdout.write('OFFICIAL_CLI_CATEGORICAL_DIAG=' + JSON.stringify({
     gatewayReached, refusalObserved, exited: child.exitCode !== null,
     stdoutNonempty: !!stdout.length, stderrNonempty: !!stderr.length,
-    events: eventCounts, logModelRequest: has(/model\\.request/),
-    logHttpRequest: has(/http\\.request/), logCompaction: has(/compaction/),
-    logError: has(/\\b(ERROR|WARN)\\b/i), logRefusal: has(/chatgpt_sign_in_required|cos_companion_unpaired/)
-  }) + '\\n')
+    events: eventCounts, logModelRequest: has(/model\.request/),
+    logHttpRequest: has(/http\.request/), logCompaction: has(/compaction/),
+    logError: has(/\b(ERROR|WARN)\b/i), logRefusal: has(/chatgpt_sign_in_required|cos_companion_unpaired/)
+  }) + '\n')
   assert.equal(emittedText.length, 0, 'an unpaired provider must never return assistant inference')
   assert.equal(gatewayReached, true, 'official CLI did not reach real packaged Electron-owned gateway')
   assert.equal(refusalObserved, true, 'unpaired official CLI must surface typed ChatGPT sign-in refusal')
