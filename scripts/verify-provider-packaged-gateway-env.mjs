@@ -35,9 +35,24 @@ if (process.argv[2] === '--gateway-worker') {
   const lifecycle = new GatewayLifecycle({
     entry, runtimeExecutable: executable, runtimeData: profile,
     node: process.execPath, key, port,
+  }, {
+    // Only the CI fixture: retain the gateway's categorically redacted failure
+    // code when the real packaged Electron fails before /health can bind.
+    launcher: (exe, args, opts) => spawn(exe, args, {
+      ...opts, stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+    }),
   })
+  let endpointEverSeen = false
+  let gatewayErrorCode = 'none'
+  const endpoint = path.join(profile, 'control-api', 'endpoint.json')
+  const monitor = setInterval(() => { endpointEverSeen ||= existsSync(endpoint) }, 300)
   try {
-    await lifecycle.ensure()
+    const starting = lifecycle.ensure()
+    lifecycle.child?.stderr?.on('data', chunk => {
+      const m = /Chat On OpenCode cannot connect to its CoS runtime:\\s+([a-z0-9_]+)/i.exec(String(chunk))
+      if (m) gatewayErrorCode = m[1]
+    })
+    await starting
     const response = await fetch('http://127.0.0.1:' + port + '/health', {
       headers: { Authorization: 'Bearer ' + key },
       signal: AbortSignal.timeout(2000),
@@ -48,9 +63,11 @@ if (process.argv[2] === '--gateway-worker') {
     assert.equal(health.provider?.canAttempt, false, 'unpaired test profile may not accept prompts')
     process.stdout.write('OWNED_PACKAGED_GATEWAY=PASS\\n')
   } catch (error) {
-    console.error('OWNED_PACKAGED_GATEWAY_ERROR=' + (error?.code || error?.message || 'unknown'))
+    console.error('OWNED_PACKAGED_GATEWAY_ERROR=' + (error?.code || error?.message || 'unknown') +
+      ';CHILD_DIAGNOSTIC=' + gatewayErrorCode + ';ENDPOINT_SEEN=' + endpointEverSeen)
     process.exitCode = 1
   } finally {
+    clearInterval(monitor)
     lifecycle.stop()
   }
 } else {
