@@ -139,6 +139,44 @@ the config and its installation manifest without an interprocess CAS would
 risk overwriting a concurrent edit. Its output remains
 `NO_GO_ATOMIC_CONFIG_CAS_UNPROVEN`.
 
+### Already-active managed directory switch: preserve both generations
+
+An existing `.chat-on-opencode-directory-switch.json` together with
+`.chat-on-opencode-directory-previous` and an active candidate means the
+original format-1 transaction still owns a rollback obligation. Its status
+`staged:false, oldRetained:true, activeCandidate:true` is **not** an empty
+staging slot. `--stage` correctly refuses another switch. The current
+`--rollback` restores the old directory but deletes the candidate that had
+been active, so invoking rollback just to free the slot would lose the direct
+route back to that intermediate generation. Do not remove or rename the
+journal or previous directory manually.
+
+A read-only proof is available for that exact state:
+
+```powershell
+node packages/opencode-provider/bin/official-chained-swap-plan.mjs --inspect `
+  --config 'D:\TEMP-FIXTURE\opencode\opencode.jsonc' `
+  --candidate 'D:\REVIEWED-PR41\packages\opencode-provider' `
+  --expected-sha256 '<independently-reviewed-64-character-digest>'
+```
+
+This command verifies the active format-1 manifest, original backup hash,
+the journal and previous manifest, both retained payload hashes, the new
+candidate's pinned digest, its OAuth-bootstrap entry point, and absence of
+partial staging/upgrade. It rejects symlinks and unexpected layouts. Output
+contains digests and categorical status only. It writes nothing and cannot
+promote the candidate, even if the current OpenCode process has exited.
+Tests use temporary synthetic profiles; the command above is illustrative.
+
+Status `NO_GO_CHAINED_SWAP_NOT_ATOMIC` means that a separate chained
+transaction remains necessary: persist ownership of **old, current and new**
+generations before any rename, keep each original manifest/config backup
+intact, exclude simultaneous upgrade/config editors, and support crash
+recovery and independent rollback to each exact payload. Any future
+offline activation must also verify zero running official OpenCode processes
+and true interprocess compare-and-swap ownership. An inspection hash alone
+is not permission for a later filesystem mutation.
+
 **Important:** Installing the provider registration does not establish
 production-ready inference. Desktop model-picker appearance, verified
 runtime ownership, authorized ChatGPT account integration, credentials and
