@@ -73,14 +73,14 @@ for (const legacyOverlay of [false, true]) test(legacyOverlay
       const addon = path.join(root, 'config', 'plugins', 'chat-on-opencode-context-overlay')
       await mkdir(addon, { recursive: true })
       for (const name of ['index.ts', 'overlay.mjs']) {
-        await cp(path.join(packageRoot, 'addons', 'context-overlay', name), path.join(addon, name))
+        await cp(path.join(packageRoot, 'src', 'context-overlay', name), path.join(addon, name))
       }
       // Prove the additive route loads the lean agent from a global Markdown
       // file; none of the user's installed JSONC bytes need to be edited.
       delete configuration.agents['chat-on-opencode-text']
       const agents = path.join(root, 'config', 'agents')
       await mkdir(agents, { recursive: true })
-      await cp(path.join(packageRoot, 'addons', 'context-overlay', 'chat-on-opencode-browser-text.md'),
+      await cp(path.join(packageRoot, 'src', 'context-overlay', 'chat-on-opencode-browser-text.md'),
         path.join(agents, 'chat-on-opencode-text.md'))
       assert.equal(configuration.agents['chat-on-opencode-text'], undefined)
     }
