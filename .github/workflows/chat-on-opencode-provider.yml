@@ -11,7 +11,7 @@ on:
       - 'scripts/provider-isolated-profile.ts'
       - 'scripts/verify-provider-packaged-electron.mjs'
       - 'scripts/verify-provider-packaged-sign-in.mjs'
-      - 'scripts/verify-provider-packaged-gateway-env.mjs'
+      - 'test/provider-packaged-gateway-env.e2e.mjs'
       - 'scripts/provider-windows-window-probe.ps1'
       - 'package.json'
       - 'test/provider-packaging.test.ts'
@@ -116,7 +116,7 @@ jobs:
       - name: Build independent unpacked provider runtime and probe native modules
         run: npm run dist:provider:win:x64
       - name: RED gate - real packaged gateway under standalone CLI-like environment
-        run: node scripts/verify-provider-packaged-gateway-env.mjs
+        run: node test/provider-packaged-gateway-env.e2e.mjs
       - name: Qualify hidden service and explicit isolated sign-in against packaged Electron
         run: node scripts/verify-provider-packaged-sign-in.mjs
       - name: Publish portable provider bundle after runtime smoke
