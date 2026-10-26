@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -38,7 +38,9 @@ async function stopTree(child) {
   child.unref()
 }
 
-test('actual OpenCode V2 CLI loads provider plugin, starts owned gateway and receives offline streamed text',
+for (const legacyOverlay of [false, true]) test(legacyOverlay
+  ? 'actual OpenCode V2 CLI repairs legacy 16k model through global additive context overlay'
+  : 'actual OpenCode V2 CLI loads provider plugin and receives offline streamed text',
   { skip: !cli ? 'Set CHAT_ON_OPENCODE_TEST_CLI to an actual absolute OpenCode 2 executable' : false,
     timeout: 80_000 }, async () => {
     assert.ok(path.isAbsolute(cli) && existsSync(cli), 'OpenCode V2 executable missing')
@@ -64,8 +66,18 @@ test('actual OpenCode V2 CLI loads provider plugin, starts owned gateway and rec
     })
     assert.equal(generated.status, 0, `config generation failed: ${generated.stderr?.slice(-500)}`)
     const configuration = JSON.parse(generated.stdout)
-    assert.equal(configuration.providers['chat-on-opencode'].models['chatgpt-default'].limit.context,65536,
-      'a fresh official 2.1.4 turn must not start by requesting compaction')
+    assert.equal(configuration.providers['chat-on-opencode'].models['chatgpt-default'].limit.context, 65_536)
+    if (legacyOverlay) {
+      // Simulate the deployed format-1 model WITHOUT editing any real user profile.
+      configuration.providers['chat-on-opencode'].models['chatgpt-default'].limit.context = 16_384
+      const addon = path.join(root, 'config', 'plugins', 'chat-on-opencode-context-overlay')
+      await mkdir(addon, { recursive: true })
+      for (const name of ['index.ts', 'overlay.mjs']) {
+        await cp(path.join(packageRoot, 'addons', 'context-overlay', name), path.join(addon, name))
+      }
+    }
+    assert.equal(configuration.providers['chat-on-opencode'].models['chatgpt-default'].limit.context,
+      legacyOverlay ? 16_384 : 65_536)
     assert.equal(configuration.providers['chat-on-opencode'].settings.apiKey, undefined)
     assert.equal(configuration.providers['chat-on-opencode'].env, undefined)
     const safeEnv = {}
