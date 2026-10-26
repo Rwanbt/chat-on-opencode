@@ -182,11 +182,14 @@ node --test test/native-process.e2e.mjs
 - The gateway health response must prove the exact spawned process PID, and the gateway
   bearer secret is never passed into its child Chromium environment.
 - Text-only request adapter, progressive Chat Completions SSE, per-session concurrency guard.
-- Fail-closed unknown model, unapproved/unsupported tool calls, auxiliary requests, non-monotonic output,
+- Fail-closed unknown model, unapproved/unsupported tool calls, non-monotonic output,
   clipped content, unknown delivery or premature completion. OpenCode V2 `title` requests
-  are answered locally with a fixed title, without an inference request or borrowing a
-  primary message identity. `compaction` and `generate` remain explicitly unsupported;
-  they cannot reuse the previous prompt's authorization or message ID.
+  are answered locally with a fixed title. The separate V2 `compaction` hook creates a
+  bounded, explicitly extractive checkpoint of recent **text-only** messages, without
+  pretending a model summarized them or borrowing a primary message identity. Unsupported
+  multimodal/tool-call checkpoint content and `generate` still fail closed. Extractive
+  compaction can omit older conversation details; it is **not** a semantic summary and does
+  not establish full long-context production parity.
 
 ### Fork runtime contract
 
