@@ -16,6 +16,20 @@ describe('bridge port candidates', () => {
     expect(bridgePortSelection(8767, 'bad,-1')).toEqual({ candidates: [8767], overridden: false });
     expect(bridgePortSelection('auto', '8768suffix')).toEqual({ candidates: [8768], overridden: true });
   });
+  it('pins both provider service modes to 8766 even when 8765 is available or an override tries to retarget it', () => {
+    const service = ['Chat On OpenCode Provider.exe', '--chat-on-opencode-provider-service'];
+    const signIn = ['Chat On OpenCode Provider.exe', '--chat-on-opencode-provider-sign-in'];
+    for (const argv of [service, signIn]) {
+      expect(bridgePortSelection('auto', '', argv)).toEqual({ candidates: [8766], overridden: true });
+      expect(bridgePortSelection(8765, '8765', argv)).toEqual({ candidates: [8766], overridden: true });
+      expect(bridgePortSelection(8769, '0', argv)).toEqual({ candidates: [8766], overridden: true });
+      expect(bridgePortSelection('auto', '18765,38766', argv)).toEqual({ candidates: [8766], overridden: true });
+    }
+    // The normal app retains its ordinary Auto fallback, fixed ports and test override.
+    expect(bridgePortSelection('auto', '', ['OpenCode.exe'])).toEqual({
+      candidates: BROWSER_BRIDGE_AUTO_PORTS, overridden: false,
+    });
+  });
   it('falls back to two distant ranges when Windows reserves 8765-8769 (#1314)', () => {
     // Hyper-V, WSL2 and Docker reserve blocks of ports; one reserved block covered the whole
     // range, so the bridge could not listen anywhere and the extension never connected.
