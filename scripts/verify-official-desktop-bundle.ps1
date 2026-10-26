@@ -78,3 +78,11 @@ Write-Output ("OFFICIAL_DESKTOP_EMBEDDED_CLI_VERSION=" + $reply)
 Write-Output ("OFFICIAL_DESKTOP_EMBEDDED_CLI_SHA256=" + $cliDigest)
 if (-not $env:GITHUB_ENV) { throw 'github_actions_runner_only' }
 "CHAT_ON_OPENCODE_TEST_CLI=$cli" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+$desktopName = 'OpenCode.exe'
+$officialAppRoot = Split-Path -Parent (Split-Path -Parent $cli)
+$desktop = Join-Path $officialAppRoot $desktopName
+if (-not (Test-Path -LiteralPath $desktop -PathType Leaf)) {
+  throw 'official_desktop_gui_executable_missing'
+}
+"CHAT_ON_OPENCODE_TEST_DESKTOP_EXE=$desktop" |
+  Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
