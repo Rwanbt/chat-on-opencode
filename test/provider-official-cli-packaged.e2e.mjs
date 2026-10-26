@@ -82,7 +82,7 @@ try {
     await copyFile(path.join(overlaySource, 'chat-on-opencode-browser-text.md'),
       path.join(agents, 'chat-on-opencode-text.md'))
     // A disposable stand-in for opencode.jsonc proves this path never edits it.
-    originalConfig = '{\\n  // Existing config and plugin settings are managed separately\\n}\\n'
+    originalConfig = '{\n  // Existing config and plugin settings are managed separately\n}\n'
     await writeFile(path.join(paths.config, 'opencode.jsonc'), originalConfig, { flag: 'wx' })
   }
   // Preserve the coherent Windows HOME/USERPROFILE that Electron requires.
@@ -155,7 +155,7 @@ try {
   if (legacyOverlay) {
     assert.equal(await readFile(path.join(paths.config, 'opencode.jsonc'), 'utf8'),
       originalConfig, 'global legacy overlay must not rewrite opencode.jsonc')
-    process.stdout.write('LEGACY_16K_CONTEXT_ADDITIVE_OVERLAY=PASS\\n')
+    process.stdout.write('LEGACY_16K_CONTEXT_ADDITIVE_OVERLAY=PASS\n')
   }
   process.stdout.write('OFFICIAL_CLI_2_1_4_PACKAGED_ELECTRON_GATEWAY=PASS\n')
   process.stdout.write('UNPAIRED_AUTH_REFUSAL=PASS\n')
