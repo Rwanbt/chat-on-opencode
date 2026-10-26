@@ -6,6 +6,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
+import { probeOwnedWindows } from './provider-window-probe-runner.mjs';
 import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -36,13 +37,7 @@ const env = {
 };
 
 function checkWindows(pid, handle = 0) {
-  const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-    '-File', probeScript, '-OwnerProcessId', String(pid)];
-  if (handle) args.push('-CloseHandle', String(handle));
-  const result = spawnSync('powershell.exe', args, { windowsHide: true, encoding: 'utf8', timeout: 12_000 });
-  assert.equal(result.status, 0, `Windows window probe failed: ${result.error?.message ?? result.stderr?.slice(-900)}`);
-  const parsed = JSON.parse(result.stdout.trim());
-  return Array.isArray(parsed) ? parsed : [parsed];
+  return probeOwnedWindows({ pid, handle, script: probeScript });
 }
 
 function launch(flag, extras = {}) {
