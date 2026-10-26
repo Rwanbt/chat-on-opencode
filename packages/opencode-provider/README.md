@@ -84,6 +84,20 @@ to its existing directory. The provider service rechecks isolation when launched
 This standalone layout is packaging/configuration evidence, not proof of real ChatGPT login,
 tool calls, multimodal parity, or unattended inference. Those milestones remain open.
 
+### Opt-in scoped text-only agent (CoS gateway)
+
+Generated CoS-gateway configurations also expose the **`chat-on-opencode-text`**
+agent. Select it explicitly with `--agent chat-on-opencode-text` or in OpenCode's
+agent picker, together with model `chat-on-opencode/chatgpt-default`. It uses a
+short text-only system prompt and deny-all native tool permissions, rather than
+shipping the default coding agent's tool workflows into a browser-only model.
+It **does not** change the default agent, other providers, OAuth-native inference,
+or the experimental native read mode. It never clips user, developer, or system
+instructions. The CoS action endpoint still rejects messages above 64,000
+characters; this is a bounded text-only compatibility path, not native tools or
+proof of an authenticated answer. Keep the existing managed profile unchanged
+until separately reviewed and installed via a reversible update.
+
 ## Wiring / isolated test only
 
 The example `opencode.example.jsonc` shows the OpenCode **V2** `providers` object and local
