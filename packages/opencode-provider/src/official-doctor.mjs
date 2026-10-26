@@ -28,7 +28,7 @@ export function classifyGatewayPlugin(source) {
   return 'unknown'
 }
 
-function extractOwnedEntry(text, managed) {
+export function extractOwnedEntry(text, managed) {
   const root = readJSONC(text)
   const plugins = child(root, 'plugins'), providers = child(root, 'providers')
   if (plugins?.type !== 'array' || providers?.type !== 'object' ||
