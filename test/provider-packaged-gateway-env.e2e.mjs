@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
-import { createServer } from 'node:net'
+import { createServer, connect as connectSocket } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,6 +19,14 @@ const root = path.resolve(here, '../release/provider/win-unpacked')
 const executable = path.join(root, 'Chat On OpenCode Provider.exe')
 const entry = path.resolve(here, '../packages/opencode-provider/src/server.mjs')
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
+async function acceptsConnection(port) {
+  return await new Promise(resolve => {
+    const socket = connectSocket({ host: '127.0.0.1', port })
+    socket.once('connect', () => { socket.destroy(); resolve(true) })
+    socket.once('error', () => { socket.destroy(); resolve(false) })
+    socket.setTimeout(2000, () => { socket.destroy(); resolve(false) })
+  })
+}
 
 async function freePort() {
   const server = createServer()
@@ -60,6 +68,7 @@ if (process.argv[2] === '--gateway-worker') {
     assert.equal(response.status, 200)
     const health = await response.json()
     assert.equal(health.gateway, 'chat-on-opencode')
+    assert.equal(await acceptsConnection(8766), true, 'provider bridge must bind exact 8766')
     assert.equal(health.provider?.canAttempt, false, 'unpaired test profile may not accept prompts')
     process.stdout.write('OWNED_PACKAGED_GATEWAY=PASS\\n')
   } catch (error) {
@@ -74,6 +83,15 @@ if (process.argv[2] === '--gateway-worker') {
   assert.equal(process.platform, 'win32', 'Windows packaged runtime required')
   assert.ok(existsSync(executable), 'packaged Electron must already be built')
   const home = await mkdtemp(path.join(os.tmpdir(), 'coo-provider-e2e-gateway-env-'))
+  let personalConnections = 0
+  const personalPortTrap = createServer(socket => {
+    personalConnections++
+    socket.destroy()
+  })
+  await new Promise((resolve, reject) => {
+    personalPortTrap.once('error', reject)
+    personalPortTrap.listen(8765, '127.0.0.1', resolve)
+  })
   try {
     for (const variant of ['native-home', 'isolated-opencode']) {
       const dir = path.join(home, variant)
@@ -92,6 +110,8 @@ if (process.argv[2] === '--gateway-worker') {
       for (const name of Object.keys(env)) {
         if (/^(CHAT_ON_OPENCODE_|COS_|ELECTRON_)/.test(name)) delete env[name]
       }
+      // Force a hostile inherited override: only provider's 8766 may bind.
+      env.CLF_BRIDGE_PORTS = '8765'
       Object.assign(env, {
         APPDATA: path.join(dir, 'appdata'), LOCALAPPDATA: path.join(dir, 'localappdata'),
       })
@@ -122,9 +142,11 @@ if (process.argv[2] === '--gateway-worker') {
       assert.equal(result.timeout, false, variant + ' packaged worker timed out')
       assert.equal(result.code, 0, variant + ' packaged gateway failure: ' + error.slice(-500))
       assert.match(output, /OWNED_PACKAGED_GATEWAY=PASS/)
+      assert.equal(personalConnections, 0, 'provider or extension contacted personal 8765')
       process.stdout.write('PACKAGED_' + variant.toUpperCase().replace('-', '_') + '=PASS\\n')
     }
   } finally {
+    await new Promise(resolve => personalPortTrap.close(resolve))
     await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 })
   }
 }
