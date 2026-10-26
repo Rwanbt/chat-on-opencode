@@ -8,6 +8,7 @@ import { provideLocalTitle, requirePrimaryKind } from './auxiliary.mjs'
 import { provideExtractiveCompaction } from './compaction.mjs'
 import { registerNativeSIWC } from './native-siwc.mjs'
 import { registerNativeHTTPText } from './native-text-http.mjs'
+import { stopUnavailableGatewayRetry } from './retry-policy.mjs'
 
 // OpenCode V2 is the only frontend/session owner. The helper starts on the first *selected*
 // model request, not on plugin import, so other providers remain completely unaffected.
@@ -36,6 +37,12 @@ export default Plugin.define({
       port,
       nativeTools: readEnabled ? 'read' : 'off',
     })
+    // A CoS 503 means the isolated browser is absent, unpaired or unavailable.
+    // Repeated model steps cannot sign the user in; fail this provider turn explicitly.
+    // Other providers and the independently consented native OAuth route are unchanged.
+    if (!nativeText) await ctx.session.hook('retry', event => {
+      stopUnavailableGatewayRetry(event)
+    }, { providerID: 'chat-on-opencode' })
     // Only the opted-in native read definition reaches this provider. Neither CoS
     // nor the gateway may execute tools; OpenCode's native permissions own execution.
     await ctx.session.hook('context', event => enforceTextOnlyContext(event, readEnabled), { providerID: 'chat-on-opencode' })
