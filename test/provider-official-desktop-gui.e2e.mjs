@@ -41,7 +41,7 @@ let child
 // smoke even when Electron keeps native handles alive after the owned window
 // has closed. This watchdog never runs on, or targets, a personal Windows PC.
 const watchdog = setTimeout(() => {
-  process.stderr.write('OFFICIAL_DESKTOP_GUI_TEST_WALL_TIMEOUT\\n')
+  process.stderr.write('OFFICIAL_DESKTOP_GUI_TEST_WALL_TIMEOUT\n')
   if (child?.exitCode === null) child.kill('SIGTERM')
   child?.unref()
   process.exit(1)
@@ -92,7 +92,7 @@ try {
     child.kill('SIGTERM')
     await Promise.race([new Promise(resolve => child.once('exit', resolve)), delay(3500)])
     if (child.exitCode === null) {
-      process.stderr.write('OFFICIAL_DESKTOP_GUI_CHILD_STILL_LIVE_AFTER_TERM\\n')
+      process.stderr.write('OFFICIAL_DESKTOP_GUI_CHILD_STILL_LIVE_AFTER_TERM\n')
       child.unref()
     }
   }
