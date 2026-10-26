@@ -2,14 +2,14 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { test } from 'node:test'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { installProvider } from '../src/official-install.mjs'
-import { planOfficialPreview, previewOfficialModel } from '../src/official-preview.mjs'
+import { hasMachineConfig, planOfficialPreview, previewOfficialModel } from '../src/official-preview.mjs'
 import { parsePreviewArgs } from '../bin/official-preview.mjs'
 
 const bundleDir = fileURLToPath(new URL('..', import.meta.url))
@@ -79,6 +79,8 @@ test('process-only candidate model check preserves live byte hashes and never im
   assert.ok(captured.opts.env.TEMP.startsWith(path.dirname(captured.opts.env.HOME)))
   assert.equal(captured.opts.env.TEMP, captured.opts.env.TMP)
   const injected = JSON.parse(captured.opts.env.OPENCODE_CONFIG_CONTENT)
+  const previewConfig = path.join(captured.opts.env.OPENCODE_CONFIG_DIR, 'opencode.jsonc')
+  assert.equal(existsSync(previewConfig), false, 'disposable config was removed on exit')
   assert.equal(injected.plugins.length, 1)
   assert.ok(injected.plugins[0].package.endsWith(path.join('bundle', 'plugin')))
   assert.equal(existsSync(injected.plugins[0].package), false, 'temporary plugin bundle was removed on exit')
@@ -150,6 +152,21 @@ test('decorated model identifier split across native stdout chunks is recognized
   assert.equal(result.modelPresent, true)
 })
 
+test('the official subprocess receives only matching provider config on disk and in memory', async t => {
+  const { options } = await fixture(t)
+  const plan = planOfficialPreview(options, { runner: mockedVersion })
+  let verified = false
+  await previewOfficialModel(plan, { launcher: mockLauncher({
+    onLaunch: ({ opts }) => {
+      const contents = readFileSync(path.join(opts.env.OPENCODE_CONFIG_DIR, 'opencode.jsonc'), 'utf8')
+      assert.deepEqual(JSON.parse(contents), JSON.parse(opts.env.OPENCODE_CONFIG_CONTENT))
+      assert.doesNotMatch(contents, /"goal"|"loop"|DO_NOT_COPY_THIS_SECRET/)
+      verified = true
+    },
+  }) })
+  assert.equal(verified, true)
+})
+
 test('native subprocess timeout reports only categorical no-output, never account data', async t => {
   const { options } = await fixture(t)
   const plan = planOfficialPreview(options, { runner: mockedVersion })
@@ -163,7 +180,11 @@ test('native subprocess timeout reports only categorical no-output, never accoun
     return child
   }
   await assert.rejects(previewOfficialModel(plan, {
-    timeoutMs: 1000, launcher, terminator: () => { killed++ },
+    timeoutMs: 1000, launcher, terminator: child => {
+      killed++
+      child.exitCode = 1
+      child.emit('close', 1)
+    },
   }), /preview_cli_timeout_no_output/)
   assert.equal(killed, 1)
 })
@@ -187,6 +208,16 @@ test('bad CLI versions and CLI argument manipulation are rejected without spawni
   assert.throws(() => parsePreviewArgs(['--config', 'relative']), /preview_all_absolute_paths_required/)
   assert.throws(() => parsePreviewArgs(['--config', options.configFile, '--config', 'duplicate']),
     /preview_arguments_invalid/)
+})
+
+test('managed system-wide configuration is detected without reading its contents', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'coo-system-config-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(path.join(root, 'opencode'))
+  assert.equal(hasMachineConfig({ platform: 'win32', env: { ProgramData: root } }), false)
+  await writeFile(path.join(root, 'opencode', 'opencode.jsonc'), '{"private":"never-read"}')
+  assert.equal(hasMachineConfig({ platform: 'win32', env: { ProgramData: root } }), true)
+  assert.equal(hasMachineConfig({ platform: 'linux', unixSystemDir: path.join(root, 'opencode') }), true)
 })
 
 test('optional real official OpenCode 2.1.4 models probe uses only a synthetic installed profile', {

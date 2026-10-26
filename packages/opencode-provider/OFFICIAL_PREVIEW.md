@@ -19,7 +19,8 @@ Use an existing, trusted local candidate path for `--bundle`; no package
 downloads are performed. The preview verifies the active config/backup
 manifest and candidate payload, reads only the provider-owned registration
 and required local runtime paths, then constructs a **minimal** OpenCode
-configuration containing exactly one provider and one plugin. Before
+configuration containing exactly one provider and one plugin, mirrored to a
+new temporary opencode.jsonc as well as OPENCODE_CONFIG_CONTENT. Before
 launch, the candidate's production files are copied into the disposable
 directory and verified against the original payload digest; a development
 worktree is never loaded directly by the official CLI. Other
@@ -28,6 +29,8 @@ are **not copied** into the process. It sets `OPENCODE_CONFIG_CONTENT` with
 new `HOME`, `APPDATA`, `LOCALAPPDATA` and `XDG_*` directories, disables
 project config/model fetch/update/default plugins, and invokes only:
 `opencode-cli.exe models --standalone`.
+It refuses an observed machine-wide OpenCode configuration or plugin directory,
+which OpenCode can load regardless of profile environment overrides.
 
 Results are machine-readable: `PREVIEW_MODEL_AVAILABLE` means the selected
 OpenCode CLI listed `chat-on-opencode/chatgpt-default` and the original
@@ -36,7 +39,9 @@ ChatGPT account is signed in, that Chrome is paired, that any model is
 accessible to the account, that an inference prompt succeeded, or that a
 live Desktop upgrade has been performed. A faulty candidate or unavailable
 runtime fails closed with a fixed error code. The child is bounded in
-duration and output, then its temporary profile is discarded. No
+duration and output; cleanup is permitted only after the child exits,
+otherwise termination is reported as unconfirmed and the synthetic files
+are retained instead of being deleted under a running process. No
 auto-promotion, runtime helper launch, OAuth, login or account access.
 
 The original installed `.chat-on-opencode-managed`, backup and
@@ -51,13 +56,23 @@ Validation:
 - Set `CHAT_ON_OPENCODE_TEST_OFFICIAL_CLI` to the exact installed official
   2.1.4 executable to run the optional real CLI standalone models test
   within an entirely synthetic temporary profile.
+- `node --test test/official-cli-bare-model.e2e.mjs` with that variable
+  checks whether the **same official CLI** can discover a static offline
+  model using **no CoS plugin**, any account or remote model call.
 
 Current local Windows qualification: isolated synthetic process/manifest tests
-pass; the real official CLI 2.1.4 subprocess timed out twice during model
-discovery (bounded 30 seconds plus Windows child cleanup). This is a **NO-GO
-for actual on-machine activation**. Do not treat a passed fake process result,
-or a CI test without the official binary, as proof that the Desktop can load
-the candidate. The timer stops only the spawned sacrificial CLI process tree,
-never an existing OpenCode instance. Further diagnosis must establish why
-the native child did not produce the registered model before enabling any
-upgrade or user session inference.
+pass. The real official CLI 2.1.4 subprocess still failed the provider
+discovery with a 30-second timeout. More importantly, the **preexisting**
+immutable-bundle reference E2E also timed out at 45 seconds, and the
+standalone CLI check without CoS did not complete within its bound on
+this PC. This demonstrates a broader local CLI model-discovery problem,
+but does not establish its underlying OS/network/resource cause.
+An attempted provider selector after `models` was explicitly rejected by
+the installed CLI 2.1.4, so the final preview deliberately keeps the
+tested `models --standalone` command. The same offline native path passes
+in GitHub CI. This is a **NO-GO for
+actual on-machine activation**. A passed fake process test or a CI
+test on another machine is not proof of local Desktop readiness.
+Only sacrificial CLI process trees are eligible for shutdown; never
+an existing OpenCode instance. An unsuccessful child termination is
+explicitly refused rather than called successful.

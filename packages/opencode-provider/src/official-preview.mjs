@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, readFileSync } from 'node:fs'
-import { cp, copyFile, mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { cp, copyFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { createOpenCodeConfig } from './config.mjs'
@@ -18,8 +18,20 @@ const systemEnvironment = () => Object.fromEntries(Object.entries(process.env).f
   /^(PATH|PATHEXT|SystemRoot|WINDIR|COMSPEC|TEMP|TMP|PROCESSOR_ARCHITECTURE|NUMBER_OF_PROCESSORS)$/i.test(key) &&
   typeof value === 'string'))
 
+/** Managed config overrides process-local config; never silently load it. */
+export function hasMachineConfig({ platform = process.platform, env = process.env,
+  unixSystemDir } = {}) {
+  const location = platform === 'win32'
+    ? path.join(env.ProgramData ?? env.PROGRAMDATA ?? 'C:\\ProgramData', 'opencode')
+    : platform === 'darwin' ? (unixSystemDir ?? '/Library/Application Support/opencode')
+      : (unixSystemDir ?? '/etc/opencode')
+  return ['opencode.json', 'opencode.jsonc', 'plugins'].some(name =>
+    existsSync(path.join(location, name)))
+}
+
 /** Does not copy personal config, tokens, plugins or account state into the child. */
 export function planOfficialPreview({ configFile, bundleDir, officialCli }, { runner = spawnSync } = {}) {
+  if (hasMachineConfig()) throw Error('preview_managed_system_config_unisolatable')
   const { config, managed } = inspectInstalledProvider(configFile)
   const current = readFileSync(config)
   const options = extractOwnedEntry(current.toString('utf8'), managed)
@@ -81,6 +93,8 @@ export async function previewOfficialModel(plan, {
       candidateDigest(plan.source) !== plan.bundleDigest) throw Error('preview_source_changed')
   const root = await mkdtemp(path.join(os.tmpdir(), 'coo-preview-'))
   let child
+  let childClosed = false
+  let terminate = () => {}
   try {
     for (const name of ['home','appdata','localappdata','config','data','cache','workspace','tmp','bundle']) {
       await mkdir(path.join(root, name))
@@ -100,13 +114,19 @@ export async function previewOfficialModel(plan, {
     // mutable development worktree or the currently managed plugin folder.
     const configuration = structuredClone(plan.generated)
     configuration.plugins[0].package = path.join(staged, 'plugin')
+    // The standalone model command may initialize a config directory before
+    // applying its in-memory overlay. Both contain ONLY the generated provider
+    // settings; never copy the user's personal configuration file.
+    await writeFile(path.join(root, 'config', 'opencode.jsonc'), JSON.stringify(configuration),
+      { flag: 'wx', mode: 0o600 })
+    // V2 CLI 2.1.4 does not accept an extra provider selector here.
     child = launcher(plan.cli, ['models', '--standalone'], {
       cwd: path.join(root, 'workspace'), env: minimalEnvironment(root, configuration),
       windowsHide: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'],
     })
     let total = 0, stdoutBytes = 0, stderrBytes = 0
-    let line = '', outputTail = '', found = false, childClosed = false, killIssued = false
-    const terminate = () => {
+    let line = '', outputTail = '', found = false, killIssued = false
+    terminate = () => {
       if (killIssued || childClosed || !child?.pid) return
       killIssued = true
       if (terminator) terminator(child)
@@ -117,15 +137,19 @@ export async function previewOfficialModel(plan, {
       else child.kill('SIGTERM')
     }
     const outcome = await new Promise((resolve, reject) => {
+      let timedOutError
       const timer = setTimeout(() => {
+        timedOutError = Error(stdoutBytes ? 'preview_cli_timeout_model_unlisted' :
+          stderrBytes ? 'preview_cli_timeout_with_stderr' : 'preview_cli_timeout_no_output')
         terminate()
-        reject(Error(stdoutBytes ? 'preview_cli_timeout_model_unlisted' :
-          stderrBytes ? 'preview_cli_timeout_with_stderr' : 'preview_cli_timeout_no_output'))
+        // A process termination request is not a proof of process exit.
+        // Bound the wait; the outer cleanup gate refuses to delete a live tree.
+        setTimeout(() => { if (!childClosed) reject(timedOutError) }, 2500)
       }, timeoutMs)
       const finish = (error, code) => {
         clearTimeout(timer)
-        childClosed = true
-        if (error) reject(error)
+        if (!error) childClosed = true
+        if (error || timedOutError) reject(error ?? timedOutError)
         else resolve(code)
       }
       child.stdout?.on('data', chunk => {
@@ -166,6 +190,20 @@ export async function previewOfficialModel(plan, {
   } finally {
     // Only own disposable files are deleted. Never operate on the official
     // config, managed bundle, Desktop process or user account.
-    await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(() => undefined)
+    if (child && !childClosed) {
+      terminate()
+      // The Windows process tree may still exit after taskkill returns.
+      // Never delete a profile that our child may still be reading.
+      await Promise.race([
+        new Promise(resolve => child.once('close', () => { childClosed = true; resolve() })),
+        new Promise(resolve => setTimeout(resolve, 2500)),
+      ])
+    }
+    if (!child || childClosed) {
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    } else {
+      // Keep only disposable, synthetic settings; do not assert cleanup.
+      throw Error('preview_child_termination_unconfirmed')
+    }
   }
 }
