@@ -17,7 +17,7 @@
         "chatgpt-default": {
           "name": "ChatGPT via CoS (experimental, text-only)",
           "capabilities": { "tools": false, "input": ["text"], "output": ["text"] },
-          "limit": { "context": 16384, "output": 2048 }
+          "limit": { "context": 65536, "output": 2048 }
         }
       }
     }
