@@ -43,7 +43,7 @@ async function fixture(t) {
     managed: info.managed, copy, info }
 }
 
-test('format-1 plugin can be swapped and rolled back WITHOUT editing user config', async t => {
+test('format-1 plugin can be swapped and rolled back WITHOUT editing user config', { skip: process.platform !== 'win32' }, async t => {
   const v = await fixture(t)
   const prepared = stageManagedSwap(v.config, v.copy)
   assert.equal(prepared.prepared, true)
@@ -74,7 +74,7 @@ test('tampered config or retained old bytes refuse replacement/rollback', async 
   // Deliberately leave test-only directory untouched; cleanup is scoped to temp.
 })
 
-test('failed second rename leaves journal and old directory restorable', async t => {
+test('failed second rename leaves journal and old directory restorable', { skip: process.platform !== 'win32' }, async t => {
   const v = await fixture(t)
   stageManagedSwap(v.config, v.copy)
   const next = path.join(path.dirname(v.config), '.chat-on-opencode-directory-next')
@@ -89,7 +89,7 @@ test('failed second rename leaves journal and old directory restorable', async t
   assert.deepEqual(readFileSync(v.config), v.originalConfig)
 })
 
-test('retained original plugin cannot be silently rolled back if its bytes changed', async t => {
+test('retained original plugin cannot be silently rolled back if its bytes changed', { skip: process.platform !== 'win32' }, async t => {
   const v = await fixture(t)
   stageManagedSwap(v.config, v.copy)
   activateManagedSwap(v.config, quiet)
@@ -105,4 +105,14 @@ test('a second staged upgrade must refuse existing journal without changing the 
   assert.throws(() => stageManagedSwap(v.config, v.copy), /managed_switch_path_in_use/)
   assert.deepEqual(readFileSync(v.config), v.originalConfig)
   inspectInstalledProvider(v.config)
+})
+
+test('non-Windows runtime refuses active upgrade even if an injected probe says quiet', {
+  skip: process.platform === 'win32',
+}, async t => {
+  const v = await fixture(t)
+  stageManagedSwap(v.config, v.copy)
+  assert.throws(() => activateManagedSwap(v.config, quiet), /managed_switch_windows_only/)
+  inspectInstalledProvider(v.config)
+  assert.deepEqual(readFileSync(v.config), v.originalConfig)
 })
