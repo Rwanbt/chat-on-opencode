@@ -21,7 +21,7 @@ import { cosSignInTransfer, SignInTransferError, type SignInCookie } from './sig
 import { EXTERNAL_BROWSER_LABELS, installedSignInBrowsers, openBrowserSignIn, type ExternalChatBrowser } from '../browser.js';
 import { opensInCosBrowser } from '../../shared/cos-browser-sites.js';
 import { TabModel, WINDOW_ID_NONE, type ModelEvent, type WindowState } from './tab-model.js';
-import { providerBrowserUiAllowed, PROVIDER_SIGN_IN_SWITCH } from '../provider-service.js';
+import { providerBrowserDiscoveryPolicy, providerBrowserUiAllowed, PROVIDER_SIGN_IN_SWITCH } from '../provider-service.js';
 
 const PARTITION = 'persist:cos-browser';
 /**
@@ -183,6 +183,7 @@ export class CosBrowser {
 
   constructor(private readonly assets: {
     preloadDir: string; rendererUrl: () => string | null; rendererDir: string;
+    bridgePort?: () => number | null;
     /** The user closed or minimized a shown window: it hides to the tray and goes on running. */
     onUserHide?: () => void;
     /** Where a window the user minimizes goes: the taskbar or Dock (default), or the tray. */
@@ -298,6 +299,10 @@ export class CosBrowser {
 
   /** One `chrome.*` call from the extension worker. */
   private async answer(name: string, args: unknown): Promise<unknown> {
+    if (name === 'bridge.discoveryPolicy') {
+      if (!Array.isArray(args) || args.length !== 0) return { ok: false, message: 'invalid_discovery_request' };
+      return { ok: true, value: providerBrowserDiscoveryPolicy(process.argv, this.assets.bridgePort?.() ?? null) };
+    }
     const label = TRACE ? `${name}(${Array.isArray(args) ? traceIds(args) : ''})` : '';
     const late = TRACE ? setTimeout(() => logWarn(`cos browser trace: ${label} still pending after 10 s`), 10_000) : null;
     try {

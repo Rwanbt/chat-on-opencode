@@ -5,6 +5,7 @@ import { BRIDGE_PROTOCOL } from '../src/main/version.js';
 
 // Most fixtures omit debugger; rendering cases run the real lease owner as well.
 const source = readFileSync(new URL('../extension/background.js', import.meta.url), 'utf8').replace(/^import .*$/gm, '');
+const discoverySource = readFileSync(new URL('../extension/bridge-discovery.mjs', import.meta.url), 'utf8').replace(/^export /gm, '');
 const activeTabsSource = readFileSync(new URL('../extension/active-tabs.js', import.meta.url), 'utf8').replace('export function', 'function');
 const firstId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 const secondId = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
@@ -307,6 +308,7 @@ async function worker(inputs: Array<{ id: string; conversationId: string | null;
     createBrowserControl: () => ({ pump: async () => {} }),
     fetch, URL, URLSearchParams, AbortController, setTimeout, clearTimeout, TextEncoder, console
   });
+  vm.runInContext(discoverySource, context);
   vm.runInContext(activeTabsSource, context);
   vm.runInContext(`${source}\nglobalThis.testMaintenance = { load, maintain, releaseTab, serializeTab, noteTabConversation, createChatTab, authorizeDocument, ackDesktopInput, drainCommandAcks, inspectRequestedModels, desktopInput: HANDLERS.desktop_input, catalog: HANDLERS.model_catalog, events: HANDLERS.events, bind: HANDLERS.bind, closed: HANDLERS.closed, loadFailure: HANDLERS.load_failure, correlate: HANDLERS.correlate, applyRequestedBrowserPreferences };`, context);
   const api = context.testMaintenance as { releaseTab(...args: any[]): Promise<any>; serializeTab(tab: number, operation: () => Promise<any>): Promise<any>; noteTabConversation(source: any, conversationId: string): Promise<any>; applyRequestedBrowserPreferences(request: object): Promise<void>; authorizeDocument(sender: unknown, message: unknown): Promise<any>; catalog(message: unknown, sender: unknown, source: unknown): Promise<any>; load(): Promise<void>; maintain(): Promise<void>; createChatTab(url: string, background: boolean): Promise<Tab> };

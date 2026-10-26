@@ -35,6 +35,7 @@ vi.mock('electron', () => ({
 vi.mock('../src/main/config.js', () => ({ getConfig: () => app.config }));
 vi.mock('../src/main/logger.js', () => ({ logWarn: vi.fn() }));
 vi.mock('../src/main/bridge.js', () => ({
+  bridgePort: () => 8766,
   bridgeStatus: app.bridgeStatus,
   onBridgeChange: (listener: () => void) => { app.bridgeListeners.push(listener); }
 }));

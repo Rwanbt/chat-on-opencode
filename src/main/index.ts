@@ -129,7 +129,7 @@ import { browserWindowIconPath } from './window-icon.js';
 import { approvedChatGptImageRequest, RENDERER_CONTENT_SECURITY_POLICY } from './renderer-csp.js';
 import { editContextMenuTemplate } from './edit-context-menu.js';
 import { connectionLossLine, showConnectionLossNotice } from './connection-loss-notice.js';
-import { providerServiceProfile, providerServiceReady, providerServiceOwner, providerServiceOwnerAlive, PROVIDER_SERVICE_SWITCH, PROVIDER_SIGN_IN_SWITCH } from './provider-service.js';
+import { bootstrapProviderBrowserTab, providerServiceProfile, providerServiceReady, providerServiceOwner, providerServiceOwnerAlive, PROVIDER_SERVICE_SWITCH, PROVIDER_SIGN_IN_SWITCH } from './provider-service.js';
 
 /** Durable state file holding the multi-agent run. Hashes only, never credentials. */
 const SWARM_STATE = 'swarm';
@@ -784,6 +784,10 @@ void app.whenReady().then(async () => {
       // Only this explicit launch may bring up ChatGPT's sign-in window. The service
       // process always remains hidden and never imports credentials by itself.
       await (await loadCosBrowser()).showSignIn();
+    } else if (providerService) {
+      // The service has no visible sign-in page to wake the companion. Give its
+      // extension one ordinary document, keeping the window permanently hidden.
+      await bootstrapProviderBrowserTab(process.argv, await loadCosBrowser());
     }
   };
   if (browserExtensionRequired(getConfig())) {

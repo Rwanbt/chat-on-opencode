@@ -14,6 +14,12 @@ on:
       - 'scripts/provider-windows-window-probe.ps1'
       - 'package.json'
       - 'test/provider-packaging.test.ts'
+      - 'src/main/index.ts'
+      - 'src/main/provider-service.ts'
+      - 'src/main/cos-browser/**'
+      - 'extension/**'
+      - 'test/provider-bridge-isolation.test.mjs'
+      - 'test/provider-hidden-bootstrap.test.mjs'
   push:
     branches: [main, feat/opencode-v2-provider-bridge]
     paths:
@@ -65,7 +71,12 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - uses: oven-sh/setup-bun@v2
+      - name: Pin isolated bridge and hidden browser lifecycle
+        run: node --experimental-strip-types --test test/provider-bridge-isolation.test.mjs test/provider-hidden-bootstrap.test.mjs
       - name: Service profile and UI isolation policy
         run: bun test packages/opencode-provider/test/provider-service.test.ts
       - name: Provider hook bundles for OpenCode V2
