@@ -38,9 +38,11 @@ async function stopTree(child) {
   child.unref()
 }
 
-for (const decision of ['allow', 'deny']) test('actual OpenCode V2 native read ' + decision + ' is enforced by its own permission engine',
+for (const scenario of ['allow', 'deny', 'two-read-allow']) test('actual OpenCode V2 native read ' + scenario + ' is enforced by its own permission engine',
   { skip: !cli ? 'Set CHAT_ON_OPENCODE_TEST_CLI to an actual absolute OpenCode 2 executable' : false,
     timeout: 80_000 }, async () => {
+    const twoReads = scenario === 'two-read-allow'
+    const decision = scenario === 'deny' ? 'deny' : 'allow'
     assert.ok(path.isAbsolute(cli) && existsSync(cli), 'OpenCode V2 executable missing')
     const root = await mkdtemp(path.join(os.tmpdir(), 'coo-opencode-cli-'))
     const names = ['home', 'config', 'data', 'cache', 'appdata', 'localappdata', 'workspace', 'provider-data']
@@ -53,6 +55,8 @@ for (const decision of ['allow', 'deny']) test('actual OpenCode V2 native read '
     const profile = path.join(root, 'provider-data')
     const toolFile = path.join(root, 'workspace', 'explicitly-approved.txt')
     await writeFile(toolFile, 'NATIVE_READ_PROOF_8729', { flag: 'wx' })
+    const secondReadFile = path.join(root, 'workspace', 'second-explicitly-approved.txt')
+    if (twoReads) await writeFile(secondReadFile, 'SECOND_NATIVE_READ_PROOF_2197', { flag: 'wx' })
     await writeFile(path.join(profile, 'config.json'), JSON.stringify({
       ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
     }))
@@ -87,17 +91,19 @@ for (const decision of ['allow', 'deny']) test('actual OpenCode V2 native read '
       OPENCODE_DISABLE_AUTOUPDATE: '1',
       CHAT_ON_OPENCODE_TEST_TRACE_DIR: root,
       CHAT_ON_OPENCODE_TEST_NATIVE_READ_FILE: toolFile,
+      ...(twoReads ? { CHAT_ON_OPENCODE_TEST_NATIVE_SECOND_READ_FILE: secondReadFile } : {}),
     })
     assert.equal(safeEnv.CHAT_ON_OPENCODE_GATEWAY_KEY, undefined)
     const args = ['run', '--standalone', '--format', 'json', '--model', 'chat-on-opencode/chatgpt-default',
-      'Read the file provided to the native read tool, then answer with its verification marker.']
+      twoReads ? 'Read the two provided files sequentially using native read, then answer with the verification marker.'
+        : 'Read the file provided to the native read tool, then answer with its verification marker.']
     let child
     const stdout = []
     const stderr = []
     let found = false
     // 2.0.32 prunes DENY tools before the model HTTP request is sent. That is
     // stronger than a tool-time denial: no native read call is available at all.
-    const expected = decision === 'allow' ? 'NATIVE_FILE_READ_OK' : 'OFFLINE_FORK_OK'
+    const expected = decision === 'deny' ? 'OFFLINE_FORK_OK' : twoReads ? 'TWO_NATIVE_READS_OK' : 'NATIVE_FILE_READ_OK'
     try {
       child = spawn(cli, args, {
         cwd: path.join(root, 'workspace'), env: safeEnv,
@@ -136,6 +142,15 @@ for (const decision of ['allow', 'deny']) test('actual OpenCode V2 native read '
         assert.equal(native.part.state.status, 'completed', 'read never executed natively')
         assert.match(JSON.stringify(native.part.state), /NATIVE_READ_PROOF_8729/,
           'native read did not return contents of actual test file')
+        if (twoReads) {
+          const approvals = parts.filter(item => item.type === 'tool_use' && item.part?.tool === 'read' &&
+            item.part?.state?.status === 'completed')
+          assert.equal(approvals.length, 2, 'each of the two reads must be performed by OpenCode')
+          assert.notDeepEqual(approvals[0].part.state.input, approvals[1].part.state.input,
+            'the native engine must execute two distinct file requests')
+          assert.match(JSON.stringify(approvals[1].part.state), /SECOND_NATIVE_READ_PROOF_2197/,
+            'second native read did not return the second real file')
+        }
       } else {
         assert.equal(native, undefined, 'native read executed despite denied permission')
         assert.ok(!stdout.join('').includes('NATIVE_READ_PROOF_8729'), 'denied read contents leaked')

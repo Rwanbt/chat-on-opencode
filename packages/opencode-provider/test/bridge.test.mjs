@@ -366,6 +366,69 @@ test('gateway binds native read result to the exact issued args, session and mes
   assert.equal(cos.sent.length, 2)
 })
 
+test('gateway supports two sequential native read approvals but refuses a third and prevents stale call replay', async t => {
+  const firstPath = 'D:/fixture/first-approved.txt'
+  const secondPath = 'D:/fixture/second-approved.txt'
+  const envelope = file => `<opencode-read>{"name":"read","arguments":{"path":"${file}"}}</opencode-read>`
+  const cos = new FakeCoS([envelope(firstPath)])
+  const server = createGateway({ control: cos, key: '2'.repeat(40), nativeTools: 'read' })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  t.after(() => server.close())
+  const tools = [{ type: 'function', function: { name: 'read', parameters: { type: 'object' } } }]
+  const url = `http://127.0.0.1:${server.address().port}/v1/chat/completions`
+  const send = async messages => {
+    const response = await fetch(url, { method: 'POST', headers: {
+      authorization: 'Bearer ' + '2'.repeat(40), 'x-opencode-session-id': 'ses_two_reads',
+      'x-opencode-message-id': 'msg_two_reads_01', 'content-type': 'application/json',
+    }, body: JSON.stringify({ model: 'chatgpt-default', tools, messages }) })
+    return { status: response.status, body: await response.json() }
+  }
+  const getCall = response => response.body.choices[0].message.tool_calls[0]
+  const first = await send([{ role: 'user', content: 'Compare both approved files' }])
+  assert.equal(first.status, 200)
+  const call1 = getCall(first)
+  assert.equal(JSON.parse(call1.function.arguments).path, firstPath)
+  cos.outputs = [envelope(secondPath)]
+  const followup = (call, text) => [{ role: 'assistant', content: null, tool_calls: [call] },
+    { role: 'tool', tool_call_id: call.id, content: text }]
+  const second = await send(followup(call1, 'FIRST_APPROVED'))
+  assert.equal(second.status, 200)
+  const call2 = getCall(second)
+  assert.notEqual(call2.id, call1.id)
+  assert.equal(JSON.parse(call2.function.arguments).path, secondPath)
+  assert.equal((await send(followup(call1, 'FIRST_APPROVED'))).status, 403,
+    'old native read result must not replay after second call')
+  cos.outputs = ['Both approved files compared']
+  const answer = await send(followup(call2, 'SECOND_APPROVED'))
+  assert.equal(answer.status, 200)
+  assert.equal(answer.body.choices[0].message.content, 'Both approved files compared')
+  assert.equal(cos.sent.length, 3)
+  // In a fresh session, a model asking for a third read must never receive a third grant.
+  const triple = new FakeCoS([envelope(firstPath)])
+  const another = createGateway({ control: triple, key: '3'.repeat(40), nativeTools: 'read' })
+  another.listen(0, '127.0.0.1')
+  await once(another, 'listening')
+  t.after(() => another.close())
+  const requestTo = async messages => {
+    const response = await fetch(`http://127.0.0.1:${another.address().port}/v1/chat/completions`, {
+      method: 'POST', headers: { authorization: 'Bearer ' + '3'.repeat(40),
+        'x-opencode-session-id': 'ses_three_reads', 'x-opencode-message-id': 'msg_three_reads_1',
+        'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'chatgpt-default', tools, messages }),
+    })
+    return { status: response.status, body: await response.json() }
+  }
+  const t1 = getCall(await requestTo([{ role: 'user', content: 'Read all three' }]))
+  triple.outputs = [envelope(secondPath)]
+  const t2 = getCall(await requestTo(followup(t1, 'FIRST')))
+  triple.outputs = [envelope('D:/fixture/third.txt')]
+  const blocked = await requestTo(followup(t2, 'SECOND'))
+  assert.equal(blocked.status, 422)
+  assert.match(blocked.body.error.message, /native_read_envelope_invalid/)
+  assert.equal(triple.sent.length, 3, 'a third tool request is never issued to OpenCode')
+})
+
 test('control API discovers only a private local protocol-1 endpoint', async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'cos-test-'))
   t.after(() => rm(dir, { recursive: true, force: true }))
