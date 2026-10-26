@@ -16,13 +16,16 @@ const { APP_VERSION, BRIDGE_PROTOCOL } = await import('../src/main/version.js');
 
 let domSource = '';
 let backgroundSource = '';
+let bridgeDiscoverySource = '';
 
 beforeAll(async () => {
-  [domSource, backgroundSource] = await Promise.all([
+  [domSource, backgroundSource, bridgeDiscoverySource] = await Promise.all([
     fs.readFile(path.join(process.cwd(), 'extension', 'chatgpt-dom.js'), 'utf8'),
-    fs.readFile(path.join(process.cwd(), 'extension', 'background.js'), 'utf8')
+    fs.readFile(path.join(process.cwd(), 'extension', 'background.js'), 'utf8'),
+    fs.readFile(path.join(process.cwd(), 'extension', 'bridge-discovery.mjs'), 'utf8')
   ]);
   backgroundSource = backgroundSource.replace(/\r\n/g, '\n');
+  bridgeDiscoverySource = bridgeDiscoverySource.replace(/^export /gm, '');
 });
 
 describe('extension release metadata', () => {
@@ -657,7 +660,7 @@ function loadWorker(options: {
   const fetch = options.fetch ?? (async () => response(503, {}));
   // This legacy VM harness exercises non-debugger hosts. The real MV3 entry fixture
   // separately loads the unchanged module graph and verifies browser registration.
-  vm.runInNewContext(backgroundSource.replace(/^import .*$/gm, ''), {
+  vm.runInNewContext(`${bridgeDiscoverySource}\n${backgroundSource.replace(/^import .*$/gm, '')}`, {
     chrome,
     fetch,
     AbortController,
