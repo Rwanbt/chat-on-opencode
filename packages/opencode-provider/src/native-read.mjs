@@ -24,7 +24,9 @@ export function validateNativeTools(request, enabled) {
   if (request.tool_choice && request.tool_choice !== 'auto' && request.tool_choice !== 'none') {
     throw new BridgeError('native_tool_choice_unsupported', 422)
   }
-  return true
+  // OpenCode's explicit tool_choice=none overrides even an advertised read schema.
+  // Advertising is not permission to ask for a tool when its use was disabled.
+  return request.tool_choice !== 'none'
 }
 
 export function readResultPrompt(messages) {
