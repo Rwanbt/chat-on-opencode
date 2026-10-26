@@ -42,16 +42,18 @@ export function readJSONC(source) {
       skip()
       while (source[i] !== close) {
         if (i >= source.length) throw new Error('unterminated_jsonc_container')
-        let key
+        let key, keyStart, keyEnd
         if (object) {
+          keyStart = i
           key = string()
+          keyEnd = i
           if (keys.has(key)) throw new Error('duplicate_jsonc_key')
           keys.add(key)
           skip()
           if (source[i++] !== ':') throw new Error('invalid_jsonc_colon')
         }
         const child = value()
-        members.push({ key, node: child })
+        members.push({ key, keyStart, keyEnd, node: child })
         skip()
         if (source[i] === ',') {
           i++

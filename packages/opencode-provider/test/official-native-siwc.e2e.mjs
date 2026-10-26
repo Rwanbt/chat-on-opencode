@@ -27,7 +27,7 @@ function stopOwned(child) {
     })
   } else if (child.pid) child.kill('SIGTERM')
 }
-test('official OpenCode 2.1.4 exposes native ChatGPT OAuth method only with preview opt-in', {
+test('official OpenCode 2.1.4 offers OAuth after isolated bundle activation without changing provider config', {
   skip: !official ? 'Set CHAT_ON_OPENCODE_TEST_CLI to an installed official binary' : false,
   timeout: 65_000,
 }, async () => {
@@ -47,7 +47,8 @@ test('official OpenCode 2.1.4 exposes native ChatGPT OAuth method only with prev
     const serverPassword=randomBytes(24).toString('base64url')
     const config=createOpenCodeConfig({runtimeExecutable:executable,
       runtimeData:path.join(root,'provider'),nodeExecutable:process.execPath,pluginDir:bundle,port:gatewayPort})
-    config.plugins[0].options.nativeOAuth = 'preview'
+    // The managed bundle itself is the reviewed opt-in. No config rewrite is
+    // required just to discover the signed-in account's model catalog.
     const env={}
     for (const [name,value] of Object.entries(process.env)) {
       if (/^(PATH|PATHEXT|SystemRoot|WINDIR|COMSPEC|TEMP|TMP|PROCESSOR_ARCHITECTURE|NUMBER_OF_PROCESSORS)$/i.test(name)) env[name]=value

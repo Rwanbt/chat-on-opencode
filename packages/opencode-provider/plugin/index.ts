@@ -14,9 +14,10 @@ import { registerNativeHTTPText } from './native-text-http.mjs'
 export default Plugin.define({
   id: 'chat-on-opencode',
   async setup(ctx) {
-    // Opt-in preview only. The native OAuth method has validated login flow
-    // components but full model-transport/refresh parity is not yet qualified.
-    if (ctx.options.nativeOAuth === 'preview') await registerNativeSIWC(ctx)
+    // An explicitly activated managed bundle can offer native sign-in before
+    // the user knows their account's model slug. OAuth is inert until Connect;
+    // explicit 'off' disables it, and inference still requires 'preview'+'text'.
+    if (ctx.options.nativeOAuth !== 'off') await registerNativeSIWC(ctx)
     const nativeText = ctx.options.nativeOAuth === 'preview' && ctx.options.nativeInference === 'text'
     if (nativeText) await registerNativeHTTPText(ctx)
     const identities = new MessageIdentity()
