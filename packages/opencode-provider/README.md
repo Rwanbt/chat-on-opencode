@@ -84,6 +84,23 @@ to its existing directory. The provider service rechecks isolation when launched
 This standalone layout is packaging/configuration evidence, not proof of real ChatGPT login,
 tool calls, multimodal parity, or unattended inference. Those milestones remain open.
 
+### Additive legacy model context overlay (isolated qualification)
+
+The `addons/context-overlay/` plugin demonstrates OpenCode V2's global plugin
+auto-discovery and **in-memory** model transform. It applies only to the exact
+old `chat-on-opencode/chatgpt-default` model with `context=16384` and
+`output=2048`, raising its advertised context to 65536; other providers,
+model defaults, session state, and persisted JSONC bytes are untouched.
+The true CoS action text ceiling remains 64000 characters, so the scoped
+text-only agent below is still needed for its first-turn payload.
+
+The companion files `index.ts` and `overlay.mjs` must remain together in a
+single immediate directory inside OpenCode's global `plugins/` discovery
+directory. The exact real OpenCode 2.1.4 CLI is tested with a disposable
+16k model and this overlay. This is **not an unattended installer or a
+verified real-account response**. Do not copy it to an active real profile
+until process quiescence, rollback, and integrated Desktop are qualified.
+
 ### Opt-in scoped text-only agent (CoS gateway)
 
 Generated CoS-gateway configurations also expose the **`chat-on-opencode-text`**
