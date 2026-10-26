@@ -71,8 +71,8 @@ try {
       model: 'safe-text', created: 1, choices: [{ index: 0, delta, finish_reason: done }],
     })
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
-    res.end('data: ' + data({ role: 'assistant', content: 'FOREIGN_FIXTURE_ONLY' }) + '\\n\\n' +
-      'data: ' + data({}, 'stop') + '\\n\\ndata: [DONE]\\n\\n')
+    res.end('data: ' + data({ role: 'assistant', content: 'FOREIGN_FIXTURE_ONLY' }) + '\n\n' +
+      'data: ' + data({}, 'stop') + '\n\ndata: [DONE]\n\n')
   })
   await listen(thirdParty, 0)
   const thirdPort = thirdParty.address().port
@@ -123,7 +123,7 @@ try {
     if (stdout.join('').includes('FOREIGN_FIXTURE_ONLY')) { sawText = true; break }
     await pause(150)
   }
-  const items = stdout.join('').split(/\\r?\\n/).flatMap(line => {
+  const items = stdout.join('').split(/\r?\n/).flatMap(line => {
     try { return [JSON.parse(line)] } catch { return [] }
   })
   const text = items.filter(event => event.type === 'text')
@@ -132,7 +132,7 @@ try {
     outputSeen: sawText, parsedText: text.length > 0, calls: foreignCalls,
     unwantedConnections: unwantedContacts, stderrNonempty: stderrBytes > 0,
     eventTypes: [...new Set(items.map(event => event.type))].sort(),
-  }) + '\\n')
+  }) + '\n')
   assert.equal(text, 'FOREIGN_FIXTURE_ONLY', 'official CLI did not stream the selected other provider')
   assert.ok(foreignCalls >= 1, 'foreign provider was never reached')
   assert.ok(foreignHeaders.some(x => x.route === '/v1/chat/completions' && x.method === 'POST'))
