@@ -115,10 +115,10 @@ jobs:
         run: npm ci
       - name: Build independent unpacked provider runtime and probe native modules
         run: npm run dist:provider:win:x64
-      - name: Qualify hidden service and explicit isolated sign-in against packaged Electron
-        run: node scripts/verify-provider-packaged-sign-in.mjs
       - name: RED gate - real packaged gateway under standalone CLI-like environment
         run: node scripts/verify-provider-packaged-gateway-env.mjs
+      - name: Qualify hidden service and explicit isolated sign-in against packaged Electron
+        run: node scripts/verify-provider-packaged-sign-in.mjs
       - name: Publish portable provider bundle after runtime smoke
         uses: actions/upload-artifact@v4
         with:
