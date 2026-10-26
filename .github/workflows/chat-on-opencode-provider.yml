@@ -11,6 +11,9 @@ on:
       - 'scripts/provider-isolated-profile.ts'
       - 'scripts/verify-provider-packaged-electron.mjs'
       - 'scripts/provider-window-probe-runner.mjs'
+      - 'scripts/verify-official-desktop-bundle.ps1'
+      - 'scripts/probe-official-desktop-window.ps1'
+      - 'test/provider-official-desktop-gui.e2e.mjs'
       - 'test/provider-window-probe-runner.test.mjs'
       - 'scripts/verify-provider-packaged-sign-in.mjs'
       - 'test/provider-packaged-gateway-env.e2e.mjs'
@@ -195,3 +198,47 @@ jobs:
             node --test packages/opencode-provider/test/official-native-text.e2e.mjs
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+
+  official-desktop:
+    name: Official unmodified Desktop 2.1.4 bundled CLI → provider (Windows x64)
+    runs-on: windows-2025
+    needs: [portable-electron]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/download-artifact@v4
+        with:
+          name: chat-on-opencode-provider-win-x64-${{ github.sha }}
+          path: release/provider
+      - name: Verify official signed Desktop 2.1.4 and its bundled CLI without running installer
+        shell: pwsh
+        run: |
+          ./scripts/verify-official-desktop-bundle.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Bundled Desktop CLI 2.1.4 starts real packaged provider Electron (unpaired)
+        shell: pwsh
+        run: |
+          node test/provider-official-cli-packaged.e2e.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Bundled Desktop CLI 2.1.4 verifies global legacy context overlay without JSONC rewrite
+        shell: pwsh
+        env:
+          CHAT_ON_OPENCODE_TEST_LEGACY_OVERLAY: '1'
+        run: |
+          node test/provider-official-cli-packaged.e2e.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Bundled Desktop CLI 2.1.4 selects other provider without contacting 8765 or 8766
+        shell: pwsh
+        run: |
+          node test/provider-official-cli-free-switch.e2e.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Real official Desktop GUI isolated smoke
+        shell: pwsh
+        run: |
+          node test/provider-official-desktop-gui.e2e.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
