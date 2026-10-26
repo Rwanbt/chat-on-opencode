@@ -51,7 +51,19 @@ if (-not $cli.StartsWith($root + [IO.Path]::DirectorySeparatorChar,
   throw 'official_desktop_cli_path_outside_runner'
 }
 $reply = (& $cli --version 2>&1 | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or $reply -ne $version) {
+$cliExit = $LASTEXITCODE
+$versionFile = Join-Path (Split-Path -Parent $cli) 'opencode-cli.version'
+$metadataVersion = if (Test-Path -LiteralPath $versionFile) {
+  (Get-Content -LiteralPath $versionFile -Raw).Trim()
+} else { 'missing' }
+# Version metadata and exit code are nonsensitive fixed-size diagnostics; never
+# print the environment, the CLI path, user profiles, or any model/account data.
+$bounded = if ($reply.Length -gt 96) { $reply.Substring(0,96) } else { $reply }
+$bounded = $bounded -replace '[^a-zA-Z0-9._ +\\r\\n-]', '?'
+Write-Output ("OFFICIAL_DESKTOP_CLI_EXACT_VERSION_DIAGNOSTIC=" +
+  ($bounded -replace '[\\r\\n]+', ' ') + ";exit=" + $cliExit +
+  ";resourceVersion=" + ($metadataVersion -replace '[^a-zA-Z0-9._-]', '?'))
+if ($cliExit -ne 0 -or $reply -ne $version) {
   throw 'official_desktop_bundled_cli_wrong_version'
 }
 $cliDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $cli).Hash.ToLowerInvariant()
