@@ -28,6 +28,6 @@ try {
 
 } catch {
   // Do not print exception stacks, caller paths or private JSONC contents.
-  process.stderr.write('activation_preflight_refused\\n')
+  process.stderr.write('activation_preflight_refused\n')
   process.exitCode = 3
 }
