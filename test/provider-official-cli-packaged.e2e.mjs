@@ -12,7 +12,7 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promi
 import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
 assert.equal(process.platform, 'win32', 'packaged Windows CLI integration only')
 const cli = process.env.CHAT_ON_OPENCODE_TEST_CLI
@@ -32,6 +32,7 @@ let port
 let overlayInstaller = null
 let originalConfigSha = null
 const preservedFiles = new Map()
+let verifiedTransaction = false
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -77,19 +78,78 @@ try {
     // The add-only globally discovered overlay repairs it in-memory.
     config.providers['chat-on-opencode'].models['chatgpt-default'].limit.context = 16384
     delete config.agents['chat-on-opencode-text']
-    const overlaySource = path.join(plugin, 'src', 'context-overlay')
-    const overlayTarget = path.join(paths.config, 'plugins', 'chat-on-opencode-context-overlay')
-    const agents = path.join(paths.config, 'agents')
-    await mkdir(overlayTarget, { recursive: true })
-    await mkdir(agents, { recursive: true })
-    for (const name of ['index.ts', 'overlay.mjs']) {
-      await copyFile(path.join(overlaySource, name), path.join(overlayTarget, name))
-    }
-    await copyFile(path.join(overlaySource, 'chat-on-opencode-browser-text.md'),
-      path.join(agents, 'chat-on-opencode-text.md'))
     // A disposable stand-in for opencode.jsonc proves this path never edits it.
     originalConfig = '{\n  // Existing config and plugin settings are managed separately\n}\n'
-    await writeFile(path.join(paths.config, 'opencode.jsonc'), originalConfig, { flag: 'wx' })
+    const configFile = path.join(paths.config, 'opencode.jsonc')
+    await writeFile(configFile, originalConfig, { flag: 'wx' })
+    originalConfigSha = sha256(await readFile(configFile))
+    if (actualAdditive) {
+      // Keep representative foreign plugins and the *old* managed swap chain
+      // byte-for-byte; PR #47 must only add its own global plugin/agent pair.
+      const plugins = path.join(paths.config, 'plugins')
+      const agents = path.join(paths.config, 'agents')
+      await mkdir(plugins, { recursive: true })
+      await mkdir(agents, { recursive: true })
+      for (const name of ['Goal', 'Loop', 'Daemon', 'Scheduler']) {
+        const foreign = path.join(plugins, name, 'index.ts')
+        await mkdir(path.dirname(foreign), { recursive: true })
+        const bytes = Buffer.from('export default ' + JSON.stringify(name) + '\n')
+        await writeFile(foreign, bytes, { flag: 'wx' })
+        preservedFiles.set(foreign, sha256(bytes))
+      }
+      const oldJournal = path.join(paths.config, '.chat-on-opencode-directory-switch.json')
+      const oldPrevious = path.join(paths.config, '.chat-on-opencode-directory-previous', 'previous.js')
+      const oldBackup = path.join(paths.config, 'opencode.jsonc.previous-generation.bak')
+      await mkdir(path.dirname(oldPrevious), { recursive: true })
+      for (const [target, contents] of [
+        [oldJournal, '{"version":1,"note":"existing generation, never touch"}'],
+        [oldPrevious, 'OLDER MANAGED PROVIDER GENERATION\n'],
+        [oldBackup, originalConfig],
+      ]) {
+        const bytes = Buffer.from(contents)
+        await writeFile(target, bytes, { flag: 'wx' })
+        preservedFiles.set(target, sha256(bytes))
+      }
+      overlayInstaller = path.join(plugin, 'bin', 'additive-context.mjs')
+      const additive = (args) => {
+        const result = spawnSync(process.execPath, [
+          overlayInstaller, ...args, '--config', configFile, '--bundle', plugin,
+        ], { cwd: paths.workspace, encoding: 'utf8', timeout: 20000, windowsHide: true })
+        assert.equal(result.status, 0,
+          'transactional additive CLI failed (bounded diagnostic): ' +
+          String(result.error?.code ?? result.stderr).slice(-300))
+        return JSON.parse(result.stdout)
+      }
+      const digest = spawnSync(process.execPath,
+        [overlayInstaller, '--digest', '--bundle', plugin],
+        { cwd: paths.workspace, encoding: 'utf8', timeout: 10000, windowsHide: true })
+      assert.equal(digest.status, 0, 'bundle digest failed')
+      const sourceSha = JSON.parse(digest.stdout).sourceSha256
+      assert.match(sourceSha, /^[a-f0-9]{64}$/)
+      assert.equal(additive(['--status']).state, 'absent')
+      const installed = additive([
+        '--install', '--config-sha256', originalConfigSha, '--source-sha256', sourceSha,
+      ])
+      assert.equal(installed.installed, true)
+      assert.equal(installed.sourceSha256, sourceSha)
+      assert.equal(additive(['--status']).state, 'installed')
+      assert.equal(sha256(await readFile(configFile)), originalConfigSha)
+      for (const [file, sha] of preservedFiles) {
+        assert.equal(sha256(await readFile(file)), sha, 'foreign file mutated by installation')
+      }
+      verifiedTransaction = true
+      process.stdout.write('ACTUAL_ADDITIVE_INSTALLATION=PASS\n')
+    } else {
+      const overlaySource = path.join(plugin, 'src', 'context-overlay')
+      const overlayTarget = path.join(paths.config, 'plugins', 'chat-on-opencode-context-overlay')
+      await mkdir(overlayTarget, { recursive: true })
+      await mkdir(agents, { recursive: true })
+      for (const name of ['index.ts', 'overlay.mjs']) {
+        await copyFile(path.join(overlaySource, name), path.join(overlayTarget, name))
+      }
+      await copyFile(path.join(overlaySource, 'chat-on-opencode-browser-text.md'),
+        path.join(agents, 'chat-on-opencode-text.md'))
+    }
   }
   // Preserve the coherent Windows HOME/USERPROFILE that Electron requires.
   // Only the per-process OpenCode and provider data move to disposable folders.
@@ -167,6 +227,27 @@ try {
   process.stdout.write('UNPAIRED_AUTH_REFUSAL=PASS\n')
 } finally {
   await stopTestChild()
+  if (actualAdditive && verifiedTransaction) {
+    const configFile = path.join(paths.config, 'opencode.jsonc')
+    const removed = spawnSync(process.execPath, [
+      overlayInstaller, '--remove', '--config', configFile, '--bundle', plugin,
+    ], { cwd: paths.workspace, encoding: 'utf8', timeout: 20000, windowsHide: true })
+    assert.equal(removed.status, 0,
+      'transactional rollback failed: ' + String(removed.error?.code ?? removed.stderr).slice(-300))
+    assert.equal(JSON.parse(removed.stdout).removed, true)
+    assert.equal(sha256(await readFile(configFile)), originalConfigSha)
+    for (const [file, sha] of preservedFiles) {
+      assert.equal(sha256(await readFile(file)), sha, 'foreign file mutated by rollback')
+    }
+    for (const name of [
+      path.join(paths.config, 'plugins', 'chat-on-opencode-context-overlay'),
+      path.join(paths.config, 'agents', 'chat-on-opencode-text.md'),
+      path.join(paths.config, '.chat-on-opencode-context-overlay.receipt.json'),
+      path.join(paths.config, '.chat-on-opencode-context-overlay.pending.json'),
+    ]) assert.equal(existsSync(name), false, 'owned additive resource survives rollback')
+    process.stdout.write('ACTUAL_ADDITIVE_ROLLBACK=PASS\n')
+    process.stdout.write('EXISTING_SWAP_AND_USER_PLUGINS_UNCHANGED=PASS\n')
+  }
   for (let n = 0; n < 20; n++) {
     try { await rm(tmp, { recursive: true, force: true, maxRetries: 3, retryDelay: 150 }); break }
     catch (error) { if (n === 19) throw error; await pause(400) }
