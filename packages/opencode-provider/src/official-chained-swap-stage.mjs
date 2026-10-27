@@ -40,6 +40,39 @@ export function inspectChainedTransitionLock(config, { ownerAlive = pid => {
   }
   return { locked: true, recoverable: false, reason: 'dead_owner_manual_reconciliation_required' }
 }
+/** Proof for explicit stale-lock reconciliation. Never unlinks or takes over the lock. */
+export function proveDeadChainedLock(config, digest, { ownerAlive } = {}) {
+  const state = inspectChainedTransitionLock(config, { ownerAlive })
+  if (!state.locked || state.reason !== 'dead_owner_manual_reconciliation_required') {
+    throw Error('chained_swap_lock_owner_unproven')
+  }
+  const root = path.dirname(path.resolve(config))
+  const receipt = JSON.parse(readFileSync(path.join(root, JOURNAL), 'utf8'))
+  const v1 = JSON.parse(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json'), 'utf8'))
+  if (receipt.candidateSha256 !== digest ||
+      receipt.journalSha256 !== sha(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json'))) ||
+      receipt.configSha256 !== sha(readFileSync(config)) ||
+      receipt.previousPayloadSha256 !== v1.oldPayload ||
+      receipt.activePayloadSha256 !== v1.newPayload) throw Error('chained_swap_lock_receipt_cas_changed')
+  const old = path.join(root, '.chat-on-opencode-directory-previous')
+  const active = path.join(root, ACTIVE), parked = path.join(root, PARKED), staged = path.join(root, STAGED)
+  if (payloadDigest(old) !== receipt.previousPayloadSha256) throw Error('chained_swap_lock_original_changed')
+  const matches = (dir, expected) => existsSync(dir) && payloadDigest(dir) === expected
+  const before = matches(active, receipt.activePayloadSha256) && !existsSync(parked) &&
+    matches(staged, digest)
+  const parkedBeforeActivation = !existsSync(active) &&
+    matches(parked, receipt.activePayloadSha256) && matches(staged, digest)
+  const after = matches(active, digest) && matches(parked, receipt.activePayloadSha256) &&
+    !existsSync(staged)
+  const rollbackInterrupted = !existsSync(active) && matches(parked, receipt.activePayloadSha256) &&
+    matches(staged, digest)
+  if (!(before || parkedBeforeActivation || after || rollbackInterrupted)) {
+    throw Error('chained_swap_lock_generation_unproven')
+  }
+  return { verified: true, lockRetained: true, originalRetained: true,
+    phase: before ? 'prepared' : after ? 'promoted' : 'interrupted_rename',
+    mutationAuthorized: false }
+}
 function syncDirectory(root) {
   // Directory handles are not fsync-capable on every Windows filesystem.
   try { const fd = openSync(root, 'r'); try { fsyncSync(fd) } finally { closeSync(fd) } }

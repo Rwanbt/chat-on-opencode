@@ -10,7 +10,7 @@ import { installProvider, inspectInstalledProvider } from '../src/official-insta
 import { stageManagedSwap, activateManagedSwap, managedSwapStatus } from '../bin/official-managed-swap.mjs'
 import { candidateDigest } from '../src/official-upgrade.mjs'
 import { planChainedManagedSwap } from '../src/official-chained-swap-plan.mjs'
-import { prepareChainedGeneration, recoverPreparedChainedGeneration, transitionChainedGeneration, recoverChainedTransition, rollbackChainedTransition, inspectChainedTransitionLock } from '../src/official-chained-swap-stage.mjs'
+import { prepareChainedGeneration, recoverPreparedChainedGeneration, transitionChainedGeneration, recoverChainedTransition, rollbackChainedTransition, inspectChainedTransitionLock, proveDeadChainedLock } from '../src/official-chained-swap-stage.mjs'
 import { parseChainArgs } from '../bin/official-chained-swap-plan.mjs'
 
 const bundle = fileURLToPath(new URL('..', import.meta.url))
@@ -216,6 +216,23 @@ test('dead lock owner requires exact journal CAS and never authorizes lock steal
   assert.equal(inspectChainedTransitionLock(v.config, { ownerAlive: () => true }).reason, 'owner_alive_or_unknown')
   writeFileSync(path.join(root, '.chat-on-opencode-directory-switch.json'), '{}')
   assert.throws(() => inspectChainedTransitionLock(v.config, { ownerAlive: () => false }), /chained_swap_lock_cas_changed/)
+  assert.equal(existsSync(lock), true)
+})
+
+test('dead-owner receipt and all three payloads must match; lock never removed', { skip: process.platform !== 'win32' }, t => {
+  const v = fixture(t)
+  const root = path.dirname(v.config)
+  const journal = path.join(root, '.chat-on-opencode-directory-switch.json')
+  const lock = path.join(root, '.chat-on-opencode-chain-transition.lock')
+  prepareChainedGeneration(v.config, v.next, v.expected)
+  writeFileSync(lock, JSON.stringify({ pid: 987654, journalSha256: createHash('sha256').update(readFileSync(journal)).digest('hex') }))
+  const dead = { ownerAlive: () => false }
+  assert.equal(proveDeadChainedLock(v.config, v.expected, dead).phase, 'prepared')
+  assert.equal(existsSync(lock), true)
+  assert.throws(() => proveDeadChainedLock(v.config, v.expected, { ownerAlive: () => true }), /owner_unproven/)
+  const staged = path.join(root, '.chat-on-opencode-chain-next', 'plugin', 'index.ts')
+  writeFileSync(staged, 'corrupted')
+  assert.throws(() => proveDeadChainedLock(v.config, v.expected, dead), /generation_unproven/)
   assert.equal(existsSync(lock), true)
 })
 
