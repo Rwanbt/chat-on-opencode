@@ -54,6 +54,8 @@ test('all live processes and prior multi-generation swaps produce NO_GO without 
     assert.equal(report.overlayState, 'absent')
     assert.equal(report.configSha256, h(originals.get(config)))
     assert.ok(report.reasons.includes('existing_swap_requires_reconciliation'))
+    assert.ok(report.reasons.includes('managed_swap_integrity_unverifiable'))
+    assert.equal(report.managedState, null)
     assert.ok(report.reasons.includes('opencode_processes_running'))
     assert.ok(report.reasons.includes('unsent_gui_drafts_not_proven_durable'))
     assert.equal(Object.keys(report.preservedPlugins).length, 4)
