@@ -181,6 +181,9 @@ test('offline three-generation activate, interrupted park recovery and rollback 
   assert.equal(recovered.activated, true)
   assert.equal(inspectInstalledProvider(v.config).manifest.payloadSha256, v.expected)
   assert.deepEqual(readFileSync(path.join(root, '.chat-on-opencode-directory-previous', 'plugin', 'index.ts')), original)
+  assert.throws(() => rollbackChainedTransition(v.config, v.next, v.expected, { probe,
+    fault: step => { if (step === 'after_rollback_park') throw Error('crash_during_rollback') },
+  }), /crash_during_rollback/)
   assert.equal(rollbackChainedTransition(v.config, v.next, v.expected, { probe }).rolledBack, true)
   inspectInstalledProvider(v.config)
   assert.deepEqual(readFileSync(v.config), v.configBefore)
