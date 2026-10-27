@@ -85,7 +85,7 @@ export function observeWindows() {
   if (process.platform !== 'win32') return { state: 'unknown' }
   const code = [
     '$ErrorActionPreference = "Stop"',
-    '$names = @("OpenCode", "opencode-cli", "Chat On OpenCode Provider")',
+    '$names = @("OpenCode", "opencode", "opencode-cli", "Chat On OpenCode Provider")',
     '$list = @([Diagnostics.Process]::GetProcesses() | Where-Object { $names -contains $_.ProcessName })',
     '$ports = @(Get-NetTCPConnection -LocalAddress "127.0.0.1" -State Listen -ErrorAction Stop | Where-Object { $_.LocalPort -in @(8765,8766) })',
     '@{ activeOpenCode = $list.Count; port8765 = @($ports | Where-Object { $_.LocalPort -eq 8765 }).Count; port8766 = @($ports | Where-Object { $_.LocalPort -eq 8766 }).Count } | ConvertTo-Json -Compress',

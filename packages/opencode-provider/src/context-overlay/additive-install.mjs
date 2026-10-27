@@ -112,7 +112,7 @@ function assertIdle(probe) {
   if (probe) { probe(); return }
   if (process.platform !== 'win32') throw Error('additive_windows_only')
   const result = spawnSync('powershell.exe', ['-NoProfile','-NonInteractive','-Command',
-    '$ErrorActionPreference="Stop"; @([Diagnostics.Process]::GetProcesses() | Where-Object { $_.ProcessName -in @("OpenCode","opencode-cli","Chat On OpenCode Provider") }).Count'], {
+    '$ErrorActionPreference="Stop"; @([Diagnostics.Process]::GetProcesses() | Where-Object { $_.ProcessName -in @("OpenCode","opencode","opencode-cli","Chat On OpenCode Provider") }).Count'], {
     encoding: 'utf8', shell: false, windowsHide: true, timeout: 7000 })
   if (result.status !== 0 || !/^0\s*$/.test(result.stdout ?? '')) {
     throw Error('additive_opencode_processes_active_or_unknown')

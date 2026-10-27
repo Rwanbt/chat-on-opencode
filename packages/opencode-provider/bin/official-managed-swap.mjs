@@ -55,7 +55,7 @@ function context(config) {
 function quiescent({ probe = spawnSync } = {}) {
   if (process.platform !== 'win32') throw Error('managed_switch_windows_only')
   const call = probe('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-    '$ErrorActionPreference="Stop"; @([Diagnostics.Process]::GetProcesses() | Where-Object { $_.ProcessName -in @("OpenCode","opencode-cli") }).Count'], {
+    '$ErrorActionPreference="Stop"; @([Diagnostics.Process]::GetProcesses() | Where-Object { $_.ProcessName -in @("OpenCode","opencode","opencode-cli","Chat On OpenCode Provider") }).Count'], {
     encoding: 'utf8', windowsHide: true, shell: false, timeout: 7000,
   })
   if (call.status !== 0 || !/^0\s*$/.test(call.stdout || '')) {
