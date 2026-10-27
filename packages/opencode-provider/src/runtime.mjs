@@ -59,7 +59,11 @@ export class CoSRuntime {
     traceStage('runtime_start')
     if (this.child) throw new BridgeError('runtime_already_started', 409)
     const { binary, folder } = await validateRuntime(this.options)
-    const { CHAT_ON_OPENCODE_GATEWAY_KEY: _gatewaySecret, ...childEnvironment } = process.env
+    // The official OpenCode CLI may be an Electron/Bun host. Its process-only
+    // runtime switches must not turn our packaged Electron helper into Node.
+    const { CHAT_ON_OPENCODE_GATEWAY_KEY: _gatewaySecret,
+      ELECTRON_RUN_AS_NODE: _electronNode, ELECTRON_NO_ASAR: _noAsar,
+      NODE_OPTIONS: _nodeOptions, ...childEnvironment } = process.env
     const child = this.launcher(binary, [SERVICE_SWITCH], {
       cwd: path.dirname(binary),
       shell: false, windowsHide: true, stdio: 'ignore', detached: false,

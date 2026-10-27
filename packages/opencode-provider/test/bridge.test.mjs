@@ -447,6 +447,15 @@ test('runtime refuses unconsented or damaged isolated CoS profile before any pro
 })
 
 test('service launcher uses the fork-only flag, owns exact endpoint PID and stops its child', async t => {
+  const inherited = ['ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ASAR', 'NODE_OPTIONS']
+  const originals = Object.fromEntries(inherited.map(name => [name, process.env[name]]))
+  t.after(() => { for (const name of inherited) {
+    if (originals[name] === undefined) delete process.env[name]
+    else process.env[name] = originals[name]
+  } })
+  process.env.ELECTRON_RUN_AS_NODE = '1'
+  process.env.ELECTRON_NO_ASAR = '1'
+  process.env.NODE_OPTIONS = '--inspect=0'
   const profile = await mkdtemp(path.join(os.tmpdir(), 'cos-owned-'))
   t.after(() => rm(profile, { recursive: true, force: true }))
   await writeFile(path.join(profile, 'config.json'), JSON.stringify({
@@ -482,6 +491,7 @@ test('service launcher uses the fork-only flag, owns exact endpoint PID and stop
   assert.equal(launch.opts.env.CHAT_ON_OPENCODE_USERDATA_DIR, await realpath(profile))
   assert.equal(launch.opts.env.CHAT_ON_OPENCODE_OWNER_PID, String(process.pid))
   assert.equal(launch.opts.env.CHAT_ON_OPENCODE_GATEWAY_KEY, undefined)
+  for (const name of inherited) assert.equal(launch.opts.env[name], undefined, `${name} leaked to Electron helper`)
   assert.equal(launch.opts.windowsHide, true)
   assert.equal(launch.opts.shell, false)
   runtime.stop()
