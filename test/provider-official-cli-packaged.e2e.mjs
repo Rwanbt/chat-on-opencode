@@ -149,6 +149,7 @@ try {
     } else {
       const overlaySource = path.join(plugin, 'src', 'context-overlay')
       const overlayTarget = path.join(paths.config, 'plugins', 'chat-on-opencode-context-overlay')
+      const agents = path.join(paths.config, 'agents')
       await mkdir(overlayTarget, { recursive: true })
       await mkdir(agents, { recursive: true })
       for (const name of ['index.ts', 'overlay.mjs']) {
