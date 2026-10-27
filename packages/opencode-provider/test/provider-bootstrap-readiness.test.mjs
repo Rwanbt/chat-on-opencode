@@ -16,8 +16,9 @@ test('hidden Chromium readiness transitions unknown -> paired before first admis
     async send(payload) { observed.push('admitted'); assert.equal(payload.text.includes('one prompt'), true) },
     async *events(id) {
       yield { kind: 'user_message', inputId: id }
-      yield { kind: 'assistant_message', message: { text: 'REAL_TRANSPORT_FAKE_ONLY' } }
-      yield { kind: 'turn_end', outcome: 'complete' }
+      yield { kind: 'turn_start', turnId: 'test-turn' }
+      yield { kind: 'assistant_message', turnId: 'test-turn', message: { text: 'REAL_TRANSPORT_FAKE_ONLY' } }
+      yield { kind: 'turn_end', turnId: 'test-turn', outcome: 'complete' }
     },
   }
   const deltas = []

@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import http from 'node:http'
 import { setTimeout as delay } from 'node:timers/promises'
+import { traceStage } from './stage-trace.mjs'
 import { BridgeError } from './control.mjs'
 import { READ_INSTRUCTIONS, validateNativeTools, readResultPrompt, parseReadCall } from './native-read.mjs'
 
@@ -67,6 +68,7 @@ export async function awaitProviderReady(control, {
 }
 
 export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal, nativeTools = 'off' } = {}) {
+  traceStage('gateway_turn_received')
   if (!sessionKey || sessionKey.length > 256 || /[\r\n]/.test(sessionKey)) throw new BridgeError('opencode_session_id_required', 422)
   if (!messageKey || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
   const readEnabled = validateNativeTools(request, nativeTools === 'read')
@@ -87,8 +89,10 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
   // A hidden provider with no ChatGPT session or browser bridge must not accept
   // a prompt into the durable outbox that no authenticated page can deliver.
   await awaitProviderReady(control, { signal })
+  traceStage('control_ready')
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
   await control.send({ id: inputID, ...(first ? {} : { sessionId: sessionID }), text })
+  traceStage('input_admitted')
 
   // A conversation is not considered delivered just because POST returned 202. Follow its
   // exact outbox input id in the durable event journal, including on idempotent retries.
@@ -107,6 +111,9 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
       // Ignore other sessions'/earlier turns' events; the exact user-message acknowledgement
       // is the publication boundary. Only an observed turn_start may authorize cancellation.
       if (event.kind === 'turn_start' && typeof event.turnId === 'string' && event.turnId) activeTurnID = event.turnId
+      // A follow-up's input receipt may precede stale history notifications.
+      // Only a newly observed turn and its matching events can supply an answer.
+      if (!activeTurnID || event.turnId !== activeTurnID) continue
       if (event.kind === 'chat_error' && event.blocking) throw new BridgeError('cos_chat_blocked', 502)
       if (event.kind === 'assistant_message') {
         if (event.message?.truncated || typeof event.message?.text !== 'string') throw new BridgeError('cos_output_incomplete', 502)

@@ -2,6 +2,7 @@ import { Plugin } from '@opencode/plugin'
 import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { GatewayLifecycle } from '../src/lifecycle.mjs'
+import { traceStage } from '../src/stage-trace.mjs'
 import { MessageIdentity } from './message-identity.mjs'
 import { enforceTextOnlyContext } from './text-only.mjs'
 import { provideLocalTitle, requirePrimaryKind } from './auxiliary.mjs'
@@ -15,6 +16,7 @@ import { stopUnavailableGatewayRetry } from './retry-policy.mjs'
 export default Plugin.define({
   id: 'chat-on-opencode',
   async setup(ctx) {
+    traceStage('plugin_setup')
     // An explicitly activated managed bundle can offer native sign-in before
     // the user knows their account's model slug. OAuth is inert until Connect;
     // explicit 'off' disables it, and inference still requires 'preview'+'text'.
@@ -59,6 +61,7 @@ export default Plugin.define({
       { providerID: 'chat-on-opencode' })
     await ctx.session.hook('model.request', async event => {
       if (event.model.providerID !== 'chat-on-opencode') return
+      traceStage('model_request')
       if (nativeText) return // Native V3 Responses, never CoS gateway
       requirePrimaryKind(event.kind)
       identities.require(event.sessionID)

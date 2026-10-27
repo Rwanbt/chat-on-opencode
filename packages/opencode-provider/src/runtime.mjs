@@ -56,9 +56,14 @@ export class CoSRuntime {
   }
 
   async start() {
+    traceStage('runtime_start')
     if (this.child) throw new BridgeError('runtime_already_started', 409)
     const { binary, folder } = await validateRuntime(this.options)
-    const { CHAT_ON_OPENCODE_GATEWAY_KEY: _gatewaySecret, ...childEnvironment } = process.env
+    // The official OpenCode CLI may be an Electron/Bun host. Its process-only
+    // runtime switches must not turn our packaged Electron helper into Node.
+    const { CHAT_ON_OPENCODE_GATEWAY_KEY: _gatewaySecret,
+      ELECTRON_RUN_AS_NODE: _electronNode, ELECTRON_NO_ASAR: _noAsar,
+      NODE_OPTIONS: _nodeOptions, ...childEnvironment } = process.env
     const child = this.launcher(binary, [SERVICE_SWITCH], {
       cwd: path.dirname(binary),
       shell: false, windowsHide: true, stdio: 'ignore', detached: false,
@@ -67,25 +72,42 @@ export class CoSRuntime {
         CHAT_ON_OPENCODE_OWNER_PID: String(process.pid) },
     })
     this.child = child
+    traceStage('runtime_child_spawned')
     const control = new CoSControl({ directory: path.join(folder, 'control-api') })
     const signal = new AbortController()
     child.once('exit', () => signal.abort())
     child.once('error', () => signal.abort())
+    child.once('exit', () => traceStage('runtime_child_exited'))
+    child.once('error', () => traceStage('runtime_child_error'))
     const timeoutMs = Math.min(Math.max(Number(this.options.startupTimeoutMs ?? 60000), 1000), 120000)
     const deadline = Date.now() + timeoutMs
+    let lastFailure = ''
     try {
       for (;;) {
         if (signal.signal.aborted || child.exitCode !== null) throw new BridgeError('runtime_process_exited', 503)
         try {
           await control.connect()
           if (control.endpointPid !== child.pid) throw new BridgeError('runtime_endpoint_pid_mismatch', 503)
+          traceStage('control_connected')
           return control
         } catch (error) {
+          const category = error instanceof BridgeError && error.code === 'cos_runtime_unavailable'
+            ? 'control_endpoint_unavailable'
+            : error instanceof BridgeError && error.code === 'cos_transport_unavailable'
+              ? 'control_transport_unavailable'
+              : error instanceof BridgeError && error.code === 'runtime_endpoint_pid_mismatch'
+                ? 'control_pid_mismatch'
+                : error instanceof BridgeError && error.code === 'cos_provider_runtime_incompatible'
+                  ? 'control_protocol_mismatch' : 'control_other_unavailable'
+          if (category !== lastFailure) { traceStage(category); lastFailure = category }
           // Invalid identity may indicate an unrelated stale endpoint: never adopt it.
           if (error instanceof BridgeError &&
               ['runtime_endpoint_pid_mismatch', 'cos_provider_runtime_incompatible'].includes(error.code)) throw error
         }
-        if (Date.now() >= deadline) throw new BridgeError('runtime_start_timeout', 503)
+        if (Date.now() >= deadline) {
+          traceStage('runtime_start_timeout')
+          throw new BridgeError('runtime_start_timeout', 503)
+        }
         await this.clock(250, undefined, { signal: signal.signal }).catch(() => {
           throw new BridgeError('runtime_process_exited', 503)
         })
@@ -103,3 +125,4 @@ export class CoSRuntime {
     if (child.exitCode === null && !child.killed) child.kill('SIGTERM')
   }
 }
+import { traceStage } from './stage-trace.mjs'

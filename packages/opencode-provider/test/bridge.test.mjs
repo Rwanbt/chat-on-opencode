@@ -2,11 +2,12 @@ import assert from 'node:assert/strict'
 import { createServer, request as httpRequest } from 'node:http'
 import { EventEmitter } from 'node:events'
 import { once } from 'node:events'
-import { mkdtemp, writeFile, rm, mkdir, realpath } from 'node:fs/promises'
+import { mkdtemp, writeFile, readFile, rm, mkdir, realpath } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { CoSControl, BridgeError } from '../src/control.mjs'
+import { traceStage } from '../src/stage-trace.mjs'
 import { createGateway, requestText, runTurn, stableUUID } from '../src/gateway.mjs'
 import { CoSRuntime, validateRuntime, validateProfileConsent } from '../src/runtime.mjs'
 import { GatewayLifecycle } from '../src/lifecycle.mjs'
@@ -17,6 +18,18 @@ import { parseReadCall, readResultPrompt, validateNativeTools } from '../src/nat
 
 const request = { model: 'chatgpt-default', messages: [{ role: 'user', content: 'Bonjour' }] }
 
+test('opt-in startup stage trace records categorical markers only and ignores invalid destinations', async () => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'provider-stages-'))
+  try {
+    const target = path.join(folder, 'stages.log')
+    traceStage('gateway_listening', target)
+    traceStage('input_admitted', target)
+    traceStage('invalid secret=123', target)
+    traceStage('control_ready', 'relative.log')
+    assert.equal(await readFile(target, 'utf8'), 'gateway_listening\ninput_admitted\n')
+  } finally { await rm(folder, { recursive: true, force: true }) }
+})
+
 class FakeCoS {
   constructor(events = ['Bon', 'Bonjour']) { this.sent = []; this.exists = false; this.outputs = events }
   async assertReady() {}
@@ -25,12 +38,31 @@ class FakeCoS {
   async send(payload) { this.sent.push(payload); this.exists = true; return { delivery: 'pending' } }
   async *events(id) {
     yield { seq: 1, kind: 'user_message', inputId: this.sent.at(-1).id }
+    yield { seq: 2, kind: 'turn_start', turnId: 'fake-current-turn' }
     for (const [i, text] of this.outputs.entries()) {
-      yield { seq: i + 2, kind: 'assistant_message', message: typeof text === 'string' ? { text, truncated: false } : text }
+      yield { seq: i + 3, kind: 'assistant_message', turnId: 'fake-current-turn', message: typeof text === 'string' ? { text, truncated: false } : text }
     }
-    yield { seq: this.outputs.length + 2, kind: 'turn_end', outcome: 'completed' }
+    yield { seq: this.outputs.length + 3, kind: 'turn_end', turnId: 'fake-current-turn', outcome: 'completed' }
   }
 }
+
+test('follow-up ignores replayed assistant and old terminal after its input receipt', async () => {
+  const cos = new FakeCoS()
+  cos.exists = true
+  cos.events = async function* () {
+    yield { kind: 'user_message', inputId: this.sent.at(-1).id }
+    yield { kind: 'assistant_message', turnId: 'previous-turn', message: { text: 'PREVIOUS', truncated: false } }
+    yield { kind: 'turn_end', turnId: 'previous-turn', outcome: 'completed' }
+    yield { kind: 'turn_start', turnId: 'current-turn' }
+    yield { kind: 'assistant_message', turnId: 'previous-turn', message: { text: 'PREVIOUS', truncated: false } }
+    yield { kind: 'assistant_message', turnId: 'current-turn', message: { text: 'NEW', truncated: false } }
+    yield { kind: 'turn_end', turnId: 'current-turn', outcome: 'completed' }
+  }
+  const emitted = []
+  const answer = await runTurn(cos, request, { sessionKey: 'ses_followup', messageKey: 'msg_followup_002', emit: delta => emitted.push(delta) })
+  assert.equal(answer, 'NEW')
+  assert.deepEqual(emitted, ['NEW'])
+})
 
 test('UUID ownership is deterministic and valid across independent turns', () => {
   assert.match(stableUUID('session:ses_123'), /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
@@ -188,8 +220,8 @@ test('a cancelled OpenCode request stops only its exact observed CoS turn', asyn
   cos.events = async function* () {
     yield { kind: 'user_message', inputId: this.sent.at(-1).id, seq: 1 }
     yield { kind: 'turn_start', turnId: 'proven-turn-42', seq: 2 }
-    yield { kind: 'assistant_message', seq: 3, message: { text: 'partial', truncated: false } }
-    yield { kind: 'turn_end', seq: 4, outcome: 'completed' }
+    yield { kind: 'assistant_message', turnId: 'proven-turn-42', seq: 3, message: { text: 'partial', truncated: false } }
+    yield { kind: 'turn_end', turnId: 'proven-turn-42', seq: 4, outcome: 'completed' }
   }
   await assert.rejects(runTurn(cos, request, { sessionKey: 'ses_cancel', messageKey: 'msg_cancel_0001', signal: abort.signal,
     emit: () => { abort.abort() } }), /opencode_turn_cancelled/)
@@ -415,6 +447,15 @@ test('runtime refuses unconsented or damaged isolated CoS profile before any pro
 })
 
 test('service launcher uses the fork-only flag, owns exact endpoint PID and stops its child', async t => {
+  const inherited = ['ELECTRON_RUN_AS_NODE', 'ELECTRON_NO_ASAR', 'NODE_OPTIONS']
+  const originals = Object.fromEntries(inherited.map(name => [name, process.env[name]]))
+  t.after(() => { for (const name of inherited) {
+    if (originals[name] === undefined) delete process.env[name]
+    else process.env[name] = originals[name]
+  } })
+  process.env.ELECTRON_RUN_AS_NODE = '1'
+  process.env.ELECTRON_NO_ASAR = '1'
+  process.env.NODE_OPTIONS = '--inspect=0'
   const profile = await mkdtemp(path.join(os.tmpdir(), 'cos-owned-'))
   t.after(() => rm(profile, { recursive: true, force: true }))
   await writeFile(path.join(profile, 'config.json'), JSON.stringify({
@@ -450,6 +491,7 @@ test('service launcher uses the fork-only flag, owns exact endpoint PID and stop
   assert.equal(launch.opts.env.CHAT_ON_OPENCODE_USERDATA_DIR, await realpath(profile))
   assert.equal(launch.opts.env.CHAT_ON_OPENCODE_OWNER_PID, String(process.pid))
   assert.equal(launch.opts.env.CHAT_ON_OPENCODE_GATEWAY_KEY, undefined)
+  for (const name of inherited) assert.equal(launch.opts.env[name], undefined, `${name} leaked to Electron helper`)
   assert.equal(launch.opts.windowsHide, true)
   assert.equal(launch.opts.shell, false)
   runtime.stop()
