@@ -15,6 +15,7 @@ on:
       - 'scripts/probe-official-desktop-window.ps1'
       - 'test/provider-official-desktop-gui.e2e.mjs'
       - 'test/provider-window-probe-runner.test.mjs'
+      - 'test/provider-additive-busy-process-exclusive.test.mjs'
       - 'scripts/verify-provider-packaged-sign-in.mjs'
       - 'test/provider-packaged-gateway-env.e2e.mjs'
       - 'test/provider-official-cli-packaged.e2e.mjs'
@@ -89,6 +90,9 @@ jobs:
         run: node --test test/provider-window-probe-runner.test.mjs
       - name: Service profile and UI isolation policy
         run: bun test packages/opencode-provider/test/provider-service.test.ts
+      - name: Exclusive Windows process-safety gate for official opencode.exe
+        if: runner.os == 'Windows'
+        run: node --test test/provider-additive-busy-process-exclusive.test.mjs
       - name: Provider hook bundles for OpenCode V2
         run: bun build packages/opencode-provider/plugin/index.ts --external '@opencode/plugin' --target bun --outdir packages/opencode-provider/.smoke-build
 
