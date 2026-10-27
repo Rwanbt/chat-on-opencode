@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
+import { traceStage } from './stage-trace.mjs'
 
 /** Owned gateway process: never ask OpenCode to find/attach to an unrelated CoS instance. */
 export class GatewayLifecycle {
@@ -15,6 +16,7 @@ export class GatewayLifecycle {
   }
 
   async ensure() {
+    traceStage('gateway_ensure')
     if (this.opening) return this.opening
     this.opening = this.open()
     try { return await this.opening }
@@ -44,6 +46,7 @@ export class GatewayLifecycle {
         CHAT_ON_OPENCODE_NATIVE_TOOLS: nativeTools === 'read' ? 'read' : 'off',
       },
     })
+    traceStage('gateway_child_spawned')
     this.child = child
     const signal = new AbortController()
     child.once('exit', () => signal.abort())
@@ -64,7 +67,10 @@ export class GatewayLifecycle {
           if (health.gateway === 'chat-on-opencode' && health.pid !== child.pid) {
             throw new Error('provider_gateway_owner_mismatch')
           }
-          if (health.gateway === 'chat-on-opencode' && health.pid === child.pid) return
+          if (health.gateway === 'chat-on-opencode' && health.pid === child.pid) {
+            traceStage('gateway_listening')
+            return
+          }
         }
       } catch (error) {
         if (error?.message === 'provider_gateway_owner_mismatch') throw error

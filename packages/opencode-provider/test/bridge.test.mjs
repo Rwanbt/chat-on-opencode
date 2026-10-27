@@ -2,11 +2,12 @@ import assert from 'node:assert/strict'
 import { createServer, request as httpRequest } from 'node:http'
 import { EventEmitter } from 'node:events'
 import { once } from 'node:events'
-import { mkdtemp, writeFile, rm, mkdir, realpath } from 'node:fs/promises'
+import { mkdtemp, writeFile, readFile, rm, mkdir, realpath } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { CoSControl, BridgeError } from '../src/control.mjs'
+import { traceStage } from '../src/stage-trace.mjs'
 import { createGateway, requestText, runTurn, stableUUID } from '../src/gateway.mjs'
 import { CoSRuntime, validateRuntime, validateProfileConsent } from '../src/runtime.mjs'
 import { GatewayLifecycle } from '../src/lifecycle.mjs'
@@ -16,6 +17,18 @@ import { enforceTextOnlyContext } from '../plugin/text-only.mjs'
 import { parseReadCall, readResultPrompt, validateNativeTools } from '../src/native-read.mjs'
 
 const request = { model: 'chatgpt-default', messages: [{ role: 'user', content: 'Bonjour' }] }
+
+test('opt-in startup stage trace records categorical markers only and ignores invalid destinations', async () => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'provider-stages-'))
+  try {
+    const target = path.join(folder, 'stages.log')
+    traceStage('gateway_listening', target)
+    traceStage('input_admitted', target)
+    traceStage('invalid secret=123', target)
+    traceStage('control_ready', 'relative.log')
+    assert.equal(await readFile(target, 'utf8'), 'gateway_listening\ninput_admitted\n')
+  } finally { await rm(folder, { recursive: true, force: true }) }
+})
 
 class FakeCoS {
   constructor(events = ['Bon', 'Bonjour']) { this.sent = []; this.exists = false; this.outputs = events }

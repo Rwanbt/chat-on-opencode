@@ -56,6 +56,7 @@ export class CoSRuntime {
   }
 
   async start() {
+    traceStage('runtime_start')
     if (this.child) throw new BridgeError('runtime_already_started', 409)
     const { binary, folder } = await validateRuntime(this.options)
     const { CHAT_ON_OPENCODE_GATEWAY_KEY: _gatewaySecret, ...childEnvironment } = process.env
@@ -67,6 +68,7 @@ export class CoSRuntime {
         CHAT_ON_OPENCODE_OWNER_PID: String(process.pid) },
     })
     this.child = child
+    traceStage('runtime_child_spawned')
     const control = new CoSControl({ directory: path.join(folder, 'control-api') })
     const signal = new AbortController()
     child.once('exit', () => signal.abort())
@@ -79,6 +81,7 @@ export class CoSRuntime {
         try {
           await control.connect()
           if (control.endpointPid !== child.pid) throw new BridgeError('runtime_endpoint_pid_mismatch', 503)
+          traceStage('control_connected')
           return control
         } catch (error) {
           // Invalid identity may indicate an unrelated stale endpoint: never adopt it.
@@ -103,3 +106,4 @@ export class CoSRuntime {
     if (child.exitCode === null && !child.killed) child.kill('SIGTERM')
   }
 }
+import { traceStage } from './stage-trace.mjs'
