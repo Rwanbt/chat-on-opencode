@@ -1,12 +1,23 @@
-import { closeSync, cpSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, cpSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
 import { planChainedManagedSwap } from './official-chained-swap-plan.mjs'
 import { candidateDigest } from './official-upgrade.mjs'
+import { payloadDigest } from './official-install.mjs'
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
 const STAGED = '.chat-on-opencode-chain-next'
 const JOURNAL = '.chat-on-opencode-chain-prepare.json'
+const ACTIVE = '.chat-on-opencode-managed'
+const PARKED = '.chat-on-opencode-chain-active-previous'
+function offline(probe = spawnSync) {
+  if (process.platform !== 'win32') throw Error('chained_swap_windows_only')
+  const result = probe('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    '@([Diagnostics.Process]::GetProcesses() | Where-Object { $_.ProcessName -in @("OpenCode","opencode-cli") }).Count'],
+  { encoding: 'utf8', windowsHide: true, shell: false, timeout: 7000 })
+  if (result.status !== 0 || !/^0\s*$/.test(result.stdout ?? '')) throw Error('chained_swap_processes_active_or_unknown')
+}
 
 /** Prepare a third immutable generation. Promotion remains deliberately unsupported. */
 export function prepareChainedGeneration(config, candidate, expectedDigest, { fault } = {}) {
@@ -34,6 +45,12 @@ export function prepareChainedGeneration(config, candidate, expectedDigest, { fa
     }
     fault?.('after_copy')
     if (candidateDigest(stage) !== expectedDigest) throw Error('chained_swap_staged_digest_mismatch')
+    const activeManifest = JSON.parse(readFileSync(path.join(root, ACTIVE, 'install-manifest.json'), 'utf8'))
+    const fdManifest = openSync(path.join(stage, 'install-manifest.json'), 'wx', 0o600)
+    try {
+      writeFileSync(fdManifest, JSON.stringify({ ...activeManifest, payloadSha256: expectedDigest }))
+      fsyncSync(fdManifest)
+    } finally { closeSync(fdManifest) }
     verify()
     fault?.('before_receipt')
     verify()
@@ -74,4 +91,54 @@ export function recoverPreparedChainedGeneration(config, candidate, expectedDige
       candidateDigest(stage) !== expectedDigest) throw Error('chained_swap_prepare_cas_changed')
   return { recovered: true, candidateSha256: expectedDigest, promotionAllowed: false,
     originalRetained: true, activeRetained: true }
+}
+
+/** Offline promotion; the V1 original and its journal remain untouched. */
+export function transitionChainedGeneration(config, candidate, digest, { fault, probe } = {}) {
+  offline(probe)
+  const root = path.dirname(path.resolve(config))
+  const stage = path.join(root, STAGED), parked = path.join(root, PARKED)
+  const active = path.join(root, ACTIVE)
+  const evidence = recoverPreparedChainedGeneration(config, candidate, digest)
+  if (!evidence.recovered || existsSync(parked)) throw Error('chained_swap_transition_occupied')
+  renameSync(active, parked)
+  fault?.('after_park')
+  renameSync(stage, active)
+  fault?.('after_activate')
+  return { activated: true, originalRetained: true, priorActiveRetained: true }
+}
+
+/** Reconcile an interrupted transition without overwriting retained V1 history. */
+export function recoverChainedTransition(config, candidate, digest, { probe, fault } = {}) {
+  offline(probe)
+  const root = path.dirname(path.resolve(config))
+  const active = path.join(root, ACTIVE), parked = path.join(root, PARKED), stage = path.join(root, STAGED)
+  const receipt = JSON.parse(readFileSync(path.join(root, JOURNAL), 'utf8'))
+  const oldJournal = JSON.parse(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json'), 'utf8'))
+  if (sha(readFileSync(config)) !== receipt.configSha256 ||
+      sha(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json'))) !== receipt.journalSha256 ||
+      receipt.activePayloadSha256 !== oldJournal.newPayload || receipt.previousPayloadSha256 !== oldJournal.oldPayload ||
+      receipt.candidateSha256 !== digest) throw Error('chained_swap_transition_cas_changed')
+  const previous = path.join(root, '.chat-on-opencode-directory-previous')
+  if (payloadDigest(previous) !== receipt.previousPayloadSha256) throw Error('chained_swap_original_changed')
+  if (!existsSync(parked)) return recoverPreparedChainedGeneration(config, candidate, digest)
+  if (payloadDigest(parked) !== receipt.activePayloadSha256) throw Error('chained_swap_parked_changed')
+  if (!existsSync(active) && existsSync(stage)) {
+    if (candidateDigest(stage) !== digest) throw Error('chained_swap_staged_digest_mismatch')
+    renameSync(stage, active)
+    fault?.('after_recover_activate')
+  }
+  if (!existsSync(active) || payloadDigest(active) !== digest) throw Error('chained_swap_active_changed')
+  return { activated: true, originalRetained: true, priorActiveRetained: true }
+}
+
+export function rollbackChainedTransition(config, candidate, digest, options = {}) {
+  const state = recoverChainedTransition(config, candidate, digest, options)
+  const root = path.dirname(path.resolve(config))
+  const active = path.join(root, ACTIVE), parked = path.join(root, PARKED), stage = path.join(root, STAGED)
+  if (existsSync(stage)) throw Error('chained_swap_rollback_occupied')
+  renameSync(active, stage)
+  options.fault?.('after_rollback_park')
+  renameSync(parked, active)
+  return { rolledBack: true, originalRetained: state.originalRetained, candidateRetained: true }
 }
