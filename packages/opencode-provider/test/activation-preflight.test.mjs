@@ -134,7 +134,7 @@ test('preflight invalid target does not disclose the original local path', () =>
       })
     assert.equal(child.status, 3)
     assert.equal(child.stdout, '')
-    assert.equal(child.stderr, 'activation_preflight_refused\\n')
+    assert.equal(child.stderr, 'activation_preflight_refused\n')
     assert.ok(!child.stderr.includes(missing))
   })
 })
