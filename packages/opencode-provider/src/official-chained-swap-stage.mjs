@@ -137,9 +137,19 @@ export function transitionChainedGeneration(config, candidate, digest, { fault, 
   const evidence = recoverPreparedChainedGeneration(config, candidate, digest)
   if (!evidence.recovered || existsSync(parked)) throw Error('chained_swap_transition_occupied')
   recoverPreparedChainedGeneration(config, candidate, digest)
+  offline(probe)
+  fault?.('before_park')
+  recoverPreparedChainedGeneration(config, candidate, digest)
   renameSync(active, parked)
   syncDirectory(root)
   fault?.('after_park')
+  offline(probe)
+  const receipt = JSON.parse(readFileSync(path.join(root, JOURNAL), 'utf8'))
+  if (sha(readFileSync(config)) !== receipt.configSha256 ||
+      sha(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json'))) !== receipt.journalSha256 ||
+      payloadDigest(parked) !== receipt.activePayloadSha256 ||
+      candidateDigest(stage) !== digest) throw Error('chained_swap_transition_cas_changed')
+  fault?.('before_activate')
   renameSync(stage, active)
   syncDirectory(root)
   fault?.('after_activate')
@@ -163,6 +173,7 @@ function recoverChainedTransitionLocked(config, candidate, digest, { fault } = {
   if (payloadDigest(parked) !== receipt.activePayloadSha256) throw Error('chained_swap_parked_changed')
   if (!existsSync(active) && existsSync(stage)) {
     if (candidateDigest(stage) !== digest) throw Error('chained_swap_staged_digest_mismatch')
+    fault?.('before_recover_activate')
     renameSync(stage, active)
     syncDirectory(root)
     fault?.('after_recover_activate')
@@ -196,9 +207,15 @@ export function rollbackChainedTransition(config, candidate, digest, options = {
   }
   const state = recoverChainedTransitionLocked(config, candidate, digest)
   if (existsSync(stage)) throw Error('chained_swap_rollback_occupied')
+  offline(options.probe)
+  options.fault?.('before_rollback_park')
   renameSync(active, stage)
   syncDirectory(root)
   options.fault?.('after_rollback_park')
+  offline(options.probe)
+  if (payloadDigest(parked) !== JSON.parse(readFileSync(path.join(root, JOURNAL), 'utf8')).activePayloadSha256 ||
+      candidateDigest(stage) !== digest) throw Error('chained_swap_transition_cas_changed')
+  options.fault?.('before_rollback_restore')
   renameSync(parked, active)
   syncDirectory(root)
   return { rolledBack: true, originalRetained: state.originalRetained, candidateRetained: true }

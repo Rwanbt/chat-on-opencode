@@ -236,3 +236,19 @@ test('fault at both promote renames and interrupted rollback can be safely repla
     inspectInstalledProvider(v.config)
   }
 })
+
+test('pre-rename fault gates refuse mutation and keep original V1 journal intact', { skip: process.platform !== 'win32' }, t => {
+  for (const cut of ['before_park', 'before_activate']) {
+    const v = fixture(t)
+    const root = path.dirname(v.config)
+    const probe = () => ({ stdout: '0\r\n', status: 0 })
+    prepareChainedGeneration(v.config, v.next, v.expected)
+    assert.throws(() => transitionChainedGeneration(v.config, v.next, v.expected, {
+      probe, fault: point => { if (point === cut) throw Error('injected_boundary') },
+    }), /injected_boundary/)
+    assert.deepEqual(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json')), v.journalBefore)
+    assert.deepEqual(readFileSync(v.config), v.configBefore)
+    if (cut === 'before_activate') assert.equal(recoverChainedTransition(v.config, v.next, v.expected, { probe }).activated, true)
+    else assert.equal(recoverPreparedChainedGeneration(v.config, v.next, v.expected).recovered, true)
+  }
+})
