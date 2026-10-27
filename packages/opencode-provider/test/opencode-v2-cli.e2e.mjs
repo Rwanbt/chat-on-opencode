@@ -100,6 +100,7 @@ for (const legacyOverlay of [false, true]) test(legacyOverlay
       OPENCODE_CONFIG_CONTENT: JSON.stringify(configuration), OPENCODE_CONFIG_PROJECT_DISABLE: '1',
       OPENCODE_DISABLE_AUTOUPDATE: '1',
       CHAT_ON_OPENCODE_TEST_TRACE_DIR: root,
+      CHAT_ON_OPENCODE_STAGE_TRACE: path.join(root, 'stages.log'),
     })
     assert.equal(safeEnv.CHAT_ON_OPENCODE_GATEWAY_KEY, undefined)
     const args = ['run', '--standalone', '--format', 'json', '--model', 'chat-on-opencode/chatgpt-default',
@@ -142,6 +143,12 @@ for (const legacyOverlay of [false, true]) test(legacyOverlay
       })
       assert.ok(parts.some(item => item.type === 'text' && item.part?.text?.includes('OFFLINE_FORK_OK')),
         'only an actual assistant text part counts as a valid streamed reply')
+      const stages = await readFile(path.join(root, 'stages.log'), 'utf8')
+      for (const stage of ['plugin_setup', 'model_request', 'gateway_child_spawned',
+        'runtime_child_spawned', 'control_connected', 'gateway_listening',
+        'gateway_turn_received', 'control_ready', 'input_admitted']) {
+        assert.match(stages, new RegExp('(?:^|\\n)' + stage + '\\n'), `missing diagnostic stage: ${stage}`)
+      }
       // The plugin-owned bearer must never be projected into user-facing CLI output or logs.
       let log = ''
       try { log = await readFile(path.join(root, 'data', 'opencode', 'log', 'opencode.log'), 'utf8') } catch { /* optional */ }
