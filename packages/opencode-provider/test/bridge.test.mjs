@@ -25,12 +25,31 @@ class FakeCoS {
   async send(payload) { this.sent.push(payload); this.exists = true; return { delivery: 'pending' } }
   async *events(id) {
     yield { seq: 1, kind: 'user_message', inputId: this.sent.at(-1).id }
+    yield { seq: 2, kind: 'turn_start', turnId: 'fake-current-turn' }
     for (const [i, text] of this.outputs.entries()) {
-      yield { seq: i + 2, kind: 'assistant_message', message: typeof text === 'string' ? { text, truncated: false } : text }
+      yield { seq: i + 3, kind: 'assistant_message', turnId: 'fake-current-turn', message: typeof text === 'string' ? { text, truncated: false } : text }
     }
-    yield { seq: this.outputs.length + 2, kind: 'turn_end', outcome: 'completed' }
+    yield { seq: this.outputs.length + 3, kind: 'turn_end', turnId: 'fake-current-turn', outcome: 'completed' }
   }
 }
+
+test('follow-up ignores replayed assistant and old terminal after its input receipt', async () => {
+  const cos = new FakeCoS()
+  cos.exists = true
+  cos.events = async function* () {
+    yield { kind: 'user_message', inputId: this.sent.at(-1).id }
+    yield { kind: 'assistant_message', turnId: 'previous-turn', message: { text: 'PREVIOUS', truncated: false } }
+    yield { kind: 'turn_end', turnId: 'previous-turn', outcome: 'completed' }
+    yield { kind: 'turn_start', turnId: 'current-turn' }
+    yield { kind: 'assistant_message', turnId: 'previous-turn', message: { text: 'PREVIOUS', truncated: false } }
+    yield { kind: 'assistant_message', turnId: 'current-turn', message: { text: 'NEW', truncated: false } }
+    yield { kind: 'turn_end', turnId: 'current-turn', outcome: 'completed' }
+  }
+  const emitted = []
+  const answer = await runTurn(cos, request, { sessionKey: 'ses_followup', messageKey: 'msg_followup_002', emit: delta => emitted.push(delta) })
+  assert.equal(answer, 'NEW')
+  assert.deepEqual(emitted, ['NEW'])
+})
 
 test('UUID ownership is deterministic and valid across independent turns', () => {
   assert.match(stableUUID('session:ses_123'), /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
@@ -188,8 +207,8 @@ test('a cancelled OpenCode request stops only its exact observed CoS turn', asyn
   cos.events = async function* () {
     yield { kind: 'user_message', inputId: this.sent.at(-1).id, seq: 1 }
     yield { kind: 'turn_start', turnId: 'proven-turn-42', seq: 2 }
-    yield { kind: 'assistant_message', seq: 3, message: { text: 'partial', truncated: false } }
-    yield { kind: 'turn_end', seq: 4, outcome: 'completed' }
+    yield { kind: 'assistant_message', turnId: 'proven-turn-42', seq: 3, message: { text: 'partial', truncated: false } }
+    yield { kind: 'turn_end', turnId: 'proven-turn-42', seq: 4, outcome: 'completed' }
   }
   await assert.rejects(runTurn(cos, request, { sessionKey: 'ses_cancel', messageKey: 'msg_cancel_0001', signal: abort.signal,
     emit: () => { abort.abort() } }), /opencode_turn_cancelled/)

@@ -107,6 +107,9 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
       // Ignore other sessions'/earlier turns' events; the exact user-message acknowledgement
       // is the publication boundary. Only an observed turn_start may authorize cancellation.
       if (event.kind === 'turn_start' && typeof event.turnId === 'string' && event.turnId) activeTurnID = event.turnId
+      // A follow-up's input receipt may precede stale history notifications.
+      // Only a newly observed turn and its matching events can supply an answer.
+      if (!activeTurnID || event.turnId !== activeTurnID) continue
       if (event.kind === 'chat_error' && event.blocking) throw new BridgeError('cos_chat_blocked', 502)
       if (event.kind === 'assistant_message') {
         if (event.message?.truncated || typeof event.message?.text !== 'string') throw new BridgeError('cos_output_incomplete', 502)
