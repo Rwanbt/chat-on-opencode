@@ -5,19 +5,21 @@
  * Windows GitHub runner only. No personal browser, cookies, OAuth or secrets.
  */
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 assert.equal(process.platform, 'win32', 'packaged Windows CLI integration only')
 const cli = process.env.CHAT_ON_OPENCODE_TEST_CLI
 assert.ok(cli && path.isAbsolute(cli) && existsSync(cli), 'official CLI 2.1.4 missing')
 const rootRepo = fileURLToPath(new URL('..', import.meta.url))
 const legacyOverlay = process.env.CHAT_ON_OPENCODE_TEST_LEGACY_OVERLAY === '1'
+const actualAdditive = legacyOverlay && process.env.CHAT_ON_OPENCODE_TEST_REAL_ADDITIVE === '1'
 const packaged = path.join(rootRepo, 'release', 'provider')
 const binary = path.join(packaged, 'win-unpacked', 'Chat On OpenCode Provider.exe')
 const plugin = path.join(packaged, 'opencode-plugin')
@@ -27,6 +29,10 @@ const paths = Object.fromEntries(['appdata', 'localappdata', 'config', 'data', '
   .map(name => [name, path.join(tmp, name)]))
 let child
 let port
+let overlayInstaller = null
+let originalConfigSha = null
+const preservedFiles = new Map()
+const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 async function freePort() {
