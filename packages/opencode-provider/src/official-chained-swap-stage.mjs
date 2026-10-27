@@ -15,8 +15,30 @@ const LOCK = '.chat-on-opencode-chain-transition.lock'
 function locked(root, work) {
   const file = path.join(root, LOCK)
   const fd = openSync(file, 'wx', 0o600)
-  try { writeFileSync(fd, String(process.pid)); fsyncSync(fd); return work() }
+  try {
+    const journal = path.join(root, '.chat-on-opencode-directory-switch.json')
+    writeFileSync(fd, JSON.stringify({ pid: process.pid, journalSha256: sha(readFileSync(journal)) }))
+    fsyncSync(fd)
+    return work()
+  }
   finally { closeSync(fd); rmSync(file) }
+}
+/** Stale locks are intentionally never stolen by another process. This proof is read-only. */
+export function inspectChainedTransitionLock(config, { ownerAlive = pid => {
+  try { process.kill(pid, 0); return true } catch (error) { return error.code !== 'ESRCH' }
+} } = {}) {
+  const root = path.dirname(path.resolve(config)), file = path.join(root, LOCK)
+  if (!existsSync(file)) return { locked: false, recoverable: false }
+  if (lstatSync(file).isSymbolicLink() || !lstatSync(file).isFile()) throw Error('chained_swap_lock_unsafe')
+  let record
+  try { record = JSON.parse(readFileSync(file, 'utf8')) } catch { throw Error('chained_swap_lock_invalid') }
+  if (!Number.isSafeInteger(record.pid) || record.pid <= 0 ||
+      !/^[a-f0-9]{64}$/.test(record.journalSha256 ?? '')) throw Error('chained_swap_lock_invalid')
+  if (ownerAlive(record.pid)) return { locked: true, recoverable: false, reason: 'owner_alive_or_unknown' }
+  if (sha(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json'))) !== record.journalSha256) {
+    throw Error('chained_swap_lock_cas_changed')
+  }
+  return { locked: true, recoverable: false, reason: 'dead_owner_manual_reconciliation_required' }
 }
 function syncDirectory(root) {
   // Directory handles are not fsync-capable on every Windows filesystem.

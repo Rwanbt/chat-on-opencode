@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
@@ -9,7 +10,7 @@ import { installProvider, inspectInstalledProvider } from '../src/official-insta
 import { stageManagedSwap, activateManagedSwap, managedSwapStatus } from '../bin/official-managed-swap.mjs'
 import { candidateDigest } from '../src/official-upgrade.mjs'
 import { planChainedManagedSwap } from '../src/official-chained-swap-plan.mjs'
-import { prepareChainedGeneration, recoverPreparedChainedGeneration, transitionChainedGeneration, recoverChainedTransition, rollbackChainedTransition } from '../src/official-chained-swap-stage.mjs'
+import { prepareChainedGeneration, recoverPreparedChainedGeneration, transitionChainedGeneration, recoverChainedTransition, rollbackChainedTransition, inspectChainedTransitionLock } from '../src/official-chained-swap-stage.mjs'
 import { parseChainArgs } from '../bin/official-chained-swap-plan.mjs'
 
 const bundle = fileURLToPath(new URL('..', import.meta.url))
@@ -200,6 +201,22 @@ test('transition lock refuses concurrent activation and preserved journal remain
   assert.throws(() => transitionChainedGeneration(v.config, v.next, v.expected, { probe }), /EEXIST/)
   assert.deepEqual(readFileSync(lock, 'utf8'), 'other transaction')
   assert.deepEqual(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json')), v.journalBefore)
+})
+
+test('dead lock owner requires exact journal CAS and never authorizes lock stealing', { skip: process.platform !== 'win32' }, t => {
+  const v = fixture(t)
+  const root = path.dirname(v.config)
+  const lock = path.join(root, '.chat-on-opencode-chain-transition.lock')
+  const hash = createHash('sha256').update(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json'))).digest('hex')
+  writeFileSync(lock, JSON.stringify({ pid: 987654, journalSha256: hash }))
+  assert.deepEqual(inspectChainedTransitionLock(v.config, { ownerAlive: () => false }), {
+    locked: true, recoverable: false, reason: 'dead_owner_manual_reconciliation_required',
+  })
+  assert.equal(existsSync(lock), true)
+  assert.equal(inspectChainedTransitionLock(v.config, { ownerAlive: () => true }).reason, 'owner_alive_or_unknown')
+  writeFileSync(path.join(root, '.chat-on-opencode-directory-switch.json'), '{}')
+  assert.throws(() => inspectChainedTransitionLock(v.config, { ownerAlive: () => false }), /chained_swap_lock_cas_changed/)
+  assert.equal(existsSync(lock), true)
 })
 
 test('fault at both promote renames and interrupted rollback can be safely replayed', { skip: process.platform !== 'win32' }, t => {
