@@ -9,7 +9,7 @@ import { installProvider, inspectInstalledProvider } from '../src/official-insta
 import { stageManagedSwap, activateManagedSwap, managedSwapStatus } from '../bin/official-managed-swap.mjs'
 import { candidateDigest } from '../src/official-upgrade.mjs'
 import { planChainedManagedSwap } from '../src/official-chained-swap-plan.mjs'
-import { prepareChainedGeneration } from '../src/official-chained-swap-stage.mjs'
+import { prepareChainedGeneration, recoverPreparedChainedGeneration } from '../src/official-chained-swap-stage.mjs'
 import { parseChainArgs } from '../bin/official-chained-swap-plan.mjs'
 
 const bundle = fileURLToPath(new URL('..', import.meta.url))
@@ -155,4 +155,15 @@ test('third-generation prepare refuses journal CAS drift without publishing a re
   assert.equal(existsSync(path.join(folder, '.chat-on-opencode-chain-next')), false)
   assert.equal(existsSync(path.join(folder, '.chat-on-opencode-chain-prepare.json')), false)
   assert.deepEqual(readFileSync(v.config), v.configBefore)
+})
+
+test('restart recovery validates prepared third generation and refuses tampering', { skip: process.platform !== 'win32' }, t => {
+  const v = fixture(t)
+  prepareChainedGeneration(v.config, v.next, v.expected)
+  assert.equal(recoverPreparedChainedGeneration(v.config, v.next, v.expected).recovered, true)
+  const stageFile = path.join(path.dirname(v.config), '.chat-on-opencode-chain-next', 'plugin', 'index.ts')
+  writeFileSync(stageFile, 'tampered candidate after process exit')
+  assert.throws(() => recoverPreparedChainedGeneration(v.config, v.next, v.expected), /chained_swap_prepare_cas_changed/)
+  assert.deepEqual(readFileSync(v.config), v.configBefore)
+  assert.deepEqual(readFileSync(path.join(path.dirname(v.config), '.chat-on-opencode-directory-switch.json')), v.journalBefore)
 })

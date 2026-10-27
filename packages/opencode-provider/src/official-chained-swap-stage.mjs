@@ -1,4 +1,4 @@
-import { closeSync, cpSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, cpSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { planChainedManagedSwap } from './official-chained-swap-plan.mjs'
@@ -50,4 +50,28 @@ export function prepareChainedGeneration(config, candidate, expectedDigest, { fa
     if (ownsStage && !existsSync(receipt)) rmSync(stage, { recursive: true, force: true })
     throw error
   }
+}
+
+/** Inspect a prepared third generation after process interruption. Never mutate the v1 chain. */
+export function recoverPreparedChainedGeneration(config, candidate, expectedDigest) {
+  const root = path.dirname(path.resolve(config))
+  const stage = path.join(root, STAGED), receipt = path.join(root, JOURNAL)
+  if (!existsSync(receipt) || !existsSync(stage)) throw Error('chained_swap_prepare_incomplete')
+  if (lstatSync(receipt).isSymbolicLink() || lstatSync(stage).isSymbolicLink() ||
+      !lstatSync(stage).isDirectory()) throw Error('chained_swap_prepare_unsafe')
+  let record
+  try { record = JSON.parse(readFileSync(receipt, 'utf8')) }
+  catch { throw Error('chained_swap_prepare_receipt_invalid') }
+  const keys = ['version', 'configSha256', 'journalSha256', 'previousPayloadSha256',
+    'activePayloadSha256', 'candidateSha256']
+  if (!record || Object.keys(record).sort().join() !== keys.sort().join() || record.version !== 1 ||
+      record.candidateSha256 !== expectedDigest) throw Error('chained_swap_prepare_receipt_invalid')
+  const evidence = planChainedManagedSwap(config, candidate, expectedDigest)
+  if (sha(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json'))) !== record.journalSha256 ||
+      evidence.configSha256 !== record.configSha256 ||
+      evidence.previousPayloadSha256 !== record.previousPayloadSha256 ||
+      evidence.activePayloadSha256 !== record.activePayloadSha256 ||
+      candidateDigest(stage) !== expectedDigest) throw Error('chained_swap_prepare_cas_changed')
+  return { recovered: true, candidateSha256: expectedDigest, promotionAllowed: false,
+    originalRetained: true, activeRetained: true }
 }
