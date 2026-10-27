@@ -39,7 +39,13 @@ function checkWindows(pid, handle = 0) {
   const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-File', probeScript, '-OwnerProcessId', String(pid)];
   if (handle) args.push('-CloseHandle', String(handle));
-  const result = spawnSync('powershell.exe', args, { windowsHide: true, encoding: 'utf8', timeout: 12_000 });
+  // Windows CI can delay the first PowerShell cold start beyond 12 seconds.
+  // Retry only a timed-out probe; all other failures remain fail-closed.
+  let result;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    result = spawnSync('powershell.exe', args, { windowsHide: true, encoding: 'utf8', timeout: 20_000 });
+    if (result.error?.code !== 'ETIMEDOUT') break;
+  }
   assert.equal(result.status, 0, `Windows window probe failed: ${result.error?.message ?? result.stderr?.slice(-900)}`);
   const parsed = JSON.parse(result.stdout.trim());
   return Array.isArray(parsed) ? parsed : [parsed];
