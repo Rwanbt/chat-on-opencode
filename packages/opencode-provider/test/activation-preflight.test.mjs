@@ -94,8 +94,15 @@ test('process/port probe failure and foreign plugin symlinks are classified as n
     assert.ok(report.reasons.includes('process_and_port_state_unknown'))
     assert.ok(report.reasons.includes('foreign_plugin_unreadable'))
     assert.equal(report.preservedPlugins.Goal.state, 'unsafe_or_unreadable')
-    assert.equal(report.preservedTrees.plugins.state, 'unsafe_or_unreadable')
-    assert.ok(report.reasons.includes('foreign_tree_unreadable'))
+    if (process.platform === 'win32') {
+      // Windows uses an empty directory instead of a privileged test symlink.
+      // Its foreign tree is a valid directory, but named index.ts is still
+      // correctly refused by the individual-file safety gate above.
+      assert.equal(report.preservedTrees.plugins.state, 'hashed')
+    } else {
+      assert.equal(report.preservedTrees.plugins.state, 'unsafe_or_unreadable')
+      assert.ok(report.reasons.includes('foreign_tree_unreadable'))
+    }
     assert.equal(report.activationAuthorized, false)
   })
 })
@@ -103,7 +110,8 @@ test('read-only CLI exits nonzero and never prints config or foreign plugin cont
   fixture(({ config, originals }) => {
     const cli = fileURLToPath(new URL('../bin/activation-preflight.mjs', import.meta.url))
     const child = spawnSync(process.execPath,
-      [cli, '--config', config, '--bundle', bundle], { encoding: 'utf8', timeout: 12000 })
+      [cli, '--offline', '--config', config, '--bundle', bundle], {
+        encoding: 'utf8', timeout: 12000 })
     assert.equal(child.status, 3, child.stderr)
     const report = JSON.parse(child.stdout)
     assert.equal(report.status, 'NO_GO')
