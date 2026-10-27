@@ -45,6 +45,37 @@ function namedFileHash(file) {
   }
 }
 /**
+ * Stable whole-tree fingerprint without disclosing names or content. This is a
+ * bounded snapshot for later byte integrity comparison, not a backup.
+ */
+function treeFingerprint(root) {
+  if (!present(root)) return { state: 'absent' }
+  try {
+    safeExisting(root, 'dir')
+    const aggregate = createHash('sha256')
+    let files = 0, bytes = 0
+    const visit = (directory, prefix = '') => {
+      for (const name of readdirSync(directory).sort()) {
+        const absolute = path.join(directory, name)
+        const relative = prefix + name
+        const info = lstatSync(absolute)
+        if (info.isSymbolicLink()) throw Error('foreign_tree_symlink')
+        if (info.isDirectory()) { visit(absolute, relative + '/'); continue }
+        if (!info.isFile()) throw Error('foreign_tree_nonregular')
+        files++
+        bytes += info.size
+        if (files > 10_000 || bytes > 268_435_456) throw Error('foreign_tree_limit')
+        aggregate.update(relative + '\\0').update(digest(readFileSync(absolute))).update('\\0')
+      }
+    }
+    visit(root)
+    return { state: 'hashed', files, bytes, sha256: aggregate.digest('hex') }
+  } catch {
+    return { state: 'unsafe_or_unreadable' }
+  }
+}
+
+/**
  * Observes process names and the two known TCP listener ports; NEVER connects
  * to either listener or reads command lines, user texts or credentials.
  * Non-Windows invocation and ANY failed probe are unknown, not idle.
@@ -101,6 +132,14 @@ export function inspectActivation({ config, bundle, observe = observeWindows }) 
   if (Object.values(preserved).some(value => value.state === 'unsafe_or_unreadable')) {
     reasons.push('foreign_plugin_unreadable')
   }
+  const preservedTrees = {
+    plugins: treeFingerprint(path.join(root, 'plugins')),
+    agents: treeFingerprint(path.join(root, 'agents')),
+    previousGeneration: treeFingerprint(path.join(root, '.chat-on-opencode-directory-previous')),
+  }
+  if (Object.values(preservedTrees).some(value => value.state === 'unsafe_or_unreadable')) {
+    reasons.push('foreign_tree_unreadable')
+  }
   const safetyFiles = {
     config: { state: 'file', sha256: configSha256 },
     additiveJournal: present(path.join(root, '.chat-on-opencode-context-overlay.pending.json')),
@@ -126,7 +165,7 @@ export function inspectActivation({ config, bundle, observe = observeWindows }) 
     activationAuthorized: false,
     configSha256, sourceSha256,
     processAndPorts: model, swap, preservedPlugins: preserved,
-    safetyFiles, overlayState,
+    preservedTrees, safetyFiles, overlayState,
     reasons: [...new Set(reasons)],
   }
 }
