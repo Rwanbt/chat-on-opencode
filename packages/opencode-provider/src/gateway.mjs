@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import http from 'node:http'
+import { setTimeout as delay } from 'node:timers/promises'
 import { BridgeError } from './control.mjs'
 import { READ_INSTRUCTIONS, validateNativeTools, readResultPrompt, parseReadCall } from './native-read.mjs'
 
@@ -35,6 +36,36 @@ export function requestText(messages, first) {
     ...history.map(p => `[${p.role}]\n${p.content}\n[/${p.role}]`)].join('\n\n')
 }
 
+/**
+ * The hidden Chromium extension starts asynchronously after Electron's control
+ * socket opens. Wait for that local bootstrap BEFORE admitting an OpenCode turn.
+ * Never resubmit a prompt, approve pairing, or infer authentication from "up".
+ * Confirmed missing sign-in/unpaired states still fail immediately.
+ */
+export async function awaitProviderReady(control, {
+  signal, clock = Date.now, sleep = delay, maxWaitMs = 60_000,
+} = {}) {
+  if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
+  // Older synthetic control fixtures implement assertReady but not readiness.
+  if (typeof control.readiness !== 'function') return control.assertReady()
+  const deadline = clock() + maxWaitMs
+  for (;;) {
+    if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
+    const state = await control.readiness()
+    if (state.sessionCookie === 'present' && state.extension === 'connected' &&
+        state.paired && state.canAttempt) return control.assertReady()
+    if (state.sessionCookie === 'absent' ||
+        (state.sessionCookie === 'present' && state.extension === 'connected' && !state.paired) ||
+        clock() >= deadline) return control.assertReady()
+    const ms = Math.max(1, Math.min(400, deadline - clock()))
+    try { await sleep(ms, undefined, { signal }) }
+    catch (error) {
+      if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
+      throw error
+    }
+  }
+}
+
 export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal, nativeTools = 'off' } = {}) {
   if (!sessionKey || sessionKey.length > 256 || /[\r\n]/.test(sessionKey)) throw new BridgeError('opencode_session_id_required', 422)
   if (!messageKey || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
@@ -55,7 +86,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
   // A hidden provider with no ChatGPT session or browser bridge must not accept
   // a prompt into the durable outbox that no authenticated page can deliver.
-  await control.assertReady()
+  await awaitProviderReady(control, { signal })
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
   await control.send({ id: inputID, ...(first ? {} : { sessionId: sessionID }), text })
 

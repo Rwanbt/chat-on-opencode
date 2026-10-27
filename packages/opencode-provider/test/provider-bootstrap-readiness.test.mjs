@@ -29,7 +29,7 @@ test('hidden Chromium readiness transitions unknown -> paired before first admis
   })
   assert.equal(result, 'REAL_TRANSPORT_FAKE_ONLY')
   assert.deepEqual(deltas, ['REAL_TRANSPORT_FAKE_ONLY'])
-  assert.deepEqual(observed, ['readiness', 'readiness', 'readiness', 'admitted'])
+  assert.deepEqual(observed, ['readiness', 'readiness', 'readiness', 'assertReady', 'admitted'])
 })
 
 test('no network wait for confirmed missing sign-in or explicitly unpaired bridge', async () => {
