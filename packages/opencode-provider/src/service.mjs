@@ -1,4 +1,5 @@
 import { createGateway } from './gateway.mjs'
+import { traceStage } from './stage-trace.mjs'
 
 /** One process owns both the gateway listener and its isolated CoS runtime. */
 export async function startService({ runtime, key, port, owner = process, owned = false,
@@ -25,7 +26,7 @@ export async function startService({ runtime, key, port, owner = process, owned 
   }
   // Register before the first await: a disconnect during profile validation,
   // Chromium launch or control-api discovery must terminate the owned service.
-  if (owned) owner.once('disconnect', () => shutdown(0))
+  if (owned) owner.once('disconnect', () => { traceStage('gateway_ipc_disconnected'); shutdown(0) })
   owner.once('SIGINT', () => shutdown(0))
   owner.once('SIGTERM', () => shutdown(0))
   try {
