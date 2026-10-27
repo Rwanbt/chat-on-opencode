@@ -78,7 +78,10 @@ test('process/port probe failure and foreign plugin symlinks are classified as n
   fixture(({ root, config }) => {
     const file = path.join(root, 'plugins', 'Goal', 'index.ts')
     rmSync(file)
-    symlinkSync(config, file)
+    // Symlink creation on CI Windows is privilege-dependent; a directory at the
+    // expected file path is equally invalid and exercises the same fail-closed gate.
+    if (process.platform === 'win32') mkdirSync(file)
+    else symlinkSync(config, file)
     const report = inspectActivation({
       config, bundle, observe: () => ({ state: 'unknown' }),
     })
