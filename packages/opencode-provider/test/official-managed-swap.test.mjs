@@ -109,6 +109,18 @@ test('status refuses to certify an active chain with corrupted retained history'
   assert.deepEqual(readFileSync(v.config), v.originalConfig)
 })
 
+test('status fails closed on corrupt active candidate while original backup survives', { skip: process.platform !== 'win32' }, async t => {
+  const v = await fixture(t)
+  stageManagedSwap(v.config, v.copy)
+  activateManagedSwap(v.config, quiet)
+  const previous = path.join(path.dirname(v.config), '.chat-on-opencode-directory-previous')
+  const originalBackup = readFileSync(path.join(previous, 'plugin', 'index.ts'))
+  writeFileSync(path.join(v.managed, 'plugin', 'index.ts'), 'interrupted replacement')
+  assert.throws(() => managedSwapStatus(v.config), /managed_switch_candidate_changed/)
+  assert.deepEqual(readFileSync(path.join(previous, 'plugin', 'index.ts')), originalBackup)
+  assert.deepEqual(readFileSync(v.config), v.originalConfig)
+})
+
 test('a second staged upgrade must refuse existing journal without changing the current plugin', async t => {
   const v = await fixture(t)
   stageManagedSwap(v.config, v.copy)
