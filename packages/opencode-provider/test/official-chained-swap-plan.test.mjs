@@ -9,7 +9,7 @@ import { installProvider, inspectInstalledProvider } from '../src/official-insta
 import { stageManagedSwap, activateManagedSwap, managedSwapStatus } from '../bin/official-managed-swap.mjs'
 import { candidateDigest } from '../src/official-upgrade.mjs'
 import { planChainedManagedSwap } from '../src/official-chained-swap-plan.mjs'
-import { prepareChainedGeneration, recoverPreparedChainedGeneration } from '../src/official-chained-swap-stage.mjs'
+import { prepareChainedGeneration, recoverPreparedChainedGeneration, transitionChainedGeneration, recoverChainedTransition, rollbackChainedTransition } from '../src/official-chained-swap-stage.mjs'
 import { parseChainArgs } from '../bin/official-chained-swap-plan.mjs'
 
 const bundle = fileURLToPath(new URL('..', import.meta.url))
@@ -166,4 +166,21 @@ test('restart recovery validates prepared third generation and refuses tampering
   assert.throws(() => recoverPreparedChainedGeneration(v.config, v.next, v.expected), /chained_swap_prepare_cas_changed/)
   assert.deepEqual(readFileSync(v.config), v.configBefore)
   assert.deepEqual(readFileSync(path.join(path.dirname(v.config), '.chat-on-opencode-directory-switch.json')), v.journalBefore)
+})
+
+test('offline three-generation activate, interrupted park recovery and rollback retain original', { skip: process.platform !== 'win32' }, t => {
+  const v = fixture(t)
+  const probe = () => ({ stdout: '0\r\n', status: 0 })
+  const root = path.dirname(v.config)
+  const original = readFileSync(path.join(root, '.chat-on-opencode-directory-previous', 'plugin', 'index.ts'))
+  prepareChainedGeneration(v.config, v.next, v.expected)
+  assert.throws(() => transitionChainedGeneration(v.config, v.next, v.expected, { probe,
+    fault: step => { if (step === 'after_park') throw Error('crash_after_park') },
+  }), /crash_after_park/)
+  const recovered = recoverChainedTransition(v.config, v.next, v.expected, { probe })
+  assert.equal(recovered.activated, true)
+  assert.deepEqual(readFileSync(path.join(root, '.chat-on-opencode-directory-previous', 'plugin', 'index.ts')), original)
+  assert.equal(rollbackChainedTransition(v.config, v.next, v.expected, { probe }).rolledBack, true)
+  assert.deepEqual(readFileSync(v.config), v.configBefore)
+  assert.deepEqual(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json')), v.journalBefore)
 })
