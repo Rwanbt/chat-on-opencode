@@ -11,6 +11,18 @@ const STAGED = '.chat-on-opencode-chain-next'
 const JOURNAL = '.chat-on-opencode-chain-prepare.json'
 const ACTIVE = '.chat-on-opencode-managed'
 const PARKED = '.chat-on-opencode-chain-active-previous'
+const LOCK = '.chat-on-opencode-chain-transition.lock'
+function locked(root, work) {
+  const file = path.join(root, LOCK)
+  const fd = openSync(file, 'wx', 0o600)
+  try { writeFileSync(fd, String(process.pid)); fsyncSync(fd); return work() }
+  finally { closeSync(fd); rmSync(file) }
+}
+function syncDirectory(root) {
+  // Directory handles are not fsync-capable on every Windows filesystem.
+  try { const fd = openSync(root, 'r'); try { fsyncSync(fd) } finally { closeSync(fd) } }
+  catch (error) { if (!['EPERM', 'EACCES', 'EINVAL', 'EISDIR', 'ENOTSUP'].includes(error.code)) throw error }
+}
 function offline(probe = spawnSync) {
   if (process.platform !== 'win32') throw Error('chained_swap_windows_only')
   const result = probe('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
@@ -97,20 +109,24 @@ export function recoverPreparedChainedGeneration(config, candidate, expectedDige
 export function transitionChainedGeneration(config, candidate, digest, { fault, probe } = {}) {
   offline(probe)
   const root = path.dirname(path.resolve(config))
+  return locked(root, () => {
   const stage = path.join(root, STAGED), parked = path.join(root, PARKED)
   const active = path.join(root, ACTIVE)
   const evidence = recoverPreparedChainedGeneration(config, candidate, digest)
   if (!evidence.recovered || existsSync(parked)) throw Error('chained_swap_transition_occupied')
+  recoverPreparedChainedGeneration(config, candidate, digest)
   renameSync(active, parked)
+  syncDirectory(root)
   fault?.('after_park')
   renameSync(stage, active)
+  syncDirectory(root)
   fault?.('after_activate')
   return { activated: true, originalRetained: true, priorActiveRetained: true }
+  })
 }
 
 /** Reconcile an interrupted transition without overwriting retained V1 history. */
-export function recoverChainedTransition(config, candidate, digest, { probe, fault } = {}) {
-  offline(probe)
+function recoverChainedTransitionLocked(config, candidate, digest, { fault } = {}) {
   const root = path.dirname(path.resolve(config))
   const active = path.join(root, ACTIVE), parked = path.join(root, PARKED), stage = path.join(root, STAGED)
   const receipt = JSON.parse(readFileSync(path.join(root, JOURNAL), 'utf8'))
@@ -126,19 +142,43 @@ export function recoverChainedTransition(config, candidate, digest, { probe, fau
   if (!existsSync(active) && existsSync(stage)) {
     if (candidateDigest(stage) !== digest) throw Error('chained_swap_staged_digest_mismatch')
     renameSync(stage, active)
+    syncDirectory(root)
     fault?.('after_recover_activate')
   }
+  // Interrupted rollback: C is staged, B is parked, active path is empty.
+  if (!existsSync(active) && !existsSync(stage) && existsSync(parked)) throw Error('chained_swap_transition_incomplete')
   if (!existsSync(active) || payloadDigest(active) !== digest) throw Error('chained_swap_active_changed')
   return { activated: true, originalRetained: true, priorActiveRetained: true }
 }
+export function recoverChainedTransition(config, candidate, digest, { probe, fault } = {}) {
+  offline(probe)
+  return locked(path.dirname(path.resolve(config)), () => recoverChainedTransitionLocked(config, candidate, digest, { fault }))
+}
 
 export function rollbackChainedTransition(config, candidate, digest, options = {}) {
-  const state = recoverChainedTransition(config, candidate, digest, options)
+  offline(options.probe)
   const root = path.dirname(path.resolve(config))
+  return locked(root, () => {
   const active = path.join(root, ACTIVE), parked = path.join(root, PARKED), stage = path.join(root, STAGED)
+  // Rollback interrupted after C was parked: finish restoring B.
+  if (!existsSync(active) && existsSync(stage) && existsSync(parked)) {
+    const receipt = JSON.parse(readFileSync(path.join(root, JOURNAL), 'utf8'))
+    if (sha(readFileSync(config)) !== receipt.configSha256 ||
+        sha(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json'))) !== receipt.journalSha256 ||
+        payloadDigest(path.join(root, '.chat-on-opencode-directory-previous')) !== receipt.previousPayloadSha256 ||
+        payloadDigest(parked) !== receipt.activePayloadSha256) throw Error('chained_swap_transition_cas_changed')
+    if (candidateDigest(stage) !== digest) throw Error('chained_swap_staged_digest_mismatch')
+    renameSync(parked, active)
+    syncDirectory(root)
+    return { rolledBack: true, originalRetained: true, candidateRetained: true }
+  }
+  const state = recoverChainedTransitionLocked(config, candidate, digest)
   if (existsSync(stage)) throw Error('chained_swap_rollback_occupied')
   renameSync(active, stage)
+  syncDirectory(root)
   options.fault?.('after_rollback_park')
   renameSync(parked, active)
+  syncDirectory(root)
   return { rolledBack: true, originalRetained: state.originalRetained, candidateRetained: true }
+  })
 }

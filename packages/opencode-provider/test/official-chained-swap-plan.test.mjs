@@ -189,3 +189,33 @@ test('offline three-generation activate, interrupted park recovery and rollback 
   assert.deepEqual(readFileSync(v.config), v.configBefore)
   assert.deepEqual(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json')), v.journalBefore)
 })
+
+test('transition lock refuses concurrent activation and preserved journal remains intact', { skip: process.platform !== 'win32' }, t => {
+  const v = fixture(t)
+  const root = path.dirname(v.config)
+  const lock = path.join(root, '.chat-on-opencode-chain-transition.lock')
+  const probe = () => ({ stdout: '0\r\n', status: 0 })
+  prepareChainedGeneration(v.config, v.next, v.expected)
+  writeFileSync(lock, 'other transaction')
+  assert.throws(() => transitionChainedGeneration(v.config, v.next, v.expected, { probe }), /EEXIST/)
+  assert.deepEqual(readFileSync(lock, 'utf8'), 'other transaction')
+  assert.deepEqual(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json')), v.journalBefore)
+})
+
+test('fault at both promote renames and interrupted rollback can be safely replayed', { skip: process.platform !== 'win32' }, t => {
+  for (const cut of ['after_park', 'after_activate']) {
+    const v = fixture(t)
+    const probe = () => ({ stdout: '0\r\n', status: 0 })
+    prepareChainedGeneration(v.config, v.next, v.expected)
+    assert.throws(() => transitionChainedGeneration(v.config, v.next, v.expected, {
+      probe, fault: point => { if (point === cut) throw Error('injected_transition_failure') },
+    }), /injected_transition_failure/)
+    assert.equal(recoverChainedTransition(v.config, v.next, v.expected, { probe }).activated, true)
+    assert.throws(() => rollbackChainedTransition(v.config, v.next, v.expected, {
+      probe, fault: point => { if (point === 'after_rollback_park') throw Error('injected_rollback_failure') },
+    }), /injected_rollback_failure/)
+    assert.equal(rollbackChainedTransition(v.config, v.next, v.expected, { probe }).rolledBack, true)
+    assert.deepEqual(readFileSync(path.join(path.dirname(v.config), '.chat-on-opencode-directory-switch.json')), v.journalBefore)
+    inspectInstalledProvider(v.config)
+  }
+})
