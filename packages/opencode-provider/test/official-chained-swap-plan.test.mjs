@@ -9,6 +9,7 @@ import { installProvider, inspectInstalledProvider } from '../src/official-insta
 import { stageManagedSwap, activateManagedSwap, managedSwapStatus } from '../bin/official-managed-swap.mjs'
 import { candidateDigest } from '../src/official-upgrade.mjs'
 import { planChainedManagedSwap } from '../src/official-chained-swap-plan.mjs'
+import { prepareChainedGeneration } from '../src/official-chained-swap-stage.mjs'
 import { parseChainArgs } from '../bin/official-chained-swap-plan.mjs'
 
 const bundle = fileURLToPath(new URL('..', import.meta.url))
@@ -121,4 +122,37 @@ test('candidate missing OAuth bootstrap and overwritten original backup refuse i
   writeFileSync(info.manifest.backup, 'corrupt original backed-up bytes')
   assert.throws(() => planChainedManagedSwap(v.config, v.next, candidateDigest(v.next)),
     /provider_backup_modified/)
+})
+
+test('third generation prepares with retained original and CAS, while interrupted copy cleans only its staging', { skip: process.platform !== 'win32' }, t => {
+  const v = fixture(t)
+  const folder = path.dirname(v.config)
+  const previous = path.join(folder, '.chat-on-opencode-directory-previous', 'plugin', 'index.ts')
+  const original = readFileSync(previous)
+  const stage = path.join(folder, '.chat-on-opencode-chain-next')
+  assert.throws(() => prepareChainedGeneration(v.config, v.next, v.expected, {
+    fault: point => { if (point === 'after_copy') throw Error('injected_crash') },
+  }), /injected_crash/)
+  assert.equal(existsSync(stage), false)
+  assert.deepEqual(readFileSync(previous), original)
+  const result = prepareChainedGeneration(v.config, v.next, v.expected)
+  assert.equal(result.prepared, true)
+  assert.equal(result.promotionAllowed, false)
+  assert.equal(candidateDigest(stage), v.expected)
+  assert.deepEqual(readFileSync(previous), original)
+  assert.deepEqual(readFileSync(v.config), v.configBefore)
+  assert.throws(() => prepareChainedGeneration(v.config, v.next, v.expected), /chained_swap_already_prepared|chained_swap_pending_or_partial/)
+})
+
+test('third-generation prepare refuses journal CAS drift without publishing a receipt', { skip: process.platform !== 'win32' }, t => {
+  const v = fixture(t)
+  const folder = path.dirname(v.config)
+  const journal = path.join(folder, '.chat-on-opencode-directory-switch.json')
+  const bytes = readFileSync(journal)
+  assert.throws(() => prepareChainedGeneration(v.config, v.next, v.expected, {
+    fault: point => { if (point === 'before_receipt') writeFileSync(journal, Buffer.concat([bytes, Buffer.from(' ')])) },
+  }), /chained_swap_cas_changed|chained_swap_journal_invalid/)
+  assert.equal(existsSync(path.join(folder, '.chat-on-opencode-chain-next')), false)
+  assert.equal(existsSync(path.join(folder, '.chat-on-opencode-chain-prepare.json')), false)
+  assert.deepEqual(readFileSync(v.config), v.configBefore)
 })
