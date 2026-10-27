@@ -154,8 +154,16 @@ export function rollbackManagedSwap(config, options) {
 }
 export function managedSwapStatus(config) {
   const state = journalState(config)
-  return { staged: Boolean(stat(state.next)), oldRetained: Boolean(stat(state.previous)),
-    activeCandidate: Boolean(stat(state.previous) && stat(state.managed) &&
+  const oldRetained = Boolean(stat(state.previous))
+  if (oldRetained) {
+    safeTree(state.previous)
+    if (payloadDigest(state.previous) !== state.oldPayload ||
+      shaFile(path.join(state.previous, MANIFEST)) !== state.oldManifestSha) {
+      throw Error('managed_switch_previous_changed')
+    }
+  }
+  return { staged: Boolean(stat(state.next)), oldRetained,
+    activeCandidate: Boolean(oldRetained && stat(state.managed) &&
       payloadDigest(state.managed) === state.newPayload), configUnchanged: true }
 }
 const [, entry, command, config, bundle] = process.argv

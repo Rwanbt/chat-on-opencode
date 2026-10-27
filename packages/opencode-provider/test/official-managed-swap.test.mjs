@@ -96,7 +96,17 @@ test('retained original plugin cannot be silently rolled back if its bytes chang
   const original = path.join(path.dirname(v.config), '.chat-on-opencode-directory-previous', 'plugin', 'index.ts')
   writeFileSync(original, 'tampered old plugin')
   assert.throws(() => rollbackManagedSwap(v.config, quiet), /managed_switch_previous_changed/)
-  assert.equal(managedSwapStatus(v.config).activeCandidate, true)
+  assert.throws(() => managedSwapStatus(v.config), /managed_switch_previous_changed/)
+})
+
+test('status refuses to certify an active chain with corrupted retained history', { skip: process.platform !== 'win32' }, async t => {
+  const v = await fixture(t)
+  stageManagedSwap(v.config, v.copy)
+  activateManagedSwap(v.config, quiet)
+  const previous = path.join(path.dirname(v.config), '.chat-on-opencode-directory-previous')
+  writeFileSync(path.join(previous, 'plugin', 'index.ts'), 'corrupted historical payload')
+  assert.throws(() => managedSwapStatus(v.config), /managed_switch_previous_changed/)
+  assert.deepEqual(readFileSync(v.config), v.originalConfig)
 })
 
 test('a second staged upgrade must refuse existing journal without changing the current plugin', async t => {
