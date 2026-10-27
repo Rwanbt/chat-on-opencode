@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { additiveSourceDigest, additiveStatus } from './additive-install.mjs'
+import { managedSwapStatus } from '../../bin/official-managed-swap.mjs'
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex')
 const knownPlugins = ['Goal', 'Loop', 'Daemon', 'Scheduler']
@@ -126,6 +127,16 @@ export function inspectActivation({ config, bundle, observe = observeWindows }) 
     present(path.join(root, name)),
   ]))
   if (Object.values(swap).some(Boolean)) reasons.push('existing_swap_requires_reconciliation')
+  let managedState = null
+  if (swap.journal) {
+    try {
+      // This importer validates the original journal's config hash, manifest
+      // digests and active generation, but does not stage/activate anything.
+      managedState = managedSwapStatus(configPath)
+    } catch {
+      reasons.push('managed_swap_integrity_unverifiable')
+    }
+  }
   const preserved = Object.fromEntries(knownPlugins.map(name => [
     name, namedFileHash(path.join(root, 'plugins', name, 'index.ts')),
   ]))
@@ -164,7 +175,7 @@ export function inspectActivation({ config, bundle, observe = observeWindows }) 
     status: 'NO_GO',
     activationAuthorized: false,
     configSha256, sourceSha256,
-    processAndPorts: model, swap, preservedPlugins: preserved,
+    processAndPorts: model, swap, managedState, preservedPlugins: preserved,
     preservedTrees, safetyFiles, overlayState,
     reasons: [...new Set(reasons)],
   }
