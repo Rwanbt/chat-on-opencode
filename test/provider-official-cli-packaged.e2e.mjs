@@ -93,7 +93,14 @@ try {
       for (const name of ['Goal', 'Loop', 'Daemon', 'Scheduler']) {
         const foreign = path.join(plugins, name, 'index.ts')
         await mkdir(path.dirname(foreign), { recursive: true })
-        const bytes = Buffer.from('export default ' + JSON.stringify(name) + '\n')
+        // These are loadable *no-op* OpenCode plugins, not invalid strings.
+        // The E2E must prove real provider discovery still works when existing
+        // third-party extensions are present, with their exact bytes preserved.
+        const bytes = Buffer.from(
+          "import { Plugin } from '@opencode/plugin'\n" +
+          'export default Plugin.define({ id: ' + JSON.stringify('foreign-fixture-' + name) +
+          ', async setup() { return () => {} } })\n',
+        )
         await writeFile(foreign, bytes, { flag: 'wx' })
         preservedFiles.set(foreign, sha256(bytes))
       }
