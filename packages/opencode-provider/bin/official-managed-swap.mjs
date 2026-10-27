@@ -162,9 +162,15 @@ export function managedSwapStatus(config) {
       throw Error('managed_switch_previous_changed')
     }
   }
+  const activeCandidate = Boolean(oldRetained && stat(state.managed))
+  if (activeCandidate) {
+    safeTree(state.managed)
+    if (payloadDigest(state.managed) !== state.newPayload) {
+      throw Error('managed_switch_candidate_changed')
+    }
+  }
   return { staged: Boolean(stat(state.next)), oldRetained,
-    activeCandidate: Boolean(oldRetained && stat(state.managed) &&
-      payloadDigest(state.managed) === state.newPayload), configUnchanged: true }
+    activeCandidate, configUnchanged: true }
 }
 const [, entry, command, config, bundle] = process.argv
 if (entry && path.resolve(entry) === fileURLToPath(import.meta.url)) {
