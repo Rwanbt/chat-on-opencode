@@ -123,3 +123,18 @@ test('read-only CLI exits nonzero and never prints config or foreign plugin cont
     for (const [filename, bytes] of originals) assert.deepEqual(readFileSync(filename), bytes)
   })
 })
+
+test('preflight invalid target does not disclose the original local path', () => {
+  fixture(({ config }) => {
+    const cli = fileURLToPath(new URL('../bin/activation-preflight.mjs', import.meta.url))
+    const missing = config + '.private-file-not-found'
+    const child = spawnSync(process.execPath,
+      [cli, '--offline', '--config', missing, '--bundle', bundle], {
+        encoding: 'utf8', timeout: 5000,
+      })
+    assert.equal(child.status, 3)
+    assert.equal(child.stdout, '')
+    assert.equal(child.stderr, 'activation_preflight_refused\\n')
+    assert.ok(!child.stderr.includes(missing))
+  })
+})
