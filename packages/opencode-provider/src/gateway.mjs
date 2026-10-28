@@ -74,7 +74,7 @@ export async function awaitProviderReady(control, {
 }
 
 export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal,
-  nativeTools = 'off', checkpoint, previousInput, rememberInput, turnCustody } = {}) {
+  nativeTools = 'off', checkpoint, previousInput, rememberInput, turnCustody, messageFingerprint } = {}) {
   traceStage('gateway_turn_received')
   if (!sessionKey || sessionKey.length > 256 || /[\r\n]/.test(sessionKey)) throw new BridgeError('opencode_session_id_required', 422)
   if (!messageKey || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
@@ -119,6 +119,9 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
     // outbox input can still be cancelled.
     sendStarted = true
     if (first && !result) turnCustody?.claimFirst(sessionKey, messageKey, text)
+    if (!first && !originalFirst && !result && messageFingerprint) {
+      turnCustody?.claimFollowup(sessionKey, messageKey, messageFingerprint, text)
+    }
     rememberInput?.(text)
     await control.send({ id: inputID, ...(first ? {} : { sessionId: sessionID }), text })
     traceStage('input_admitted')
@@ -288,8 +291,29 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody }
       if (priorInput && priorInput.messageFingerprint !== messageFingerprint) {
         throw new BridgeError('opencode_message_identity_reused_with_changed_history', 409)
       }
+      // A restart loses volatile foreign-provider handoff checkpoints. For an
+      // already admitted follow-up, retrieve the exact prior text from CoS's
+      // own persistent outbox rather than recompose a different prompt under
+      // the same native message ID. The salted local marker binds the full
+      // original native history without storing the text or credentials.
+      let recoveredInput
+      if (!isToolResult && !priorInput && turnCustody) {
+        const record = turnCustody.readFollowup(sessionKey, messageKey)
+        if (record) {
+          turnCustody.verifyFollowup(record, messageFingerprint)
+          const id = stableUUID('turn:' + sessionKey + ':' + messageKey)
+          const stored = await control.readInput?.(id, { signal: cancel.signal })
+          if (!stored || stored.id !== id || stored.sessionId !== stableUUID('session:' + sessionKey) ||
+              typeof stored.text !== 'string' || stored.text.length > 64000) {
+            throw new BridgeError('cos_replay_input_unavailable', 409)
+          }
+          turnCustody.verifyFollowup(record, messageFingerprint, stored.text)
+          recoveredInput = stored.text
+        }
+      }
       const result = await runTurn(control, body, { sessionKey, messageKey, nativeTools, signal: cancel.signal,
-        checkpoint: checkpoints.get(sessionKey), previousInput: priorInput?.text, turnCustody,
+        checkpoint: checkpoints.get(sessionKey), previousInput: priorInput?.text ?? recoveredInput,
+        turnCustody, messageFingerprint,
         rememberInput: isToolResult ? undefined : text => rememberBounded(submittedInputs, inputKey,
           { text, messageFingerprint }), emit: async (delta) => {
         answer += delta

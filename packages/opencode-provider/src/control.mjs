@@ -98,6 +98,16 @@ export class CoSControl {
     return result.input
   }
 
+  /** Recover only one already-owned input from CoS's durable outbox.
+   * The bounded read never stores or logs prompt text in the provider. */
+  async readInput(id, { signal } = {}) {
+    const page = await this.json('GET', '/v1/inputs?limit=500', undefined, { signal })
+    if (!Array.isArray(page?.inputs) || page.inputs.length > 500) {
+      throw new BridgeError('cos_outbox_unavailable', 503)
+    }
+    return page.inputs.find(input => input?.id === id) ?? null
+  }
+
   /** Exact-turn stop; CoS itself rechecks that this is still the active turn. */
   async stop(sessionID, turnId) {
     return this.json('POST', `/v1/sessions/${sessionID}/stop`, { turnId })

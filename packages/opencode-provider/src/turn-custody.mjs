@@ -65,4 +65,50 @@ export class TurnCustody {
   isOriginal(record, messageKey) {
     return !!record && record.message === digest(record.salt + '\0' + messageKey)
   }
+
+  followupFile(sessionKey, messageKey) {
+    return path.join(this.directory, digest(sessionKey + '\0' + messageKey) + '.followup.json')
+  }
+
+  readFollowup(sessionKey, messageKey) {
+    const file = this.followupFile(sessionKey, messageKey)
+    if (!existsSync(file)) return null
+    try {
+      const info = lstatSync(file)
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 512) throw Error('unsafe')
+      const record = JSON.parse(readFileSync(file, 'utf8'))
+      if (record.version !== 1 || !/^[0-9a-f]{32}$/.test(record.salt) ||
+          !/^[0-9a-f]{64}$/.test(record.history) || !/^[0-9a-f]{64}$/.test(record.text)) throw Error('invalid')
+      return record
+    } catch { throw new BridgeError('turn_followup_custody_corrupt', 409) }
+  }
+
+  verifyFollowup(record, historyFingerprint, text) {
+    if (!record || record.history !== digest(record.salt + '\0' + historyFingerprint) ||
+        (text !== undefined && record.text !== digest(record.salt + '\0' + text))) {
+      throw new BridgeError('turn_followup_identity_conflict', 409)
+    }
+  }
+
+  /** Commit only salted hashes before CoS outbox admission. On a gateway
+   * restart, recover the actual text from CoS's existing durable outbox;
+   * never persist prompt or transcript content into these markers. */
+  claimFollowup(sessionKey, messageKey, historyFingerprint, text) {
+    const old = this.readFollowup(sessionKey, messageKey)
+    if (old) return this.verifyFollowup(old, historyFingerprint, text)
+    const salt = randomBytes(16).toString('hex')
+    const record = { version: 1, salt,
+      history: digest(salt + '\0' + historyFingerprint), text: digest(salt + '\0' + text) }
+    try {
+      mkdirSync(this.directory, { recursive: true, mode: 0o700 })
+      const directory = lstatSync(this.directory)
+      if (!directory.isDirectory() || directory.isSymbolicLink()) throw Error('unsafe_directory')
+      const fd = openSync(this.followupFile(sessionKey, messageKey), 'wx', 0o600)
+      try { writeSync(fd, JSON.stringify(record) + '\n'); fsyncSync(fd) }
+      finally { closeSync(fd) }
+    } catch (error) {
+      if (error?.code === 'EEXIST') return this.verifyFollowup(this.readFollowup(sessionKey, messageKey), historyFingerprint, text)
+      throw new BridgeError('turn_followup_custody_unavailable', 503)
+    }
+  }
 }
