@@ -79,7 +79,10 @@ test('control durable input POST passes AbortSignal through its HTTP transport',
   control.token='test-only'
   const abort = new AbortController()
   await control.send({ id:'immutable-id', text:'test-only' }, { signal:abort.signal })
-  assert.equal(observed, abort.signal)
+  assert.notEqual(observed, abort.signal, 'native signal must not disable the HTTP deadline')
+  assert.equal(observed.aborted, false)
+  abort.abort()
+  assert.equal(observed.aborted, true, 'native cancellation still interrupts the bounded request')
 })
 
 test('follow-up ignores replayed assistant and old terminal after its input receipt', async () => {

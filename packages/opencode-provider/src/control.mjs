@@ -52,7 +52,9 @@ export class CoSControl {
   async request(method, route, body, { signal, stream = false } = {}) {
     if (!this.base) throw new BridgeError('cos_runtime_not_connected', 503)
     const response = await this.fetcher(this.base + route, {
-      method, redirect: 'error', signal: signal ?? AbortSignal.timeout(stream ? 33 * 60_000 : 15000),
+      method, redirect: 'error', signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(stream ? 33 * 60_000 : 15000)])
+        : AbortSignal.timeout(stream ? 33 * 60_000 : 15000),
       headers: { Authorization: `Bearer ${this.token}`, ...(body ? { 'content-type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     }).catch(() => { throw new BridgeError(signal?.aborted ? 'opencode_turn_cancelled' : 'cos_transport_unavailable', signal?.aborted ? 499 : 503) })
