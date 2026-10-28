@@ -23,6 +23,7 @@ test('Windows loopback rejects a skipped CoS SSE revision; restart retries the e
     const add = event => journal.push({ seq: journal.length + 1, ...event })
     const encode = event => 'event: ' + event.kind + '\ndata: ' + JSON.stringify(event) + '\n\n'
     const control = new CoSControl({ directory: root, fetcher: async url => {
+      if (new URL(url).pathname.endsWith('/events')) return Response.json({ events: journal.filter(event => event.seq >= Number(new URL(url).searchParams.get('from'))) })
       const from = Number(new URL(url).searchParams.get('from'))
       curls.push(from)
       const missing = missingRevision ? journal.filter(event => event.seq !== 4) : journal
