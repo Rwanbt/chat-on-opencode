@@ -8,7 +8,7 @@ import { createGateway, stableUUID } from '../src/gateway.mjs'
 import { TurnCustody } from '../src/turn-custody.mjs'
 
 test('Windows loopback never claims interrupted/stalled/unknown CoS turns completed across retry and provider switch',
-  { timeout: 10000 }, async t => {
+  { timeout: 30000 }, async t => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'provider-outcomes-'))
     t.after(() => rmSync(root, { recursive: true, force: true }))
     const key = 'f'.repeat(48)
@@ -51,7 +51,9 @@ test('Windows loopback never claims interrupted/stalled/unknown CoS turns comple
         'x-opencode-message-id': message,
       }, body: JSON.stringify({ model: 'chatgpt-default', stream,
         messages: [...previous, { role: 'user', content: prompt }] }),
-      signal: AbortSignal.timeout(1200) })
+      // Real Windows CI can contend with simultaneous native Electron jobs; 1.2 s
+      // accidentally timed out the HTTP client rather than exercising CoS outcomes.
+      signal: AbortSignal.timeout(5000) })
       return { status: response.status, body: await response.text() }
     }
     const first = await send('native-msg-001', 'start')
