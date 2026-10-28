@@ -152,7 +152,10 @@ export class CoSControl {
             buffer = buffer.slice(index + 2)
             const lines = frame.split('\n')
             const kind = lines.find(line => line.startsWith('event: '))?.slice(7)
-            const payload = lines.find(line => line.startsWith('data: '))?.slice(6)
+            // SSE permits multiple data fields per event; each contributes a
+            // newline. Dropping later fields corrupts turn identity/sequence.
+            const payload = lines.filter(line => line === 'data:' || line.startsWith('data: '))
+              .map(line => line === 'data:' ? '' : line.slice(6)).join('\n')
             if (!payload) continue
             let event
             try { event = JSON.parse(payload) } catch { throw new BridgeError('cos_event_invalid', 502) }
