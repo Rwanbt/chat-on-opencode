@@ -13,7 +13,11 @@ test('cancelled renderer stream stops exact CoS turn without stopping a concurre
   const control={
     async hasSession(){return true}, async assertReady(){},
     async send(input){sends.push(input)},
-    async stop(...args){stops.push(args);return {stopped:true}},
+    async stop(sessionID,turnId,{signal}={}){
+      assert.ok(signal instanceof AbortSignal)
+      stops.push([sessionID,turnId])
+      return {stopped:true}
+    },
     async cancelInput(){throw Error('proven_turn_must_stop_by_turn_id')},
     async *events(sessionID){
       const id=sends.find(x=>x.sessionId===sessionID)?.id

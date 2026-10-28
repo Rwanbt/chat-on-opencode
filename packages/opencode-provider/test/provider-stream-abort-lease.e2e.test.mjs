@@ -20,7 +20,10 @@ test('Windows loopback: stalled CoS SSE cannot retain native session lease after
     const control = {
       async hasSession() { return true }, async assertReady() {},
       async send(value) { sent.push(value) },
-      async stop(...args) { stops.push(args) },
+      async stop(sessionID, turnId, { signal } = {}) {
+        assert.ok(signal instanceof AbortSignal)
+        stops.push([sessionID, turnId])
+      },
       async cancelInput() { throw Error('must_stop_proven_turn_not_input') },
       async *events() {
         const current = ++call
