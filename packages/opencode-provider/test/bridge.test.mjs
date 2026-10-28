@@ -260,6 +260,28 @@ test('a cancelled OpenCode request stops only its exact observed CoS turn', asyn
   ])
 })
 
+test('synchronous Stop transport failure is recorded as unconfirmed for the exact turn', async () => {
+  const abort = new AbortController()
+  const evidence = []
+  const cos = new FakeCoS()
+  cos.stop = () => { throw Error('test_transport_sync_failure') }
+  cos.events = async function* () {
+    yield { kind:'user_message', inputId:this.sent.at(-1).id, seq:1 }
+    yield { kind:'turn_start', turnId:'owned-turn-sync-fail', seq:2 }
+    yield { kind:'assistant_message', turnId:'owned-turn-sync-fail', seq:3,
+      message:{ text:'partial', truncated:false } }
+  }
+  await assert.rejects(runTurn(cos, request, {
+    sessionKey:'ses_sync_stop', messageKey:'msg_sync_stop_001', signal:abort.signal,
+    emit:() => abort.abort(), onEvidence:row => evidence.push(row),
+  }), /opencode_turn_cancelled/)
+  assert.deepEqual(evidence.filter(row => /^(turn_stop_requested|cancel_command_unconfirmed)$/.test(row.stage))
+    .map(row => [row.stage,row.turnId]), [
+    ['turn_stop_requested','owned-turn-sync-fail'],
+    ['cancel_command_unconfirmed','owned-turn-sync-fail'],
+  ])
+})
+
 test('abort before admission never sends a prompt; abort before turn proof only attempts outbox cancel', async () => {
   const already = new AbortController()
   already.abort()

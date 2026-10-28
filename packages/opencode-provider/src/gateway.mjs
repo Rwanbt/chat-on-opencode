@@ -219,15 +219,15 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
     if (signal?.aborted && !complete && sendStarted) {
       // Never stop a later or unproven turn. The CoS broker validates exact turn identity;
       // when Send is not proven, its outbox independently decides whether cancellation is safe.
+      const requested = seenInput && activeTurnID ? 'turn_stop_requested' : 'input_cancel_requested'
+      traceStage(requested)
+      evidence(requested, activeTurnID)
       try {
         const cleanup = seenInput && activeTurnID
           ? control.stop(sessionID, activeTurnID) : control.cancelInput(inputID)
         // Never block a cancelled stream or leak another session's lease.
         // Track only categorical, non-sensitive acknowledgement; a stop failure
         // remains UNCONFIRMED, not an invented cancellation success.
-        const requested = seenInput && activeTurnID ? 'turn_stop_requested' : 'input_cancel_requested'
-        traceStage(requested)
-        evidence(requested, activeTurnID)
         void Promise.resolve(cleanup).then(
           receipt => {
             const stage = cancellationReceiptStage(receipt)
@@ -239,7 +239,10 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
             evidence('cancel_command_unconfirmed', activeTurnID)
           },
         )
-      } catch { /* an unconfirmed stop must never be reported as successful */ }
+      } catch {
+        traceStage('cancel_command_unconfirmed')
+        evidence('cancel_command_unconfirmed', activeTurnID)
+      }
     }
   }
 }
