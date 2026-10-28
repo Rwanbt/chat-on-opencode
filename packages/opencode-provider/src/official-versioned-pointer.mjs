@@ -1,6 +1,6 @@
 // Experimental restart-only config pointer. NOT a live Desktop activation API.
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { readJSONC } from './jsonc-scoped.mjs'
@@ -9,6 +9,69 @@ import { candidateDigest } from './official-upgrade.mjs'
 const sha = b => createHash('sha256').update(b).digest('hex')
 const hex = /^[a-f0-9]{64}$/
 const refuse = reason => { throw Error('versioned_pointer_' + reason) }
+const PUBLISH_METHOD = 'win32_MoveFileExW_REPLACE_EXISTING_WRITE_THROUGH'
+// This invokes the actual Windows kernel32 operation rather than libuv's
+// ordinary rename. The two paths are ALWAYS siblings, and COPY_ALLOWED is
+// intentionally absent; a cross-volume copy/delete must never be substituted
+// for the single rename. The compiler/PowerShell process may fail or be
+// restricted by policy: that is a refusal, not a fallback to renameSync.
+const win32Move = `
+$ErrorActionPreference = 'Stop'
+try {
+  Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+public static class ChatOnOpenCodePointerWin32 {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, EntryPoint = "MoveFileExW", SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  public static extern bool Move(string source, string destination, uint flags);
+  public static int Publish(string source, string destination, string expectedSha) {
+    try {
+      // FileShare deliberately omits WRITE: no new uncooperative writer can
+      // open the destination while we hash its exact handle. Windows
+      // MoveFileExW cannot replace this file while even this own handle is
+      // open (ERROR_ACCESS_DENIED), so release it IMMEDIATELY before rename.
+      // An uncooperative process can still race that final small interval.
+      using (var locked = new FileStream(destination, FileMode.Open, FileAccess.Read,
+                                        FileShare.Read | FileShare.Delete)) {
+        using (var sha = SHA256.Create()) {
+          var actual = BitConverter.ToString(sha.ComputeHash(locked)).Replace("-", "").ToLowerInvariant();
+          if (!String.Equals(actual, expectedSha, StringComparison.Ordinal)) return 42;
+        }
+      }
+      if (!Move(source, destination, 9)) return 43;
+      return 0;
+    } catch { return 44; }
+  }
+}
+'@
+  $result = [ChatOnOpenCodePointerWin32]::Publish($env:COO_POINTER_NATIVE_FROM, $env:COO_POINTER_NATIVE_TO, $env:COO_POINTER_NATIVE_SHA)
+  if ($result -eq 42) { exit 42 }
+  if ($result -ne 0) { exit 23 }
+  [Console]::Out.WriteLine('WIN32_MOVEFILEEX_WRITETHROUGH_OK')
+} catch {
+  [Console]::Error.WriteLine('WIN32_MOVE_HELPER_UNAVAILABLE')
+  exit 24
+}
+`
+function publishNativeWin32(tmp, file, expectedSha) {
+  if (process.platform !== 'win32' || path.dirname(tmp) !== path.dirname(file)) refuse('unsafe_native_publish')
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', win32Move], {
+    env: { ...process.env, COO_POINTER_NATIVE_FROM: tmp, COO_POINTER_NATIVE_TO: file,
+      COO_POINTER_NATIVE_SHA: expectedSha },
+    encoding: 'utf8', shell: false, windowsHide: true, timeout: 15000, maxBuffer: 4096,
+  })
+  // A timeout/abrupt helper death could have happened on either side of the
+  // kernel call. Report UNKNOWN; inspectRestartOnlyPointer can classify
+  // either complete content without guessing or automatically replaying.
+  if (result.status === null || result.error) refuse('native_publish_unknown')
+  if (result.status === 42) refuse('native_cas_changed')
+  if (result.status !== 0 || result.stdout.trim() !== 'WIN32_MOVEFILEEX_WRITETHROUGH_OK') {
+    refuse('native_publish_refused')
+  }
+}
 function idle(probe) {
   if (process.platform !== 'win32') refuse('windows_only')
   const r = probe('powershell.exe', ['-NoProfile','-NonInteractive','-Command',
@@ -126,7 +189,8 @@ function atomic(file, bytes, expectedSha, probe, fault) {
     // fsync on the temporary file protects its contents against process death,
     // but Windows does not guarantee that the rename itself survives sudden
     // power loss without an independently proven directory flush.
-    renameSync(tmp, file) // the ONLY publication point: config bytes old OR new
+    fault?.('after_preflight_before_native')
+    publishNativeWin32(tmp, file, expectedSha) // one same-volume publication point
     fault?.('after_publish')
   } finally { if (fd !== undefined) closeSync(fd); if (existsSync(tmp)) rmSync(tmp) }
 }
@@ -164,7 +228,7 @@ export function publishRestartOnlyPointer(config, from, to, { configSha, fromSha
     if (sha(readFileSync(config)) !== configSha || candidateDigest(from) !== fromSha || candidateDigest(to) !== toSha) refuse('cas_changed')
     atomic(config, next, configSha, probe, fault)
     return { status: 'RESTART_REQUIRED_ONLY', promotionAllowed: false, activationAuthorized: false,
-      previousConfigSha256: configSha, publishedConfigSha256: sha(next) }
+      previousConfigSha256: configSha, publishedConfigSha256: sha(next), publishMethod: PUBLISH_METHOD }
   } finally { if (fd !== undefined) { closeSync(fd); rmSync(lock) } }
 }
 /** Crash recovery is read-only: old or new config, never intermediate bytes. */
