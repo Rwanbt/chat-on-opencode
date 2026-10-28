@@ -456,6 +456,11 @@ try {
   await startDesktop()
   const coldA = await realGeneratedReader('Offline cold A actual reader marker', 'A')
   assert.ok(existsSync(path.join(dirs.receipts, 'A.import')), 'actual_plugin_A_never_imported')
+  // This MUST reuse the same native GUI conversation; a New session action
+  // would conceal the verified transcript bridge's consecutive-user failure.
+  const sameSessionFollowup = await realGeneratedReader('Offline same native session multiturn followup', 'A')
+  assert.equal(sameSessionFollowup, 'A')
+  process.stdout.write('ACTUAL_OFFICIAL_GUI_SAME_SESSION_MULTITURN_SYNTHETIC=PASS\n')
   await stopDesktop()
   // A Desktop process restart without stopping its background CLI is NOT cold:
   // that service retains plugin modules, model settings and session state.
