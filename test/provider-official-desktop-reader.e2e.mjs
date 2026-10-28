@@ -603,6 +603,7 @@ async function openOwnedFreshSession(priorGeneration) {
     if (count > 1) throw Error('ambiguous_native_new_session_buttons')
     await sleep(250)
   }
+  const previousLocation = await cdp.eval('location.pathname + location.search + location.hash')
   assert.equal(count, 1, 'native_new_session_button_not_found')
   assert.equal(await cdp.eval('(() => {const buttons=' + newButton +
     ';if(buttons.length!==1)return false;buttons[0].click();return true})()'),
@@ -611,10 +612,15 @@ async function openOwnedFreshSession(priorGeneration) {
   const deadline = Date.now() + 16_000
   while (Date.now() < deadline) {
     const status = await cdp.eval('(() => ({ oldAnswerPresent:' +
-      '(document.body?.innerText??"").includes(' + JSON.stringify(old) + '),' +
+      '(document.querySelector("main")?.innerText??"").includes(' + JSON.stringify(old) + '),' +
+      'location:location.pathname + location.search + location.hash,' +
       'composers:[...document.querySelectorAll("textarea,[contenteditable=true],[role=textbox]")]' +
       '.filter(e=>e.getClientRects().length>0&&!e.disabled).length }))()')
-    if (status.composers === 1 && !status.oldAnswerPresent) return
+    // The body includes persistent session history/sidebar. Require the actual
+    // conversation surface to clear, or an observed native route transition;
+    // never treat an unchanged button click as proof of a new conversation.
+    if (status.composers === 1 &&
+        (!status.oldAnswerPresent || status.location !== previousLocation)) return
     await sleep(250)
   }
   throw Error('native_new_session_did_not_display_fresh_composer')
