@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import http from 'node:http'
 import path from 'node:path'
@@ -123,6 +123,14 @@ for (const generation of ['A', 'B']) {
   }
   const entry = path.join(pluginDir, 'plugin', 'index.ts')
   const source = await readFile(entry, 'utf8')
+  // The test-only copy records sanitized gateway failure codes; this exposes
+  // the exact early 409/503 reason when a GUI request never yields a reply.
+  const gatewayFile = path.join(pluginDir, 'src', 'gateway.mjs')
+  const gatewaySource = await readFile(gatewayFile, 'utf8')
+  assert.ok(gatewaySource.includes('diagnostics.lastFailure = code'),
+    'gateway_error_contract_changed')
+  await writeFile(gatewayFile, gatewaySource.replace('diagnostics.lastFailure = code',
+    'diagnostics.lastFailure = code\n      traceStage(code)'))
   const importReceipt = path.join(dirs.receipts, generation + '.import')
   const providerPort = await port()
   // A pointer changes only plugins[0].package. The unchanged JSONC retains
@@ -156,7 +164,10 @@ Object.assign(env, {
   XDG_CACHE_HOME: dirs.cache, XDG_STATE_HOME: dirs.state,
   OPENCODE_CONFIG_DIR: dirs.config, OPENCODE_DESKTOP_TEST_ROOT: dirs.desktopRoot,
   CHAT_ON_OPENCODE_STAGE_TRACE: path.join(dirs.receipts, 'stages.txt'),
-  CHAT_ON_OPENCODE_TEST_TRACE_DIR: dirs.provider,
+  // Mock route tracing checks path.dirname(runtimeData); log only synthetic
+  // request method/path into the disposable runtime, and redact session IDs
+  // when reporting a failure.
+  CHAT_ON_OPENCODE_TEST_TRACE_DIR: root,
   OPENCODE_CONFIG_PROJECT_DISABLE: '1', OPENCODE_DISABLE_DEFAULT_PLUGINS: '1',
   OPENCODE_DISABLE_AUTOUPDATE: '1', OPENCODE_DISABLE_MODELS_FETCH: '1',
   HTTP_PROXY: 'http://127.0.0.1:9', HTTPS_PROXY: 'http://127.0.0.1:9',
@@ -366,6 +377,27 @@ async function stopDesktop() {
   }
   owned = null
 }
+async function reloadOwnedRenderer() {
+  // Register BEFORE navigation so a fast local renderer cannot beat the
+  // observer. A fixed delay would be a race on slower/faster CI hosts.
+  const client = cdp
+  const loaded = new Promise((resolve, reject) => {
+    const complete = event => {
+      let payload
+      try { payload = JSON.parse(event.data) } catch { return }
+      if (payload.method !== 'Page.loadEventFired') return
+      clearTimeout(timer)
+      client.socket.removeEventListener('message', complete)
+      resolve()
+    }
+    const timer = setTimeout(() => {
+      client.socket.removeEventListener('message', complete)
+      reject(Error('owned_renderer_reload_timeout'))
+    }, 15_000)
+    client.socket.addEventListener('message', complete)
+  })
+  await Promise.all([client.call('Page.reload', { ignoreCache:true }), loaded])
+}
 function stopOwnedManagedCli() {
   // Desktop may leave its child service alive after the owned HWND exits.
   // Resolve ONLY the disposable port that this runner chose and verify the
@@ -395,6 +427,50 @@ function stopOwnedManagedCli() {
   assert.equal(result.status, 0, 'owned_service_cleanup_unproven:' +
     String(result.stderr).slice(0, 350).replaceAll(dirs.desktopRoot, '[owned-root]'))
   return result.stdout.trim()
+}
+const ownedEndpoint = path.join(dirs.provider, 'control-api', 'endpoint.json')
+async function ownedRuntimePid() {
+  if (!existsSync(ownedEndpoint)) return null
+  const endpoint = JSON.parse(await readFile(ownedEndpoint, 'utf8'))
+  assert.ok(Number.isSafeInteger(endpoint.pid) && endpoint.pid > 0,
+    'test_owned_runtime_endpoint_invalid')
+  return endpoint.pid
+}
+async function awaitRuntimeStopped(pid) {
+  const deadline = Date.now() + 15_000
+  while (Date.now() < deadline) {
+    // Windows only; read the exact test-owned PID, never enumerate personal
+    // profiles or kill a process outside the disposable Desktop service port.
+    const script = pid === null ? "'ABSENT'" :
+      `$p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($null -eq $p) { 'ABSENT' } else { 'ALIVE' }`
+    const result = spawnSync('powershell.exe', ['-NoProfile','-NonInteractive','-Command',script], {
+      windowsHide:true,shell:false,encoding:'utf8',timeout:7000,
+    })
+    assert.equal(result.status, 0, 'owned_runtime_exit_unverifiable')
+    if (!existsSync(ownedEndpoint) && /^ABSENT\s*$/.test(result.stdout)) return
+    await sleep(250)
+  }
+  throw Error('old_test_owned_runtime_endpoint_or_pid_still_alive')
+}
+async function coldStopDesktop() {
+  const runtimePid = await ownedRuntimePid()
+  await stopDesktop()
+  assert.match(stopOwnedManagedCli(), /ONLY_TEST_OWNED_SERVICE_STOPPED|OWNED_SERVICE_ALREADY_ABSENT/)
+  await awaitRuntimeStopped(runtimePid)
+}
+async function journalState() {
+  const file = path.join(dirs.provider, 'offline-synthetic-journal.json')
+  if (!existsSync(file)) return { exists:false }
+  const saved = JSON.parse(await readFile(file, 'utf8'))
+  assert.ok(Array.isArray(saved.sessions) && Array.isArray(saved.events),
+    'synthetic_journal_invalid')
+  const records = saved.events.flatMap(entry => Array.isArray(entry[1]) ? entry[1] : [])
+  return { exists:true, sessionCount:saved.sessions.length,
+    eventGroupCount:saved.events.length, records:records.length,
+    userReceipts:records.filter(event => event.kind === 'user_message').length,
+    completedTurns:records.filter(event => event.kind === 'turn_end' && event.outcome === 'completed').length,
+    custodyFiles:existsSync(path.join(dirs.provider, '.chat-on-opencode-turn-custody'))
+      ? (await readdir(path.join(dirs.provider, '.chat-on-opencode-turn-custody'))).length : 0 }
 }
 async function realGeneratedReader(prompt, expected) {
   // An actual on-screen composer must accept user input. Do not send a model
@@ -462,6 +538,16 @@ async function realGeneratedReader(prompt, expected) {
     historicMarkers:['A','B'].filter(gen => body.includes(mark(gen))),
     pluginAImported:existsSync(path.join(dirs.receipts,'A.import')),
     pluginBImported:existsSync(path.join(dirs.receipts,'B.import')),
+    syntheticJournal:await journalState(),
+    failureKinds:['turn_first_message_pending','turn_first_message_conflict',
+      'cos_replay_input_unavailable','cos_transport_unavailable','cos_stream_ended_without_terminal']
+      .filter(kind => body.includes(kind)),
+    syntheticControlRoutes:existsSync(path.join(dirs.provider,'fixture-routes.txt'))
+      ? (await readFile(path.join(dirs.provider,'fixture-routes.txt'),'utf8')).trim()
+        .split(/\r?\n/).slice(-22).map(route => route
+          .replace(/\/v1\/sessions\/[0-9a-z-]+/g, '/v1/sessions/{id}')
+          .replace(/\/v1\/inputs\/[0-9a-z-]+/g, '/v1/inputs/{id}'))
+      : [],
     stages:existsSync(path.join(dirs.receipts,'stages.txt'))
       ? (await readFile(path.join(dirs.receipts,'stages.txt'),'utf8')).trim().split(/\r?\n/).slice(-16)
       : [],
@@ -481,6 +567,11 @@ try {
   await startDesktop()
   const coldA = await realGeneratedReader('Offline cold A actual reader marker', 'A')
   assert.ok(existsSync(path.join(dirs.receipts, 'A.import')), 'actual_plugin_A_never_imported')
+  const persistedA = await journalState()
+  assert.ok(persistedA.exists && persistedA.sessionCount > 0 &&
+    persistedA.userReceipts > 0 && persistedA.completedTurns > 0,
+  'synthetic_CoS_journal_not_durable_after_first_reply')
+  process.stderr.write('SYNTHETIC_FIRST_TURN_PERSISTENCE=' + JSON.stringify(persistedA) + '\n')
   if (ci) {
     // The publisher MUST reject a live official GUI. This is the required
     // RED case: do not bypass its real Windows process scan with a fake probe.
@@ -488,13 +579,11 @@ try {
     assert.throws(() => publishRestartOnlyPointer(configFile, a, b, firstProof),
       /versioned_pointer_busy_or_unknown/, 'live_gui_must_block_pointer')
     assert.deepEqual(await readFile(configFile), initialConfig, 'busy_attempt_modified_config')
-    await cdp.call('Page.reload', { ignoreCache:true })
-    await sleep(1500)
+    await reloadOwnedRenderer()
     const hotA = await realGeneratedReader('Offline hot A same active reader', 'A')
-    await stopDesktop()
+    await coldStopDesktop()
     // Closing the HWND alone is insufficient: the vendor's managed CLI keeps
     // plugin modules in memory. Stop only the disposable service on our port.
-    assert.match(stopOwnedManagedCli(), /ONLY_TEST_OWNED_SERVICE_STOPPED|OWNED_SERVICE_ALREADY_ABSENT/)
     assert.throws(() => publishRestartOnlyPointer(configFile, a, b, {
       ...firstProof, fault:point => { if (point === 'before_publish') throw Error('RED_before_commit') },
     }), /RED_before_commit/, 'pre_rename_failure_must_be_observable')
@@ -518,11 +607,9 @@ try {
     await startDesktop()
     const coldB = await realGeneratedReader('Offline cold B through published pointer', 'B')
     assert.ok(existsSync(path.join(dirs.receipts, 'B.import')), 'actual_plugin_B_never_imported')
-    await cdp.call('Page.reload', { ignoreCache:true })
-    await sleep(1500)
+    await reloadOwnedRenderer()
     const hotB = await realGeneratedReader('Offline hot B same active reader', 'B')
-    await stopDesktop()
-    assert.match(stopOwnedManagedCli(), /ONLY_TEST_OWNED_SERVICE_STOPPED|OWNED_SERVICE_ALREADY_ABSENT/)
+    await coldStopDesktop()
     const reverted = publishRestartOnlyPointer(configFile, b, a, {
       configSha:promoted.publishedConfigSha256, fromSha:bSha, toSha:aSha,
     })
@@ -530,7 +617,7 @@ try {
     assert.deepEqual(await readFile(configFile), initialConfig, 'rollback_not_byte_exact')
     await startDesktop()
     const rollbackColdA = await realGeneratedReader('Offline cold A restored pointer', 'A')
-    await stopDesktop()
+    await coldStopDesktop()
     process.stdout.write(JSON.stringify({
       verified:'ACTUAL_OFFICIAL_GUI_VERSIONED_POINTER_RESTART_ONLY',
       modelId:'chat-on-opencode/chatgpt-default', coldA, hotA, coldB, hotB, rollbackColdA,
@@ -539,17 +626,15 @@ try {
     }) + '\n')
   } else {
     // Explicit disposable local extracts keep the earlier A→cold B smoke.
-    await stopDesktop()
-    assert.match(stopOwnedManagedCli(), /ONLY_TEST_OWNED_SERVICE_STOPPED|OWNED_SERVICE_ALREADY_ABSENT/)
+    await coldStopDesktop()
     await configFor('B')
     await startDesktop()
     const coldB = await realGeneratedReader('Offline cold B actual reader marker', 'B')
     assert.ok(existsSync(path.join(dirs.receipts, 'B.import')), 'actual_plugin_B_never_imported')
     await configFor('A')
-    await cdp.call('Page.reload', { ignoreCache:true })
-    await sleep(1500)
+    await reloadOwnedRenderer()
     const hotB = await realGeneratedReader('Offline hot B actual reader marker', 'B')
-    await stopDesktop()
+    await coldStopDesktop()
     process.stdout.write(JSON.stringify({ verified:'ACTUAL_OFFICIAL_GUI_GENERATED_RENDER',
       modelId:'chat-on-opencode/chatgpt-default', coldA, coldB, hotB,
       onlyTestOwnedWindows:true, personalProfilesUntouched:true }) + '\n')
