@@ -712,7 +712,7 @@ async function realGeneratedReader(prompt, expected) {
         process.stdout.write('OFFICIAL_GUI_DOM_STREAM_CATEGORICAL=' + JSON.stringify({
           synthetic:true, observed:domStream, progressiveProven:false,
           loopbackResponses:ownedNetwork.responses.length,
-        }) + '\\n')
+        }) + '\n')
         process.stdout.write('OWNED_REAL_GUI_NONCE_RESPONSE=' + JSON.stringify({
           generation, probe:prompt, match:true, modelId:'chat-on-opencode/chatgpt-default',
         }) + '\n')
