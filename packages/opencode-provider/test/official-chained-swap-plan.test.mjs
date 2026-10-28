@@ -10,7 +10,7 @@ import { installProvider, inspectInstalledProvider } from '../src/official-insta
 import { stageManagedSwap, activateManagedSwap, managedSwapStatus } from '../bin/official-managed-swap.mjs'
 import { candidateDigest } from '../src/official-upgrade.mjs'
 import { planChainedManagedSwap } from '../src/official-chained-swap-plan.mjs'
-import { prepareChainedGeneration, recoverPreparedChainedGeneration, transitionChainedGeneration, recoverChainedTransition, rollbackChainedTransition, inspectChainedTransitionLock, proveDeadChainedLock } from '../src/official-chained-swap-stage.mjs'
+import { prepareChainedGeneration, recoverPreparedChainedGeneration, transitionChainedGeneration, recoverChainedTransition, rollbackChainedTransition, inspectChainedTransitionLock, proveDeadChainedLock, inspectDirectChainedPromotion } from '../src/official-chained-swap-stage.mjs'
 import { parseChainArgs } from '../bin/official-chained-swap-plan.mjs'
 
 const bundle = fileURLToPath(new URL('..', import.meta.url))
@@ -294,4 +294,21 @@ test('pre-rename fault gates refuse mutation and keep original V1 journal intact
     if (cut === 'before_activate') assert.equal(recoverChainedTransition(v.config, v.next, v.expected, { probe }).activated, true)
     else assert.equal(recoverPreparedChainedGeneration(v.config, v.next, v.expected).recovered, true)
   }
+})
+
+test('direct A/B to E read-only gate requires prepared CAS and offline idle, never authorizes', { skip: process.platform !== 'win32' }, t => {
+  const v = fixture(t)
+  const idle = { probe: () => ({ stdout: '0\r\n', status: 0 }) }
+  assert.throws(() => inspectDirectChainedPromotion(v.config, v.next, v.expected, idle), /chained_swap_prepare_incomplete/)
+  prepareChainedGeneration(v.config, v.next, v.expected)
+  const ready = inspectDirectChainedPromotion(v.config, v.next, v.expected, idle)
+  assert.equal(ready.status, 'READY_FOR_EXPLICIT_OFFLINE_TRANSITION')
+  assert.equal(ready.promotionAllowed, false)
+  assert.equal(ready.activationAuthorized, false)
+  assert.equal(ready.candidateSha256, v.expected)
+  assert.throws(() => inspectDirectChainedPromotion(v.config, v.next, v.expected,
+    { probe: () => ({ stdout: '1\r\n', status: 0 }) }), /chained_swap_processes_active_or_unknown/)
+  const journal = path.join(path.dirname(v.config), '.chat-on-opencode-directory-switch.json')
+  writeFileSync(journal, '{}')
+  assert.throws(() => inspectDirectChainedPromotion(v.config, v.next, v.expected, idle), /chained_swap/)
 })
