@@ -41,7 +41,7 @@ public static class ChatOnOpenCodePointerWin32 {
           if (!String.Equals(actual, expectedSha, StringComparison.Ordinal)) return 42;
         }
       }
-      if (!Move(source, destination, 9)) return 43;
+      if (!Move(source, destination, 9)) return 1000 + Marshal.GetLastWin32Error();
       return 0;
     } catch { return 44; }
   }
@@ -49,6 +49,10 @@ public static class ChatOnOpenCodePointerWin32 {
 '@
   $result = [ChatOnOpenCodePointerWin32]::Publish($env:COO_POINTER_NATIVE_FROM, $env:COO_POINTER_NATIVE_TO, $env:COO_POINTER_NATIVE_SHA)
   if ($result -eq 42) { exit 42 }
+  if ($result -ge 1000) {
+    [Console]::Error.WriteLine('WIN32_MOVE_ERROR_' + ($result - 1000))
+    exit 23
+  }
   if ($result -ne 0) { exit 23 }
   [Console]::Out.WriteLine('WIN32_MOVEFILEEX_WRITETHROUGH_OK')
 } catch {
@@ -68,6 +72,12 @@ function publishNativeWin32(tmp, file, expectedSha) {
   // either complete content without guessing or automatically replaying.
   if (result.status === null || result.error) refuse('native_publish_unknown')
   if (result.status === 42) refuse('native_cas_changed')
+  // Preserve the fail-closed outcome, but report a categorical Win32 code so
+  // sharing violations and access-policy denials are distinguishable in CI.
+  const nativeError = /^WIN32_MOVE_ERROR_(\d+)\s*$/m.exec(result.stderr ?? '')
+  if (result.status === 23 && nativeError) {
+    refuse('native_publish_refused_win32_' + nativeError[1])
+  }
   if (result.status !== 0 || result.stdout.trim() !== 'WIN32_MOVEFILEEX_WRITETHROUGH_OK') {
     refuse('native_publish_refused')
   }
