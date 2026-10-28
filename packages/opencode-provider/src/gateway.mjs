@@ -124,7 +124,9 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
       turnCustody?.claimFollowup(sessionKey, messageKey, messageFingerprint, text)
     }
     rememberInput?.(text)
-    await control.send({ id: inputID, ...(first ? {} : { sessionId: sessionID }), text })
+    // A disconnect during POST /inputs must not hold the native session lease
+    // indefinitely. The deterministic input id makes a later retry idempotent.
+    await abortableRead(control.send({ id: inputID, ...(first ? {} : { sessionId: sessionID }), text }), signal)
     traceStage('input_admitted')
     if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
     // A native provider switch can close the HTTP socket while a remote SSE
@@ -201,8 +203,10 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
       // Never stop a later or unproven turn. The CoS broker validates exact turn identity;
       // when Send is not proven, its outbox independently decides whether cancellation is safe.
       try {
-        if (seenInput && activeTurnID) await control.stop(sessionID, activeTurnID)
-        else await control.cancelInput(inputID)
+        const cleanup = seenInput && activeTurnID
+          ? control.stop(sessionID, activeTurnID) : control.cancelInput(inputID)
+        // Failure to acknowledge cancellation cannot stall a new native turn.
+        void Promise.resolve(cleanup).catch(() => undefined)
       } catch { /* an unconfirmed stop must never be reported as successful */ }
     }
   }
