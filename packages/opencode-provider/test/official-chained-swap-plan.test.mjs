@@ -5,7 +5,8 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symli
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { once } from 'node:events'
 import { installProvider, inspectInstalledProvider } from '../src/official-install.mjs'
 import { stageManagedSwap, activateManagedSwap, managedSwapStatus } from '../bin/official-managed-swap.mjs'
 import { candidateDigest } from '../src/official-upgrade.mjs'
@@ -243,7 +244,7 @@ test('transition lock refuses concurrent activation and preserved journal remain
   const probe = () => ({ stdout: '0\r\n', status: 0 })
   prepareChainedGeneration(v.config, v.next, v.expected)
   writeFileSync(lock, 'other transaction')
-  assert.throws(() => transitionChainedGeneration(v.config, v.next, v.expected, { probe }), /EEXIST/)
+  assert.throws(() => transitionChainedGeneration(v.config, v.next, v.expected, { probe }), /chained_swap_lock_invalid/)
   assert.deepEqual(readFileSync(lock, 'utf8'), 'other transaction')
   assert.deepEqual(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json')), v.journalBefore)
 })
@@ -314,3 +315,73 @@ test('pre-rename fault gates refuse mutation and keep original V1 journal intact
     else assert.equal(recoverPreparedChainedGeneration(v.config, v.next, v.expected).recovered, true)
   }
 })
+
+test('real Windows process crashes at chain rename boundaries recover with original V1 bytes intact',
+  { skip: process.platform !== 'win32' }, t => {
+    for (const cut of ['before_park', 'after_park', 'after_activate', 'after_rollback_park']) {
+      const v = fixture(t)
+      const root = path.dirname(v.config)
+      const original = readFileSync(path.join(root, '.chat-on-opencode-directory-previous', 'plugin', 'index.ts'))
+      prepareChainedGeneration(v.config, v.next, v.expected)
+      if (cut === 'after_rollback_park') transitionChainedGeneration(v.config, v.next, v.expected, quiet)
+      const action = cut === 'after_rollback_park' ? 'rollbackChainedTransition' : 'transitionChainedGeneration'
+      const script = `
+        const { ${action} } = await import(${JSON.stringify(new URL('../src/official-chained-swap-stage.mjs', import.meta.url).href)})
+        ${action}(${JSON.stringify(v.config)}, ${JSON.stringify(v.next)}, ${JSON.stringify(v.expected)}, {
+          probe: () => ({ status: 0, stdout: '0\\r\\n' }),
+          fault: point => { if (point === ${JSON.stringify(cut)}) process.exit(93) },
+        })
+        process.exit(94)
+      `
+      const child = spawnSync(process.execPath, ['--input-type=module', '-e', script],
+        { encoding: 'utf8', timeout: 15000, windowsHide: true })
+      assert.equal(child.status, 93, `expected process crash ${cut}: ${child.stderr}`)
+      const lock = path.join(root, '.chat-on-opencode-chain-transition.lock')
+      assert.equal(existsSync(lock), true)
+      if (cut === 'after_rollback_park') {
+        assert.equal(rollbackChainedTransition(v.config, v.next, v.expected, quiet).rolledBack, true)
+      } else if (cut === 'before_park') {
+        assert.equal(transitionChainedGeneration(v.config, v.next, v.expected, quiet).activated, true)
+      } else {
+        assert.equal(recoverChainedTransition(v.config, v.next, v.expected, quiet).activated, true)
+      }
+      assert.equal(existsSync(lock), false)
+      assert.deepEqual(readFileSync(path.join(root, '.chat-on-opencode-directory-previous', 'plugin', 'index.ts')), original)
+      assert.deepEqual(readFileSync(v.config), v.configBefore)
+      assert.deepEqual(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json')), v.journalBefore)
+    }
+  })
+
+test('live Windows chain lock owner blocks a concurrent transition until the owning process exits',
+  { skip: process.platform !== 'win32', timeout: 20000 }, async t => {
+    const v = fixture(t)
+    prepareChainedGeneration(v.config, v.next, v.expected)
+    const ready = path.join(v.root, 'held-lock-ready')
+    const script = `
+      const { writeFileSync } = await import('node:fs')
+      const { transitionChainedGeneration } = await import(${JSON.stringify(new URL('../src/official-chained-swap-stage.mjs', import.meta.url).href)})
+      transitionChainedGeneration(${JSON.stringify(v.config)}, ${JSON.stringify(v.next)}, ${JSON.stringify(v.expected)}, {
+        probe: () => ({ status: 0, stdout: '0\\r\\n' }),
+        fault: point => { if (point === 'before_park') {
+          writeFileSync(${JSON.stringify(ready)}, 'ready')
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15000)
+        } },
+      })
+    `
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script],
+      { windowsHide: true, stdio: 'ignore' })
+    const exited = once(child, 'exit')
+    try {
+      const deadline = Date.now() + 10000
+      while (!existsSync(ready) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 40))
+      assert.equal(existsSync(ready), true, 'child reached live-lock boundary')
+      assert.equal(inspectChainedTransitionLock(v.config).reason, 'owner_alive_or_unknown')
+      assert.throws(() => transitionChainedGeneration(v.config, v.next, v.expected, quiet),
+        /chained_swap_lock_owner_active/)
+      assert.deepEqual(readFileSync(v.config), v.configBefore)
+    } finally {
+      child.kill()
+      await exited
+    }
+    assert.equal(transitionChainedGeneration(v.config, v.next, v.expected, quiet).activated, true)
+  })

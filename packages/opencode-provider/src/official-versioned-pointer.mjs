@@ -1,6 +1,6 @@
 // Experimental restart-only config pointer. NOT a live Desktop activation API.
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, fsyncSync, linkSync, lstatSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { readJSONC } from './jsonc-scoped.mjs'
@@ -94,6 +94,7 @@ const managedMarkers = [
   '.chat-on-opencode-directory-previous', '.chat-on-opencode-chain-prepare.json',
   '.chat-on-opencode-chain-next', '.chat-on-opencode-chain-active-previous',
   '.chat-on-opencode-chain-transition.lock',
+  '.chat-on-opencode-chain-transition.lock.recover',
 ]
 function noManagedTransition(config) {
   const dir = path.dirname(config)
@@ -142,12 +143,32 @@ function lockOwner() {
   if (start === 'MISSING') refuse('lock_owner_unverifiable')
   return { version: 1, pid: process.pid, start, nonce: randomUUID() }
 }
+// Materialize the complete owner record before publishing its name. The old
+// O_EXCL -> write window left an empty, permanently unverifiable lock when the
+// process died in between. Hard-link creation fails if another owner won.
+function createLock(file, owner) {
+  const tmp = file + '.' + randomUUID() + '.tmp'
+  let fd
+  try {
+    fd = openSync(tmp, 'wx', 0o600)
+    writeFileSync(fd, JSON.stringify(owner))
+    fsyncSync(fd)
+    closeSync(fd); fd = undefined
+    linkSync(tmp, file)
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+    if (existsSync(tmp)) rmSync(tmp)
+  }
+}
+function releaseOwned(file, owner) {
+  if (existsSync(file) && readFileSync(file).equals(Buffer.from(JSON.stringify(owner)))) rmSync(file)
+}
 function abandonedLock(config, lock, recoverLock, configSha, from, to, fromSha, toSha, probe) {
   // The recovery marker keeps compliant publishers from acquiring the path
   // during the one stale-lock removal. It is never evidence that a writer died.
-  let recoveryFd
+  const recoveryOwner = lockOwner()
   try {
-    recoveryFd = openSync(recoverLock, 'wx', 0o600)
+    createLock(recoverLock, recoveryOwner)
     idle(probe)
     if (!existsSync(lock) || !lstatSync(lock).isFile() || lstatSync(lock).isSymbolicLink()) refuse('lock_unverifiable')
     const original = readFileSync(lock)
@@ -164,7 +185,7 @@ function abandonedLock(config, lock, recoverLock, configSha, from, to, fromSha, 
       candidateDigest(to) !== toSha || !readFileSync(lock).equals(original)) refuse('cas_changed')
     rmSync(lock)
   } finally {
-    if (recoveryFd !== undefined) { closeSync(recoveryFd); rmSync(recoverLock) }
+    releaseOwned(recoverLock, recoveryOwner)
   }
 }
 function atomic(file, bytes, expectedSha, probe, fault) {
@@ -205,18 +226,16 @@ export function publishRestartOnlyPointer(config, from, to, { configSha, fromSha
   noManagedTransition(config)
   const lock = path.join(path.dirname(config), '.chat-on-opencode-versioned-pointer.lock')
   const recoverLock = lock + '.recover'
-  let fd
+  const owner = lockOwner()
   try {
     if (existsSync(recoverLock)) refuse('recovery_active')
-    try { fd = openSync(lock, 'wx', 0o600) }
+    try { createLock(lock, owner) }
     catch (error) {
       if (error?.code !== 'EEXIST') throw error
       abandonedLock(config, lock, recoverLock, configSha, from, to, fromSha, toSha, probe)
-      fd = openSync(lock, 'wx', 0o600)
+      createLock(lock, owner)
     }
     if (existsSync(recoverLock)) refuse('recovery_active')
-    writeFileSync(fd, JSON.stringify(lockOwner()))
-    fsyncSync(fd)
     idle(probe)
     noManagedTransition(config)
     const old = readFileSync(config)
@@ -229,7 +248,7 @@ export function publishRestartOnlyPointer(config, from, to, { configSha, fromSha
     atomic(config, next, configSha, probe, fault)
     return { status: 'RESTART_REQUIRED_ONLY', promotionAllowed: false, activationAuthorized: false,
       previousConfigSha256: configSha, publishedConfigSha256: sha(next), publishMethod: PUBLISH_METHOD }
-  } finally { if (fd !== undefined) { closeSync(fd); rmSync(lock) } }
+  } finally { releaseOwned(lock, owner) }
 }
 /** Crash recovery is read-only: old or new config, never intermediate bytes. */
 export function inspectRestartOnlyPointer(config, oldSha, newSha) {
