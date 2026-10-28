@@ -31,13 +31,14 @@ test('official 2.2.0 run --standalone launches real packaged Electron without in
     for (const name of ['home', 'appdata', 'localappdata', 'config', 'data', 'cache', 'workspace', 'profile']) {
       mkdirSync(path.join(root, name))
     }
-    // Use the real CoS schema defaults rather than a minimal JSON object that
-    // passes gateway consent but can fail Electron's config migration/startup.
-    const fixture = spawnSync('bun', ['run', 'scripts/provider-isolated-profile.ts', path.join(root, 'profile')], {
-      cwd: path.resolve(here, '../../..'), shell: false, windowsHide: true,
-      encoding: 'utf8', timeout: 15_000,
-    })
-    assert.equal(fixture.status, 0, 'isolated consent fixture must use real CoS schema')
+    // Frozen, non-secret output of scripts/provider-isolated-profile.ts.
+    // No app-module imports or Bun compilation are needed at test runtime.
+    const consent = JSON.parse(readFileSync(path.join(here, 'fixtures', 'consented-provider-default-config.json'), 'utf8'))
+    assert.equal(consent.ui.chatBrowser, 'cos')
+    assert.deepEqual(consent.controlApi, { enabled: true, allowActions: true })
+    assert.deepEqual(consent.roots, [])
+    assert.ok(Object.values(consent.capabilities).every(value => value === false))
+    writeFileSync(path.join(root, 'profile', 'config.json'), JSON.stringify(consent))
     const bundle = path.join(root, 'bundle')
     cpSync(source, bundle, { recursive: true, filter: file => !/node_modules|\.git/.test(file) })
     const entry = path.join(bundle, 'plugin', 'index.ts')
