@@ -107,7 +107,10 @@ test('Windows loopback provider switch cancels a pending session lookup and reta
     assert.equal(resumed.json.choices[0].message.content, 'CoS-2')
     assert.equal(sent.length, 2)
     assert.equal(sent[1].sessionId, sent[0].id, 'CoS stable identity survives switching to another provider')
-    assert.equal(sent[1].text, 'back to CoS', 'return sends only latest user message')
+    assert.match(sent[1].text, /foreign request/, 'return includes previously completed intervening native context')
+    assert.match(sent[1].text, /foreign-answer/)
+    assert.match(sent[1].text, /back to CoS/)
+    assert.doesNotMatch(sent[1].text, /CoS-1/, 'existing CoS answer never replays')
     releaseLookup()
   })
 
