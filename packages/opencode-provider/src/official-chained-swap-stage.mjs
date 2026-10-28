@@ -160,6 +160,24 @@ export function recoverPreparedChainedGeneration(config, candidate, expectedDige
     originalRetained: true, activeRetained: true }
 }
 
+/** Read-only direct A/B -> E gate: all retained generations and the prepared
+ * receipt must match, and Windows must have no OpenCode processes. An observed
+ * safe snapshot is NOT authorization to perform a future mutation. */
+export function inspectDirectChainedPromotion(config, candidate, digest, { probe } = {}) {
+  offline(probe)
+  const root = path.dirname(path.resolve(config))
+  if (existsSync(path.join(root, LOCK)) || existsSync(path.join(root, PARKED))) {
+    throw Error('chained_swap_direct_transition_occupied')
+  }
+  const state = recoverPreparedChainedGeneration(config, candidate, digest)
+  offline(probe)
+  return { status: 'READY_FOR_EXPLICIT_OFFLINE_TRANSITION',
+    promotionAllowed: false, activationAuthorized: false,
+    candidateSha256: state.candidateSha256,
+    originalRetained: state.originalRetained, activeRetained: state.activeRetained,
+    requiresHumanReview: true, requiresFreshCASOnTransition: true }
+}
+
 /** Offline promotion; the V1 original and its journal remain untouched. */
 export function transitionChainedGeneration(config, candidate, digest, { fault, probe } = {}) {
   offline(probe)
