@@ -120,6 +120,7 @@ export class CoSControl {
 
   async *events(sessionID, { from = 0, signal } = {}) {
     let cursor = from
+    let consecutivePrematureEOF = 0
     // CoS ends a healthy SSE stream after 30 minutes. Reopen by its recorded sequence cursor,
     // never repeat the already admitted POST /inputs or claim a turn is complete on socket EOF.
     for (let renewal = 0; renewal < 8; renewal++) {
@@ -149,7 +150,14 @@ export class CoSControl {
         readStream: for (;;) {
           const { done, value } = await reader.read()
           if (signal?.aborted) throw new BridgeError('cos_stream_aborted', 499)
-          if (done) throw new BridgeError('cos_stream_ended_without_terminal', 502)
+          if (done) {
+            // The browser bridge can close a valid SSE transport without an
+            // end frame. Never replay POST /inputs or declare completion:
+            // reopen only the read stream from the last verified journal seq.
+            if (++consecutivePrematureEOF > 2) throw new BridgeError('cos_stream_ended_without_terminal', 502)
+            rotated = true
+            break readStream
+          }
           // SSE accepts LF, CRLF and bare CR. Normalize incrementally: a CRLF
           // split across network chunks must become ONE line break, not two.
           // This also preserves Unicode characters split by TextDecoder.
@@ -188,6 +196,7 @@ export class CoSControl {
               throw new BridgeError('cos_event_sequence_gap', 502)
             }
             cursor = event.seq + 1
+            consecutivePrematureEOF = 0
             yield event
           }
         }
