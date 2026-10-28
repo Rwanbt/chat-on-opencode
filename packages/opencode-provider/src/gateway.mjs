@@ -74,7 +74,7 @@ export async function awaitProviderReady(control, {
 }
 
 export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal,
-  nativeTools = 'off', checkpoint, previousInput, rememberInput } = {}) {
+  nativeTools = 'off', checkpoint, previousInput, rememberInput, turnCustody } = {}) {
   traceStage('gateway_turn_received')
   if (!sessionKey || sessionKey.length > 256 || /[\r\n]/.test(sessionKey)) throw new BridgeError('opencode_session_id_required', 422)
   if (!messageKey || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
@@ -88,12 +88,17 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
   const turnID = stableUUID('turn:' + sessionKey + ':' + messageKey + (result ? ':' + result.callId : ''))
   const first = !(await abortableRead(control.hasSession(sessionID, { signal }), signal))
   if (result && first) throw new BridgeError('native_tool_result_without_session', 422)
+  const firstRecord = !result && turnCustody?.read(sessionKey)
+  const originalFirst = !result && turnCustody?.isOriginal(firstRecord, messageKey)
+  if (first && firstRecord && !originalFirst) throw new BridgeError('turn_first_message_pending', 409)
   const text = previousInput ?? (result ? result.text : (first || readEnabled
     ? requestText(request.messages, first)
+    : originalFirst ? requestText(request.messages, true)
     : continuationWithTranscript(plainMessages(request.messages), checkpoint)) +
     (readEnabled ? '\n\n' + READ_INSTRUCTIONS : ''))
   if (text.length > 64000) throw new BridgeError('cos_input_too_large', 413)
-  const inputID = first ? sessionID : turnID
+  if (originalFirst && firstRecord) turnCustody.verify(firstRecord, messageKey, text)
+  const inputID = first || originalFirst ? sessionID : turnID
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
   // A hidden provider with no ChatGPT session or browser bridge must not accept
   // a prompt into the durable outbox that no authenticated page can deliver.
@@ -113,20 +118,26 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
     // request was cancelled during admission, CoS must decide whether the exact
     // outbox input can still be cancelled.
     sendStarted = true
+    if (first && !result) turnCustody?.claimFirst(sessionKey, messageKey, text)
     rememberInput?.(text)
     await control.send({ id: inputID, ...(first ? {} : { sessionId: sessionID }), text })
     traceStage('input_admitted')
     if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
     for await (const event of control.events(sessionID, { signal })) {
       if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
-      if (event.kind === 'user_message' && (event.inputId === inputID || event.messageId === inputID)) {
-        seenInput = true
+      if (event.kind === 'user_message') {
+        if (event.inputId === inputID || event.messageId === inputID) seenInput = true
+        else if (seenInput) throw new BridgeError('cos_input_superseded', 409)
         continue
       }
       if (!seenInput) continue
       // Ignore other sessions'/earlier turns' events; the exact user-message acknowledgement
       // is the publication boundary. Only an observed turn_start may authorize cancellation.
-      if (event.kind === 'turn_start' && typeof event.turnId === 'string' && event.turnId) activeTurnID = event.turnId
+      if (event.kind === 'turn_start' && typeof event.turnId === 'string' && event.turnId) {
+        if (activeTurnID && activeTurnID !== event.turnId) throw new BridgeError('cos_turn_superseded', 409)
+        if (typeof event.inputId === 'string' && event.inputId !== inputID) throw new BridgeError('cos_input_superseded', 409)
+        activeTurnID = event.turnId
+      }
       // A follow-up's input receipt may precede stale history notifications.
       // Only a newly observed turn and its matching events can supply an answer.
       if (!activeTurnID || event.turnId !== activeTurnID) continue
@@ -167,7 +178,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
   }
 }
 
-export function createGateway({ control, key, nativeTools = 'off' }) {
+export function createGateway({ control, key, nativeTools = 'off', turnCustody }) {
   if (typeof key !== 'string' || key.length < 32) throw new Error('A strong local gateway bearer token is required')
   const active = new Set()
   // Volatile custody for a *generated* tool call. An authenticated caller may
@@ -258,7 +269,7 @@ export function createGateway({ control, key, nativeTools = 'off' }) {
         throw new BridgeError('opencode_message_identity_reused_with_changed_history', 409)
       }
       const result = await runTurn(control, body, { sessionKey, messageKey, nativeTools, signal: cancel.signal,
-        checkpoint: checkpoints.get(sessionKey), previousInput: priorInput?.text,
+        checkpoint: checkpoints.get(sessionKey), previousInput: priorInput?.text, turnCustody,
         rememberInput: isToolResult ? undefined : text => rememberBounded(submittedInputs, inputKey,
           { text, messageFingerprint }), emit: async (delta) => {
         answer += delta
