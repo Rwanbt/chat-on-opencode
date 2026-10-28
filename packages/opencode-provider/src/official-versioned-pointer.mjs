@@ -104,7 +104,7 @@ function abandonedLock(config, lock, recoverLock, configSha, from, to, fromSha, 
     if (recoveryFd !== undefined) { closeSync(recoveryFd); rmSync(recoverLock) }
   }
 }
-function atomic(file, bytes, expectedSha, fault) {
+function atomic(file, bytes, expectedSha, probe, fault) {
   const tmp = file + '.versioned-' + randomUUID() + '.tmp'
   let fd
   try {
@@ -117,6 +117,11 @@ function atomic(file, bytes, expectedSha, fault) {
     // uncooperative writers can still race the final read and rename.
     if (sha(readFileSync(file)) !== expectedSha) refuse('cas_changed')
     noManagedTransition(file)
+    // Close the precommit gap introduced by fault injection, temp fsync, and
+    // CAS recheck. Never publish if an official reader appears meanwhile.
+    // This is not an OS-wide atomic reader/writer lock: a new reader starting
+    // *after* this check is outside the protection of this restart-only API.
+    idle(probe)
     // This is a single-filesystem rename, not a multi-file transaction.
     // fsync on the temporary file protects its contents against process death,
     // but Windows does not guarantee that the rename itself survives sudden
@@ -157,7 +162,7 @@ export function publishRestartOnlyPointer(config, from, to, { configSha, fromSha
     pointer(next, toPath)
     idle(probe)
     if (sha(readFileSync(config)) !== configSha || candidateDigest(from) !== fromSha || candidateDigest(to) !== toSha) refuse('cas_changed')
-    atomic(config, next, configSha, fault)
+    atomic(config, next, configSha, probe, fault)
     return { status: 'RESTART_REQUIRED_ONLY', promotionAllowed: false, activationAuthorized: false,
       previousConfigSha256: configSha, publishedConfigSha256: sha(next) }
   } finally { if (fd !== undefined) { closeSync(fd); rmSync(lock) } }
