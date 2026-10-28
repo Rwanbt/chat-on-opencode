@@ -90,7 +90,7 @@ const server = http.createServer(async (req, res) => {
       res.write(`id: ${event.seq}\nevent: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`)
     }
     if (stopProbes.has(stream[1]!)) {
-      const hold = setInterval(() => res.write(': owned stop probe heartbeat\\n\\n'), 300)
+      const hold = setInterval(() => res.write(': owned stop probe heartbeat\n\n'), 300)
       res.on('close', () => clearInterval(hold))
       return
     }
