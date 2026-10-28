@@ -168,7 +168,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
         // stalled and unknown can carry partial assistant text. Only its
         // positive completed verdict authorizes final HTTP success, [DONE]
         // and the persisted native transcript checkpoint.
-        if (event.outcome !== 'completed') {
+        if (event.outcome !== 'completed' && event.outcome !== 'complete') {
           throw new BridgeError('cos_turn_not_completed', 502)
         }
         complete = true
