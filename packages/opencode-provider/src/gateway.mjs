@@ -123,7 +123,17 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
     await control.send({ id: inputID, ...(first ? {} : { sessionId: sessionID }), text })
     traceStage('input_admitted')
     if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
-    for await (const event of control.events(sessionID, { signal })) {
+    // A native provider switch can close the HTTP socket while a remote SSE
+    // iterator is blocked in next(). Relying only on the iterator to notice
+    // AbortSignal leaves this session leased indefinitely, preventing retry.
+    // Race each next() with native cancellation, without abandoning exact
+    // outbox/turn custody or waiting for an unresponsive iterator.return().
+    const iterator = control.events(sessionID, { signal })[Symbol.asyncIterator]()
+    try {
+    for (;;) {
+      const next = await abortableRead(iterator.next(), signal)
+      if (next.done) break
+      const event = next.value
       if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
       if (event.kind === 'user_message') {
         if (event.inputId === inputID || event.messageId === inputID) seenInput = true
@@ -155,6 +165,16 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
         }
         complete = true
         break
+      }
+    }
+    } finally {
+      if (typeof iterator.return === 'function') {
+        if (signal?.aborted) {
+          // CoSControl.events has the same AbortSignal and closes its SSE
+          // reader; never await a transport that ignores cancellation here.
+          try { void Promise.resolve(iterator.return()).catch(() => undefined) }
+          catch { /* cancellation already owns the failure */ }
+        } else await iterator.return()
       }
     }
     if (!seenInput || !complete) throw new BridgeError('cos_turn_unconfirmed', 502)
