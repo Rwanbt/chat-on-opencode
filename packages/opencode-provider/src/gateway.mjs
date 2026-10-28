@@ -214,13 +214,19 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
         // remains UNCONFIRMED, not an invented cancellation success.
         traceStage(seenInput && activeTurnID ? 'turn_stop_requested' : 'input_cancel_requested')
         void Promise.resolve(cleanup).then(
-          () => traceStage('cancel_command_acknowledged'),
+          receipt => traceStage(cancellationReceiptStage(receipt)),
           () => traceStage('cancel_command_unconfirmed'),
         )
       } catch { /* an unconfirmed stop must never be reported as successful */ }
     }
   }
 }
+
+export function cancellationReceiptStage(receipt) {
+  return receipt?.stopped === true || receipt?.cancelled === true
+    ? 'cancel_command_acknowledged' : 'cancel_command_unconfirmed'
+}
+
 
 export function createGateway({ control, key, nativeTools = 'off', turnCustody }) {
   if (typeof key !== 'string' || key.length < 32) throw new Error('A strong local gateway bearer token is required')
