@@ -3,6 +3,7 @@ import http from 'node:http'
 import { setTimeout as delay } from 'node:timers/promises'
 import { traceStage } from './stage-trace.mjs'
 import { BridgeError } from './control.mjs'
+import { writeSSE } from './sse-backpressure.mjs'
 import { READ_INSTRUCTIONS, validateNativeTools, readResultPrompt, parseReadCall } from './native-read.mjs'
 import { plainMessages, completedTranscriptAnchor, continuationWithTranscript } from './transcript-handoff.mjs'
 
@@ -340,7 +341,7 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody }
         answer += delta
         if (stream) {
           if (!res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'close' })
-          res.write('data: ' + JSON.stringify(chunk({ content: delta })) + '\n\n')
+          await writeSSE(res, 'data: ' + JSON.stringify(chunk({ content: delta })) + '\n\n', cancel.signal)
         }
       } })
       if (!isToolResult && typeof result === 'string' && !cancel.signal.aborted) {
