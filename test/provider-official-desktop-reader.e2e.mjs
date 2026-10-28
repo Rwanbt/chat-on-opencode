@@ -621,7 +621,7 @@ async function journalState() {
     custodyFiles:existsSync(path.join(dirs.provider, '.chat-on-opencode-turn-custody'))
       ? (await readdir(path.join(dirs.provider, '.chat-on-opencode-turn-custody'))).length : 0 }
 }
-async function openOwnedFreshSession(priorGeneration) {
+async function openOwnedFreshSession(priorGeneration, projectSelected = false) {
   // Official signed 2.1.4 exposes exactly one visible "New session" native
   // button. Click the real GUI; never create a session via SDK/direct HTTP.
   const newButton = '(()=>{const visible=[...document.querySelectorAll("button,[role=button]")].filter(e=>' +
@@ -681,6 +681,27 @@ async function openOwnedFreshSession(priorGeneration) {
         ((status.surfaceFound && !status.oldAnswerPresent) ||
           status.location !== previousLocation)) return
     await sleep(250)
+  }
+  // Cold signed Desktop 2.1.4 can be on the root Home surface without an
+  // active project. The first New session click opens the project chooser,
+  // not necessarily a composer. Select ONLY this disposable runner's own
+  // Default Project via the real GUI, then retry the GUI navigation once.
+  // Never guess a project, send HTTP, or traverse a user profile.
+  if (!projectSelected) {
+    const chooser = '[...document.querySelectorAll("button,[role=button]")].filter(e=>' +
+      'e.getClientRects().length>0 && !e.disabled &&' +
+      '(e.getAttribute("aria-label")||e.textContent||"").trim().endsWith("Default Project"))'
+    const chooserCount = await cdp.eval('(() => ' + chooser + '.length)()')
+    process.stderr.write('OWNED_COLD_PROJECT_CHOOSER=' + JSON.stringify({
+      candidates:chooserCount, selected:false,
+    }) + '\n')
+    if (chooserCount === 1) {
+      const selected = await cdp.eval('(() => {const buttons=' + chooser +
+        ';if(buttons.length!==1)return false;buttons[0].click();return true})()')
+      assert.equal(selected, true, 'owned_default_project_click_failed')
+      await sleep(750)
+      return openOwnedFreshSession(priorGeneration, true)
+    }
   }
   throw Error('native_new_session_did_not_display_fresh_composer')
 }
