@@ -85,6 +85,27 @@ test('control durable input POST passes AbortSignal through its HTTP transport',
   assert.equal(observed.aborted, true, 'native cancellation still interrupts the bounded request')
 })
 
+test('cancelled durable POST does not wait forever for JSON body after headers', async () => {
+  let headersReturned
+  const headers = new Promise(resolve => { headersReturned = resolve })
+  const control = new CoSControl({ directory:path.join(os.tmpdir(), 'cos-stalled-json-test'),
+    fetcher:async () => {
+      headersReturned()
+      return new Response(new ReadableStream({ start() {} }), { status:202 })
+    } })
+  control.base='http://127.0.0.1:1'
+  control.token='test-only'
+  const abort = new AbortController()
+  const sent = control.send({ id:'immutable-id', text:'test-only' }, { signal:abort.signal })
+  await headers
+  abort.abort()
+  const outcome = await Promise.race([
+    sent.then(() => 'unexpected_success', error => error.code),
+    new Promise(resolve => setTimeout(() => resolve('stalled_after_cancel'), 200)),
+  ])
+  assert.equal(outcome, 'opencode_turn_cancelled')
+})
+
 test('follow-up ignores replayed assistant and old terminal after its input receipt', async () => {
   const cos = new FakeCoS()
   cos.exists = true

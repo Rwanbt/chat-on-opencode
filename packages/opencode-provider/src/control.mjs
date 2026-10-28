@@ -68,7 +68,20 @@ export class CoSControl {
 
   async json(method, route, body, options) {
     const response = await this.request(method, route, body, options)
-    return response.json()
+    // Headers can arrive while a bridged server never completes the JSON body.
+    // Fetch's AbortSignal does not guarantee cancellation of custom body streams.
+    const nativeSignal = options?.signal
+    const deadline = AbortSignal.timeout(15000)
+    const bounded = nativeSignal ? AbortSignal.any([nativeSignal, deadline]) : deadline
+    if (bounded.aborted) throw new BridgeError(nativeSignal?.aborted ? 'opencode_turn_cancelled' : 'cos_transport_unavailable', nativeSignal?.aborted ? 499 : 503)
+    let onAbort
+    const aborted = new Promise((_, reject) => {
+      onAbort = () => reject(new BridgeError(nativeSignal?.aborted ? 'opencode_turn_cancelled' : 'cos_transport_unavailable', nativeSignal?.aborted ? 499 : 503))
+      bounded.addEventListener('abort', onAbort, { once:true })
+      if (bounded.aborted) onAbort()
+    })
+    try { return await Promise.race([response.json(), aborted]) }
+    finally { bounded.removeEventListener('abort', onAbort) }
   }
 
   async hasSession(id, { signal } = {}) {
