@@ -1,0 +1,46 @@
+name: Provider canonical immutable candidate (NO-GO activation)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  candidate-z:
+    if: github.event.pull_request.number == 65
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Qualify source builder with disposable Git repository
+        run: node --test test/provider-git-candidate.test.mjs
+      - name: Windows OS reader, CAS and crash-injection qualification (fail-closed)
+        shell: pwsh
+        run: |
+          node --test packages/opencode-provider/test/official-versioned-pointer-win32-os.test.mjs packages/opencode-provider/test/official-versioned-pointer-crash.test.mjs packages/opencode-provider/test/official-versioned-pointer-jsonc-cas.test.mjs packages/opencode-provider/test/official-versioned-pointer.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Materialize new Git-blob candidate only in CI runner temp
+        shell: pwsh
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $folder = Join-Path $env:RUNNER_TEMP 'coo-ci-candidate-Z'
+          if (Test-Path -LiteralPath $folder) { throw 'candidate_runner_folder_already_exists' }
+          New-Item -ItemType Directory -Path $folder | Out-Null
+          $bundle = Join-Path $folder 'bundle'
+          node scripts/build-provider-git-candidate.mjs $env:SOURCE_SHA $bundle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --input-type=module -e "import {candidateDigest} from './packages/opencode-provider/src/official-upgrade.mjs'; import {readFileSync} from 'node:fs'; const m=JSON.parse(readFileSync(process.argv[1]+'.manifest.json')); if(candidateDigest(process.argv[1])!==m.candidateDigest || m.activationAuthorized!==false || m.promotionAllowed!==false) process.exit(1)" $bundle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coo-immutable-candidate-Z-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/coo-ci-candidate-Z/
+          retention-days: 7
+          if-no-files-found: error
