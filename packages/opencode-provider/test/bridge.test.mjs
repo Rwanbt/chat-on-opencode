@@ -272,7 +272,9 @@ test('abort before admission never sends a prompt; abort before turn proof only 
 })
 
 test('gateway authenticates, binds to local host and yields Chat Completions SSE', async t => {
-  const server = createGateway({ control: new FakeCoS(), key: 't'.repeat(40) })
+  const evidence = []
+  const server = createGateway({ control: new FakeCoS(), key: 't'.repeat(40),
+    onEvidence:entry => evidence.push(entry) })
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
   t.after(() => server.close())
@@ -289,6 +291,15 @@ test('gateway authenticates, binds to local host and yields Chat Completions SSE
   assert.match(body, /"content":"Bon"/)
   assert.match(body, /"content":"jour"/)
   assert.match(body, /data: \[DONE\]/)
+  assert.deepEqual(evidence.map(entry => entry.stage), [
+    'input_admitted','turn_started','assistant_revision','native_delta_emitted',
+    'assistant_revision','native_delta_emitted','turn_completed',
+  ])
+  assert.ok(evidence.every(entry => entry.sessionID === stableUUID('session:ses_test')))
+  assert.ok(evidence.every(entry => entry.messageKey === 'msg_http_0001'))
+  assert.ok(evidence.slice(1).every(entry => entry.turnId === 'fake-current-turn'))
+  assert.ok(evidence.every(entry => Number.isSafeInteger(entry.atMs)))
+  assert.equal(JSON.stringify(evidence).includes('Bonjour'), false)
 })
 
 test('gateway preserves split UTF-8 and rejects malformed or oversized byte bodies before dispatch', async t => {
