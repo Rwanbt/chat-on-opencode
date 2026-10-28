@@ -613,6 +613,7 @@ async function openOwnedFreshSession(priorGeneration) {
   while (Date.now() < deadline) {
     const status = await cdp.eval('(() => ({ oldAnswerPresent:' +
       '(document.querySelector("main")?.innerText??"").includes(' + JSON.stringify(old) + '),' +
+      'surfaceFound:!!document.querySelector("main"),' +
       'location:location.pathname + location.search + location.hash,' +
       'composers:[...document.querySelectorAll("textarea,[contenteditable=true],[role=textbox]")]' +
       '.filter(e=>e.getClientRects().length>0&&!e.disabled).length }))()')
@@ -620,7 +621,8 @@ async function openOwnedFreshSession(priorGeneration) {
     // conversation surface to clear, or an observed native route transition;
     // never treat an unchanged button click as proof of a new conversation.
     if (status.composers === 1 &&
-        (!status.oldAnswerPresent || status.location !== previousLocation)) return
+        ((status.surfaceFound && !status.oldAnswerPresent) ||
+          status.location !== previousLocation)) return
     await sleep(250)
   }
   throw Error('native_new_session_did_not_display_fresh_composer')
