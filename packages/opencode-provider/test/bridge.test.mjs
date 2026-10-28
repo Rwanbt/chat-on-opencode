@@ -282,6 +282,54 @@ test('synchronous Stop transport failure is recorded as unconfirmed for the exac
   ])
 })
 
+test('unresponsive Stop receipt becomes unconfirmed without retaining the native turn lease', async () => {
+  const abort = new AbortController()
+  const evidence = []
+  const cos = new FakeCoS()
+  cos.stop = () => new Promise(() => {})
+  cos.events = async function* () {
+    yield { kind:'user_message', inputId:this.sent.at(-1).id, seq:1 }
+    yield { kind:'turn_start', turnId:'owned-turn-hung-receipt', seq:2 }
+    yield { kind:'assistant_message', turnId:'owned-turn-hung-receipt', seq:3,
+      message:{ text:'partial', truncated:false } }
+  }
+  await assert.rejects(runTurn(cos, request, {
+    sessionKey:'ses_hung_receipt', messageKey:'msg_hung_receipt_001', signal:abort.signal,
+    stopReceiptTimeoutMs:20,
+    emit:() => abort.abort(), onEvidence:row => evidence.push(row),
+  }), /opencode_turn_cancelled/)
+  await new Promise(resolve => setTimeout(resolve,60))
+  assert.deepEqual(evidence.filter(row => /^(turn_stop_requested|cancel_command_unconfirmed)$/.test(row.stage))
+    .map(row => [row.stage,row.turnId]), [
+    ['turn_stop_requested','owned-turn-hung-receipt'],
+    ['cancel_command_unconfirmed','owned-turn-hung-receipt'],
+  ])
+})
+
+test('late positive Stop receipt cannot overwrite timed-out unconfirmed evidence', async () => {
+  const abort = new AbortController()
+  const evidence = []
+  let releaseStop
+  const cos = new FakeCoS()
+  cos.stop = () => new Promise(resolve => { releaseStop = resolve })
+  cos.events = async function* () {
+    yield { kind:'user_message', inputId:this.sent.at(-1).id, seq:1 }
+    yield { kind:'turn_start', turnId:'owned-turn-late', seq:2 }
+    yield { kind:'assistant_message', turnId:'owned-turn-late', seq:3,
+      message:{ text:'partial', truncated:false } }
+  }
+  await assert.rejects(runTurn(cos, request, {
+    sessionKey:'ses_late_receipt', messageKey:'msg_late_receipt_001', signal:abort.signal,
+    stopReceiptTimeoutMs:10,
+    emit:() => abort.abort(), onEvidence:row => evidence.push(row),
+  }), /opencode_turn_cancelled/)
+  await new Promise(resolve => setTimeout(resolve,40))
+  releaseStop({ stopped:true })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(evidence.filter(row => /^cancel_command_/.test(row.stage))
+    .map(row => row.stage), ['cancel_command_unconfirmed'])
+})
+
 test('abort before admission never sends a prompt; abort before turn proof only attempts outbox cancel', async () => {
   const already = new AbortController()
   already.abort()

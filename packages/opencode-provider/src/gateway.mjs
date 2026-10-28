@@ -75,7 +75,7 @@ export async function awaitProviderReady(control, {
 }
 
 export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal,
-  nativeTools = 'off', checkpoint, resumeAfterSeq = 0, previousInput, rememberInput, turnCustody, messageFingerprint, onTerminal, onEvidence } = {}) {
+  nativeTools = 'off', checkpoint, resumeAfterSeq = 0, previousInput, rememberInput, turnCustody, messageFingerprint, onTerminal, onEvidence, stopReceiptTimeoutMs = 5000 } = {}) {
   traceStage('gateway_turn_received')
   if (!sessionKey || sessionKey.length > 256 || /[\r\n]/.test(sessionKey)) throw new BridgeError('opencode_session_id_required', 422)
   if (!messageKey || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
@@ -228,15 +228,27 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
         // Never block a cancelled stream or leak another session's lease.
         // Track only categorical, non-sensitive acknowledgement; a stop failure
         // remains UNCONFIRMED, not an invented cancellation success.
+        // The stop transport can hang indefinitely. Do not retain a native
+        // lease waiting for its receipt or fabricate a positive acknowledgement.
+        // A late receipt cannot revise the already reported unconfirmed state.
+        let settled = false
+        const record = stage => {
+          if (settled) return
+          settled = true
+          clearTimeout(timeout)
+          traceStage(stage)
+          evidence(stage, activeTurnID)
+        }
+        const deadline = Number.isFinite(stopReceiptTimeoutMs)
+          ? Math.max(1, Math.min(30000, stopReceiptTimeoutMs)) : 5000
+        const timeout = setTimeout(() => record('cancel_command_unconfirmed'), deadline)
+        timeout.unref?.()
         void Promise.resolve(cleanup).then(
           receipt => {
-            const stage = cancellationReceiptStage(receipt)
-            traceStage(stage)
-            evidence(stage, activeTurnID)
+            record(cancellationReceiptStage(receipt))
           },
           () => {
-            traceStage('cancel_command_unconfirmed')
-            evidence('cancel_command_unconfirmed', activeTurnID)
+            record('cancel_command_unconfirmed')
           },
         )
       } catch {
