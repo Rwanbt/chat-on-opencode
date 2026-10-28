@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { providerNormalUserData, providerServiceProfile, providerServiceReady, providerReadinessStatus, PROVIDER_SERVICE_SWITCH, PROVIDER_SIGN_IN_SWITCH } from '../src/main/provider-service.js';
+import { providerNormalUserData, providerServiceProfile, providerServiceReady, providerReadinessStatus, PERSONAL_COS_APP_NAME, PROVIDER_SERVICE_SWITCH, PROVIDER_SIGN_IN_SWITCH } from '../src/main/provider-service.js';
 
 const dirs: string[] = [];
 function fixture() {
@@ -26,6 +26,18 @@ describe('Chat On OpenCode provider-mode preflight', () => {
     expect(providerNormalUserData(root, '../isolated')).toBeNull();
     expect(providerNormalUserData('relative', 'Chat On Steroids')).toBeNull();
     expect(() => providerServiceProfile(['app', PROVIDER_SERVICE_SWITCH], isolated, root)).toThrow(/overlaps/);
+  });
+  it('protects the personal CoS product name when the packaged provider has its own name', () => {
+    const { root } = fixture();
+    expect(PERSONAL_COS_APP_NAME).toBe('Chat On Steroids');
+    const personal = path.join(root, PERSONAL_COS_APP_NAME);
+    const providerProductName = path.join(root, 'Chat On OpenCode Provider');
+    mkdirSync(personal);
+    mkdirSync(providerProductName);
+    expect(() => providerServiceProfile(['app', PROVIDER_SERVICE_SWITCH], personal,
+      providerNormalUserData(root, PERSONAL_COS_APP_NAME)!)).toThrow(/overlaps_personal/);
+    expect(providerServiceProfile(['app', PROVIDER_SERVICE_SWITCH], providerProductName,
+      providerNormalUserData(root, PERSONAL_COS_APP_NAME)!)).toBe(realpathSync(providerProductName));
   });
   it('does not alter normal launches', () => {
     const { personal, isolated } = fixture();

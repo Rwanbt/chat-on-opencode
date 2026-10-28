@@ -5,6 +5,9 @@ import { realpathSync } from 'node:fs';
 export const PROVIDER_SERVICE_SWITCH = '--chat-on-opencode-provider-service';
 /** Explicit one-time user action: the same isolated profile, with a visible ChatGPT sign-in. */
 export const PROVIDER_SIGN_IN_SWITCH = '--chat-on-opencode-provider-sign-in';
+/** electron-builder.yml's personal app productName. The helper has a different
+ * productName, so app.getName() in a packaged provider cannot identify CoS userData. */
+export const PERSONAL_COS_APP_NAME = 'Chat On Steroids';
 
 /** Determine the normal Windows profile before Electron's app.getPath is usable.
  * Only a provider helper uses this value; profile overlap checks remain mandatory. */
