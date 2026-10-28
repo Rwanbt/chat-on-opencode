@@ -994,7 +994,9 @@ try {
     await openOwnedFreshSession('A')
     const coldB = await realGeneratedReader('Offline cold B actual reader marker', 'B')
     assert.ok(existsSync(path.join(dirs.receipts, 'B.import')), 'actual_plugin_B_never_imported')
-    await configFor('A')
+    // The local smoke does not publish the versioned pointer. Keep B selected
+    // across renderer reload; only the CI branch proves restart-only A/B CAS.
+    await configFor('B')
     await reloadOwnedRenderer()
     await openOwnedFreshSession('B')
     const hotB = await realGeneratedReader('Offline hot B actual reader marker', 'B')
