@@ -66,7 +66,7 @@ export class CoSRuntime {
       NODE_OPTIONS: _nodeOptions, ...childEnvironment } = process.env
     const child = this.launcher(binary, [SERVICE_SWITCH], {
       cwd: path.dirname(binary),
-      shell: false, windowsHide: true, stdio: 'ignore', detached: false,
+      shell: false, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], detached: false,
       // No gateway bearer token or long-running helper without its gateway owner.
       env: { ...childEnvironment, CHAT_ON_OPENCODE_USERDATA_DIR: folder,
         CHAT_ON_OPENCODE_OWNER_PID: String(process.pid) },
@@ -74,6 +74,21 @@ export class CoSRuntime {
     this.child = child
     traceStage('runtime_child_spawned')
     const control = new CoSControl({ directory: path.join(folder, 'control-api') })
+    // A previously packaged Electron can refuse its isolated profile before
+    // creating the control endpoint. Consume its stderr but retain only this
+    // fixed category: arbitrary native output may contain private data.
+    const profileRefusal = 'Provider service refused: invalid isolated profile'
+    let stderrSuffix = ''
+    let profileRefused = false
+    child.stderr?.on('data', chunk => {
+      if (profileRefused) return
+      stderrSuffix = (stderrSuffix + String(chunk)).slice(-256)
+      if (stderrSuffix.includes(profileRefusal)) {
+        profileRefused = true
+        traceStage('runtime_profile_refused')
+      }
+    })
+    const exited = () => new BridgeError(profileRefused ? 'runtime_profile_refused' : 'runtime_process_exited', 503)
     const signal = new AbortController()
     child.once('exit', () => signal.abort())
     child.once('error', () => signal.abort())
@@ -84,7 +99,7 @@ export class CoSRuntime {
     let lastFailure = ''
     try {
       for (;;) {
-        if (signal.signal.aborted || child.exitCode !== null) throw new BridgeError('runtime_process_exited', 503)
+        if (signal.signal.aborted || child.exitCode !== null) throw exited()
         try {
           await control.connect()
           if (control.endpointPid !== child.pid) throw new BridgeError('runtime_endpoint_pid_mismatch', 503)
@@ -109,7 +124,7 @@ export class CoSRuntime {
           throw new BridgeError('runtime_start_timeout', 503)
         }
         await this.clock(250, undefined, { signal: signal.signal }).catch(() => {
-          throw new BridgeError('runtime_process_exited', 503)
+          throw exited()
         })
       }
     } catch (error) {
