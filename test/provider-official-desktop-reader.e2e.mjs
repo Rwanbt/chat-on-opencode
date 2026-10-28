@@ -106,9 +106,9 @@ for (const generation of ['A', 'B']) {
       // assistant revisions. Their final answer and nonce are unchanged.
       .replace("    list.push({ seq: seq + 2, kind: 'assistant_message', turnId, message: { text: assistantText, truncated: false } })",
         "    list.push({ seq: seq + 2, kind: 'assistant_message', turnId, message: { text: assistantText.slice(0, -5), truncated: false } })\n" +
-        "    list.push({ seq: seq + 3, kind: 'assistant_message', turnId, message: { text: assistantText, truncated: false } })")
-      .replace("    list.push({ seq: seq + 3, kind: 'turn_end'",
-        "    list.push({ seq: seq + 4, kind: 'turn_end'")
+        "    if (!stopProbe) list.push({ seq: seq + 3, kind: 'assistant_message', turnId, message: { text: assistantText, truncated: false } })")
+      .replace("    if (!stopProbe) list.push({ seq: seq + 3, kind: 'turn_end'",
+        "    if (!stopProbe) list.push({ seq: seq + 4, kind: 'turn_end'")
       .replace("    for (const event of list) if ((event.seq as number) >= Number(stream[2])) {",
         "    for (const event of list) if ((event.seq as number) >= Number(stream[2])) {\n" +
         "      if (event.kind === 'assistant_message') await new Promise(resolve => setTimeout(resolve, 400))")
@@ -867,6 +867,45 @@ try {
     await startDesktop()
     await openOwnedFreshSession('B')
     const rollbackColdA = await realGeneratedReader('Offline cold A restored pointer', 'A')
+    // Synthetic STOP is a real click on the signed Desktop UI, not a direct API call.
+    await openOwnedFreshSession('A')
+    const stopNonce = 'GUI_NONCE_' + randomBytes(6).toString('hex').toUpperCase()
+    const partialStop = mark('A') + ':' + stopNonce.slice(0, -5)
+    const completeStop = mark('A') + ':' + stopNonce
+    const stopFields = '[...document.querySelectorAll("textarea,[contenteditable=true],[role=textbox]")].filter(e=>e.getClientRects().length>0&&!e.disabled)'
+    assert.equal(await cdp.eval('(()=>' + stopFields + '.length)()'), 1, 'owned_stop_composer_not_unique')
+    await cdp.eval('(()=>{' + stopFields + '[0].focus()})()')
+    await cdp.call('Input.insertText', {text:'GUI_STOP_PROBE_ test ' + stopNonce})
+    await cdp.call('Input.dispatchKeyEvent', {type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13})
+    await cdp.call('Input.dispatchKeyEvent', {type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13})
+    let stopClicked = false, stopPartObserved = false, stopCandidateCount = 0
+    const stopDeadline = Date.now() + 25000
+    while (Date.now() < stopDeadline) {
+      const snap = await cdp.eval('(() => {const buttons=[...document.querySelectorAll("button,[role=button]")].filter(b=>b.getClientRects().length>0&&!b.disabled);' +
+        'const stop=buttons.filter(b=>/^(stop|cancel|arrêter|interrompre)(\\b|\\s|$)/i.test((b.getAttribute("aria-label")||b.getAttribute("title")||b.textContent||"").trim()));' +
+        'return {partial:document.body.innerText.includes(' + JSON.stringify(partialStop) + '),' +
+        'complete:document.body.innerText.includes(' + JSON.stringify(completeStop) + '),stopCount:stop.length}})()')
+      stopCandidateCount = snap.stopCount
+      if (snap.partial && !snap.complete) stopPartObserved = true
+      if (stopPartObserved && snap.stopCount === 1) {
+        stopClicked = await cdp.eval('(() => {const b=[...document.querySelectorAll("button,[role=button]")].filter(b=>b.getClientRects().length>0&&!b.disabled&&/^(stop|cancel|arrêter|interrompre)(\\b|\\s|$)/i.test((b.getAttribute("aria-label")||b.getAttribute("title")||b.textContent||"").trim()));if(b.length!==1)return false;b[0].click();return true})()')
+        if (stopClicked) break
+      }
+      await sleep(200)
+    }
+    process.stdout.write('OFFICIAL_GUI_STOP_CLICK=' + JSON.stringify({synthetic:true,partialObserved:stopPartObserved,clicked:stopClicked,visibleCandidates:stopCandidateCount}) + '\n')
+    assert.ok(stopPartObserved && stopClicked, 'official_gui_stop_button_not_clickable')
+    let stopReceipt = false
+    for (let i=0;i<30;i++) {
+      stopReceipt = existsSync(path.join(dirs.provider,'synthetic-stop-confirmed'))
+      if (stopReceipt) break
+      await sleep(150)
+    }
+    assert.ok(stopReceipt, 'official_gui_stop_not_propagated_to_exact_turn')
+    await sleep(800)
+    assert.equal(await cdp.eval('document.body.innerText.includes(' + JSON.stringify(completeStop) + ')'),false,
+      'cancelled_turn_must_not_render_final_answer')
+    process.stdout.write('OFFICIAL_GUI_SYNTHETIC_EXACT_STOP=PASS\n')
     await coldStopDesktop()
     process.stdout.write(JSON.stringify({
       verified:'ACTUAL_OFFICIAL_GUI_VERSIONED_POINTER_RESTART_ONLY',
