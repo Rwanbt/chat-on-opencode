@@ -118,13 +118,34 @@ try {
         preservedFiles.set(target, sha256(bytes))
       }
       overlayInstaller = path.join(plugin, 'bin', 'additive-context.mjs')
+      // An earlier packaged-CLI smoke in this job can finish its parent before
+      // Windows reaps the last helper. Never bypass the installer's fail-closed
+      // quiescence check: wait for the *same* process-name set to become empty.
+      const processCount = () => {
+        const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+          '$ErrorActionPreference="Stop"; @([Diagnostics.Process]::GetProcesses() | Where-Object { $_.ProcessName -in @("OpenCode","opencode","opencode-cli","Chat On OpenCode Provider") }).Count'],
+        { encoding: 'utf8', windowsHide: true, timeout: 7000 })
+        if (result.status !== 0 || !/^\d+\s*$/.test(result.stdout ?? '')) return null
+        return Number(result.stdout.trim())
+      }
+      let remaining = null
+      for (let attempt = 0; attempt < 24; attempt++) {
+        remaining = processCount()
+        if (remaining === 0) break
+        if (remaining === null) break
+        await pause(500)
+      }
+      assert.equal(remaining, 0, 'additive install requires truly idle official app; count is ' +
+        (remaining === null ? 'unknown' : remaining))
       const additive = (args) => {
         const result = spawnSync(process.execPath, [
           overlayInstaller, ...args, '--config', configFile, '--bundle', plugin,
         ], { cwd: paths.workspace, encoding: 'utf8', timeout: 20000, windowsHide: true })
-        assert.equal(result.status, 0,
-          'transactional additive CLI failed (bounded diagnostic): ' +
-          String(result.error?.code ?? result.stderr).slice(-300))
+        const diagnostic = String(result.error?.code ?? result.stderr)
+        const category = ['additive_opencode_processes_active_or_unknown', 'additive_pin_mismatch',
+          'additive_existing_install_or_journal', 'additive_unsafe_path',
+          'additive_source_or_configuration_changed'].find(value => diagnostic.includes(value)) ?? 'other'
+        assert.equal(result.status, 0, 'transactional additive CLI failed, category=' + category)
         return JSON.parse(result.stdout)
       }
       const digest = spawnSync(process.execPath,
