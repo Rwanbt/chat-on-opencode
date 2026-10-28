@@ -330,6 +330,28 @@ test('late positive Stop receipt cannot overwrite timed-out unconfirmed evidence
     .map(row => row.stage), ['cancel_command_unconfirmed'])
 })
 
+test('timed-out Stop actively aborts its own broker HTTP request', async () => {
+  const abort = new AbortController()
+  const cos = new FakeCoS()
+  let stopSignal
+  cos.stop = (_session, _turn, options) => {
+    stopSignal = options?.signal
+    return new Promise(() => {})
+  }
+  cos.events = async function* () {
+    yield { kind:'user_message', inputId:this.sent.at(-1).id, seq:1 }
+    yield { kind:'turn_start', turnId:'owned-turn-stop-http', seq:2 }
+    yield { kind:'assistant_message', turnId:'owned-turn-stop-http', seq:3,
+      message:{ text:'partial', truncated:false } }
+  }
+  await assert.rejects(runTurn(cos, request, {
+    sessionKey:'ses_stop_http', messageKey:'msg_stop_http_001', signal:abort.signal,
+    stopReceiptTimeoutMs:10, emit:() => abort.abort(),
+  }), /opencode_turn_cancelled/)
+  await new Promise(resolve => setTimeout(resolve,40))
+  assert.equal(stopSignal?.aborted, true, 'stop HTTP must not linger past receipt deadline')
+})
+
 test('abort before admission never sends a prompt; abort before turn proof only attempts outbox cancel', async () => {
   const already = new AbortController()
   already.abort()

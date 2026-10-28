@@ -114,13 +114,13 @@ export class CoSControl {
   }
 
   /** Exact-turn stop; CoS itself rechecks that this is still the active turn. */
-  async stop(sessionID, turnId) {
-    return this.json('POST', `/v1/sessions/${sessionID}/stop`, { turnId })
+  async stop(sessionID, turnId, { signal } = {}) {
+    return this.json('POST', `/v1/sessions/${sessionID}/stop`, { turnId }, { signal })
   }
 
   /** CoS refuses cancellation once Send may have reached ChatGPT. */
-  async cancelInput(inputID) {
-    return this.json('POST', `/v1/inputs/${inputID}/cancel`, {})
+  async cancelInput(inputID, { signal } = {}) {
+    return this.json('POST', `/v1/inputs/${inputID}/cancel`, {}, { signal })
   }
 
   async *events(sessionID, { from = 0, signal } = {}) {

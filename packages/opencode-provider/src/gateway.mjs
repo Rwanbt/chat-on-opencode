@@ -223,8 +223,10 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
       traceStage(requested)
       evidence(requested, activeTurnID)
       try {
+        const cleanupController = new AbortController()
         const cleanup = seenInput && activeTurnID
-          ? control.stop(sessionID, activeTurnID) : control.cancelInput(inputID)
+          ? control.stop(sessionID, activeTurnID, { signal: cleanupController.signal })
+          : control.cancelInput(inputID, { signal: cleanupController.signal })
         // Never block a cancelled stream or leak another session's lease.
         // Track only categorical, non-sensitive acknowledgement; a stop failure
         // remains UNCONFIRMED, not an invented cancellation success.
@@ -241,7 +243,10 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
         }
         const deadline = Number.isFinite(stopReceiptTimeoutMs)
           ? Math.max(1, Math.min(30000, stopReceiptTimeoutMs)) : 5000
-        const timeout = setTimeout(() => record('cancel_command_unconfirmed'), deadline)
+        const timeout = setTimeout(() => {
+          record('cancel_command_unconfirmed')
+          cleanupController.abort()
+        }, deadline)
         timeout.unref?.()
         void Promise.resolve(cleanup).then(
           receipt => {
