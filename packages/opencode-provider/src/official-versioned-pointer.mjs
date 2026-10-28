@@ -139,7 +139,7 @@ export function probeWindowsProcessStart(pid, runner = spawnSync) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const result = runner('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
       { encoding: 'utf8', shell: false, windowsHide: true, timeout: 7000 })
-    if (result.status === 0 && /^(?:MISSING|\\d+)\\s*$/.test(result.stdout ?? '')) return result.stdout.trim()
+    if (result.status === 0 && /^(?:MISSING|\d+)\s*$/.test(result.stdout ?? '')) return result.stdout.trim()
   }
   refuse('lock_owner_unverifiable')
 }
