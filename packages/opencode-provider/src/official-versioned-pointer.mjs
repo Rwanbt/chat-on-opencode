@@ -38,6 +38,45 @@ function replaced(source, oldPath, nextPath) {
   if (source.split(escaped).length !== 2) refuse('ambiguous_config_reference')
   return source.replace(escaped, JSON.stringify(nextPath))
 }
+// A PID alone is not a lock identity: Windows can reuse it after the writer
+// crashes. Bind abandoned-lock recovery to the OS process creation timestamp.
+function processStart(pid) {
+  const script = `$ErrorActionPreference='Stop'; $p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($null -eq $p) { 'MISSING' } else { $p.StartTime.ToUniversalTime().Ticks.ToString() }`
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+    { encoding: 'utf8', shell: false, windowsHide: true, timeout: 7000 })
+  if (result.status !== 0 || !/^(?:MISSING|\d+)\s*$/.test(result.stdout ?? '')) refuse('lock_owner_unverifiable')
+  return result.stdout.trim()
+}
+function lockOwner() {
+  const start = processStart(process.pid)
+  if (start === 'MISSING') refuse('lock_owner_unverifiable')
+  return { version: 1, pid: process.pid, start, nonce: randomUUID() }
+}
+function abandonedLock(config, lock, recoverLock, configSha, from, to, fromSha, toSha, probe) {
+  // The recovery marker keeps compliant publishers from acquiring the path
+  // during the one stale-lock removal. It is never evidence that a writer died.
+  let recoveryFd
+  try {
+    recoveryFd = openSync(recoverLock, 'wx', 0o600)
+    idle(probe)
+    if (!existsSync(lock) || !lstatSync(lock).isFile() || lstatSync(lock).isSymbolicLink()) refuse('lock_unverifiable')
+    const original = readFileSync(lock)
+    let owner
+    try { owner = JSON.parse(original.toString('utf8')) } catch { refuse('lock_unverifiable') }
+    if (owner?.version !== 1 || !Number.isSafeInteger(owner.pid) || owner.pid < 1 ||
+      !/^\d+$/.test(owner.start ?? '') ||
+      typeof owner.nonce !== 'string' || !/^[0-9a-f-]{36}$/.test(owner.nonce)) refuse('lock_unverifiable')
+    const currentStart = processStart(owner.pid)
+    if (currentStart === owner.start) refuse('lock_owner_active')
+    // A different creation timestamp proves PID reuse; MISSING proves exit.
+    idle(probe)
+    if (sha(readFileSync(config)) !== configSha || candidateDigest(from) !== fromSha ||
+      candidateDigest(to) !== toSha || !readFileSync(lock).equals(original)) refuse('cas_changed')
+    rmSync(lock)
+  } finally {
+    if (recoveryFd !== undefined) { closeSync(recoveryFd); rmSync(recoverLock) }
+  }
+}
 function atomic(file, bytes, fault) {
   const tmp = file + '.versioned-' + randomUUID() + '.tmp'
   let fd
@@ -54,12 +93,23 @@ function atomic(file, bytes, fault) {
  */
 export function publishRestartOnlyPointer(config, from, to, { configSha, fromSha, toSha,
   probe = spawnSync, fault } = {}) {
+  if (process.platform !== 'win32') refuse('windows_only')
   safeFile(config); safeDir(from); safeDir(to)
   if (![configSha,fromSha,toSha].every(v => hex.test(v ?? ''))) refuse('cas_missing')
   const lock = path.join(path.dirname(config), '.chat-on-opencode-versioned-pointer.lock')
+  const recoverLock = lock + '.recover'
   let fd
   try {
-    fd = openSync(lock, 'wx', 0o600)
+    if (existsSync(recoverLock)) refuse('recovery_active')
+    try { fd = openSync(lock, 'wx', 0o600) }
+    catch (error) {
+      if (error?.code !== 'EEXIST') throw error
+      abandonedLock(config, lock, recoverLock, configSha, from, to, fromSha, toSha, probe)
+      fd = openSync(lock, 'wx', 0o600)
+    }
+    if (existsSync(recoverLock)) refuse('recovery_active')
+    writeFileSync(fd, JSON.stringify(lockOwner()))
+    fsyncSync(fd)
     idle(probe)
     const old = readFileSync(config)
     if (sha(old) !== configSha || candidateDigest(from) !== fromSha || candidateDigest(to) !== toSha) refuse('cas_changed')
