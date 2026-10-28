@@ -81,10 +81,12 @@ test('Windows restart retains CoS session and replays only the same proven nativ
     assert.equal(inputs.size, 2)
     assert.equal(inputs.get(stableUUID('turn:' + session + ':msg-restart-002'))?.sessionId, sourceId)
     const files = readdirSync(custodyFolder)
-    assert.equal(files.length, 1, 'only initial-message identity is durable')
-    const record = readFileSync(path.join(custodyFolder, files[0]), 'utf8')
-    assert.doesNotMatch(record, /first|next|msg-restart|session-restart|authorization|cookie/i)
-    assert.match(record, /"salt":"[a-f0-9]{32}"/, 'small marker is salted, not a plain prompt fingerprint')
+    assert.equal(files.length, 2, 'first-message marker plus one hashed follow-up retry marker')
+    for (const file of files) {
+      const record = readFileSync(path.join(custodyFolder, file), 'utf8')
+      assert.doesNotMatch(record, /first|next|msg-restart|session-restart|authorization|cookie/i)
+      assert.match(record, /"salt":"[a-f0-9]{32}"/, 'small marker is salted, not a plain prompt fingerprint')
+    }
   })
 
 test('disposable custody refuses changed first message, unrelated pending first input and corrupted marker', () => {
