@@ -65,7 +65,7 @@ export function continuationWithTranscript(plain, anchor) {
   // untrusted quoted context after a unique verified CoS completion anchor.
   // A second assistant response with no preceding user remains untrusted.
   let previousRole = 'assistant'
-  if (gap.length > 16 || gap.some(item => {
+  if (gap.some(item => {
     if (!item.content.trim() || !['user', 'assistant'].includes(item.role)) return true
     if (item.role === 'assistant' && previousRole !== 'user') return true
     previousRole = item.role
@@ -74,6 +74,9 @@ export function continuationWithTranscript(plain, anchor) {
     throw new BridgeError('transcript_handoff_incomplete_or_too_long', 422)
   }
   const quoted = JSON.stringify(gap)
+  // Count alone is not a context integrity bound: long, valid provider-switch
+  // histories can contain more than sixteen short records. Enforce byte size
+  // below instead; never truncate or invent omitted messages.
   // The gateway independently caps the final input at 64k; this bound avoids
   // its much smaller historical 16k limit without silently dropping records.
   if (quoted.length > 48000) throw new BridgeError('transcript_handoff_too_large', 413)
