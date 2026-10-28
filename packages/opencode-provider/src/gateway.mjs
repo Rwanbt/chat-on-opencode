@@ -126,7 +126,10 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
     rememberInput?.(text)
     // A disconnect during POST /inputs must not hold the native session lease
     // indefinitely. The deterministic input id makes a later retry idempotent.
-    await abortableRead(control.send({ id: inputID, ...(first ? {} : { sessionId: sessionID }), text }), signal)
+    // Replaying the original first native message after a restart still uses
+    // the *original* opening input payload. Adding sessionId on that retry
+    // changes the CoS durable outbox record and breaks idempotent enqueue.
+    await abortableRead(control.send({ id: inputID, ...(first || originalFirst ? {} : { sessionId: sessionID }), text }), signal)
     traceStage('input_admitted')
     if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
     // A native provider switch can close the HTTP socket while a remote SSE

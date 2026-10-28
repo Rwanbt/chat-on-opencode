@@ -22,9 +22,9 @@ function endpointFrom(chunks) {
   return instance
 }
 
-async function firstEvent(chunks) {
+async function firstEvent(chunks, from = 0) {
   const instance = endpointFrom(chunks)
-  const stream = instance.events('00000000-0000-5000-8000-000000000001')
+  const stream = instance.events('00000000-0000-5000-8000-000000000001', { from })
   try {
     return await stream.next()
   } finally {
@@ -41,7 +41,7 @@ for (const [name, separator] of [
     const event = { seq: 7, kind: 'assistant_message', message: { text: 'progress' } }
     const source = 'event: assistant_message' + separator +
       'data: ' + JSON.stringify(event) + separator + separator
-    const result = await firstEvent([source])
+    const result = await firstEvent([source], 7)
     assert.equal(result.done, false)
     assert.deepEqual(result.value, event)
   })
@@ -51,6 +51,6 @@ test('CoS event decoder preserves CRLF delimiters split at every byte boundary',
   const event = { seq: 5, kind: 'assistant_message', message: { text: 'café' } }
   const source = 'event: assistant_message\r\ndata: ' + JSON.stringify(event) + '\r\n\r\n'
   const chunks = [...new TextEncoder().encode(source)].map(byte => Uint8Array.of(byte))
-  const result = await firstEvent(chunks)
+  const result = await firstEvent(chunks, 5)
   assert.deepEqual(result, { value: event, done: false })
 })

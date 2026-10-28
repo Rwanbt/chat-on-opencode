@@ -14,7 +14,7 @@ test('SSE multi-line data preserves one structured event and its correlation seq
     } }), { status: 200 }) })
   instance.base = 'http://127.0.0.1:1'
   instance.token = 'fake-no-secret'
-  const events = instance.events('00000000-0000-5000-8000-000000000001')
+  const events = instance.events('00000000-0000-5000-8000-000000000001', { from: 9 })
   try { assert.deepEqual((await events.next()).value, event) }
   finally { await events.return() }
 })
