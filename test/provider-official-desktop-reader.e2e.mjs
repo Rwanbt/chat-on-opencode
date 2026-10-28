@@ -27,8 +27,11 @@ assert.ok(desktop && path.isAbsolute(desktop) && existsSync(desktop), 'official_
 assert.ok(path.resolve(desktop).toLowerCase().startsWith(path.resolve(base).toLowerCase() + path.sep),
   'no_personal_installed_desktop')
 if (isolatedLocal && !ci) {
-  const ownedWorkspace = path.resolve('D:/App/chat-on-opencode-v2-gui-reader-worker5-20261028/.scratch-official-214').toLowerCase()
-  assert.equal(path.resolve(base).toLowerCase(), ownedWorkspace, 'local_scratch_must_be_worker_owned')
+  // Local execution is deliberately opt-in, and may only reuse an explicitly
+  // named disposable vendor extraction. Do not bake any contributor's Windows
+  // account, checkout or absolute workspace path into the public CI fixture.
+  assert.equal(path.basename(path.resolve(base)), '.scratch-official-214',
+    'local_scratch_must_be_explicit_disposable_extraction')
 }
 
 const root = await mkdtemp(path.join(base, 'coo-desktop-reader-'))
