@@ -22,21 +22,48 @@ function safeFile(file) {
 function safeDir(dir) {
   if (!path.isAbsolute(dir) || !existsSync(dir) || !lstatSync(dir).isDirectory() || lstatSync(dir).isSymbolicLink()) refuse('unsafe_generation')
 }
-function pointer(bytes) {
-  const source = bytes.toString('utf8')
-  readJSONC(source)
-  // Prototype deliberately supports strict JSON only; JSONC with comments
-  // needs AST offset edits, never a lossy parse/stringify rewrite.
-  let cfg
-  try { cfg = JSON.parse(source) } catch { refuse('jsonc_requires_offset_editor') }
-  const plugins = cfg.plugins
-  if (!Array.isArray(plugins) || plugins.length !== 1 || typeof plugins[0]?.package !== 'string') refuse('config_shape')
-  return { source, package: plugins[0].package }
+// The directory-swap and chained-swap protocols retain journals with an
+// exact *original config* digest. Repointing that config would invalidate
+// their CAS rollback and leave active/parked generations stranded. A pointer
+// publisher cannot safely join either protocol, even when no process runs.
+const managedMarkers = [
+  '.chat-on-opencode-directory-switch.json', '.chat-on-opencode-directory-next',
+  '.chat-on-opencode-directory-previous', '.chat-on-opencode-chain-prepare.json',
+  '.chat-on-opencode-chain-next', '.chat-on-opencode-chain-active-previous',
+  '.chat-on-opencode-chain-transition.lock',
+]
+function noManagedTransition(config) {
+  const dir = path.dirname(config)
+  if (managedMarkers.some(name => existsSync(path.join(dir, name)))) refuse('managed_transition_pending')
 }
-function replaced(source, oldPath, nextPath) {
-  const escaped = JSON.stringify(oldPath)
-  if (source.split(escaped).length !== 2) refuse('ambiguous_config_reference')
-  return source.replace(escaped, JSON.stringify(nextPath))
+function pointer(bytes, expectedPackage) {
+  // Buffer.toString() silently replaces invalid UTF-8. Never turn a foreign
+  // user's malformed byte into U+FFFD while rewriting our one package path.
+  let source
+  try { source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) }
+  catch { refuse('invalid_utf8') }
+  const root = readJSONC(source)
+  const plugins = root.members.find(item => item.key === 'plugins')?.node
+  if (plugins?.type !== 'array') refuse('config_shape')
+  const matches = []
+  for (const item of plugins.members) {
+    if (item.node.type !== 'object') continue // other installed plugins may be strings
+    const pkg = item.node.members.find(member => member.key === 'package')?.node
+    if (!pkg) continue
+    if (pkg.type !== 'scalar') refuse('config_shape')
+    let value
+    try { value = JSON.parse(source.slice(pkg.start, pkg.end)) }
+    catch { refuse('config_shape') }
+    if (value === expectedPackage) matches.push(pkg)
+  }
+  if (matches.length !== 1) refuse(matches.length ? 'ambiguous_config_reference' : 'pointer_mismatch')
+  return { source, package: expectedPackage, offset: matches[0] }
+}
+function replaced(found, nextPath) {
+  // The JSONC parser captures scalar start/end offsets. Preserve every other
+  // byte, including comments, trailing commas, CRLF and foreign plugin values.
+  const { source, offset } = found
+  return source.slice(0, offset.start) + JSON.stringify(nextPath) + source.slice(offset.end)
 }
 // A PID alone is not a lock identity: Windows can reuse it after the writer
 // crashes. Bind abandoned-lock recovery to the OS process creation timestamp.
@@ -77,13 +104,23 @@ function abandonedLock(config, lock, recoverLock, configSha, from, to, fromSha, 
     if (recoveryFd !== undefined) { closeSync(recoveryFd); rmSync(recoverLock) }
   }
 }
-function atomic(file, bytes, fault) {
+function atomic(file, bytes, expectedSha, fault) {
   const tmp = file + '.versioned-' + randomUUID() + '.tmp'
   let fd
   try {
     fd = openSync(tmp, 'wx', 0o600)
     writeFileSync(fd, bytes); fsyncSync(fd); closeSync(fd); fd = undefined
     fault?.('before_publish')
+    // Last possible pre-rename CAS checkpoint: a competing writer may have
+    // changed the existing config after validation while we fsynced the temp.
+    // This does not constitute a cross-process atomic compare-and-swap:
+    // uncooperative writers can still race the final read and rename.
+    if (sha(readFileSync(file)) !== expectedSha) refuse('cas_changed')
+    noManagedTransition(file)
+    // This is a single-filesystem rename, not a multi-file transaction.
+    // fsync on the temporary file protects its contents against process death,
+    // but Windows does not guarantee that the rename itself survives sudden
+    // power loss without an independently proven directory flush.
     renameSync(tmp, file) // the ONLY publication point: config bytes old OR new
     fault?.('after_publish')
   } finally { if (fd !== undefined) closeSync(fd); if (existsSync(tmp)) rmSync(tmp) }
@@ -96,6 +133,7 @@ export function publishRestartOnlyPointer(config, from, to, { configSha, fromSha
   if (process.platform !== 'win32') refuse('windows_only')
   safeFile(config); safeDir(from); safeDir(to)
   if (![configSha,fromSha,toSha].every(v => hex.test(v ?? ''))) refuse('cas_missing')
+  noManagedTransition(config)
   const lock = path.join(path.dirname(config), '.chat-on-opencode-versioned-pointer.lock')
   const recoverLock = lock + '.recover'
   let fd
@@ -111,15 +149,15 @@ export function publishRestartOnlyPointer(config, from, to, { configSha, fromSha
     writeFileSync(fd, JSON.stringify(lockOwner()))
     fsyncSync(fd)
     idle(probe)
+    noManagedTransition(config)
     const old = readFileSync(config)
     if (sha(old) !== configSha || candidateDigest(from) !== fromSha || candidateDigest(to) !== toSha) refuse('cas_changed')
-    const p = pointer(old), fromPath = path.join(from, 'plugin'), toPath = path.join(to, 'plugin')
-    if (p.package !== fromPath) refuse('pointer_mismatch')
-    const next = Buffer.from(replaced(p.source, fromPath, toPath))
-    pointer(next)
+    const fromPath = path.join(from, 'plugin'), toPath = path.join(to, 'plugin')
+    const next = Buffer.from(replaced(pointer(old, fromPath), toPath))
+    pointer(next, toPath)
     idle(probe)
     if (sha(readFileSync(config)) !== configSha || candidateDigest(from) !== fromSha || candidateDigest(to) !== toSha) refuse('cas_changed')
-    atomic(config, next, fault)
+    atomic(config, next, configSha, fault)
     return { status: 'RESTART_REQUIRED_ONLY', promotionAllowed: false, activationAuthorized: false,
       previousConfigSha256: configSha, publishedConfigSha256: sha(next) }
   } finally { if (fd !== undefined) { closeSync(fd); rmSync(lock) } }
