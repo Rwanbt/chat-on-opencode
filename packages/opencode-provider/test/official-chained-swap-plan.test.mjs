@@ -10,6 +10,25 @@ import { installProvider, inspectInstalledProvider } from '../src/official-insta
 import { stageManagedSwap, activateManagedSwap, managedSwapStatus } from '../bin/official-managed-swap.mjs'
 import { candidateDigest } from '../src/official-upgrade.mjs'
 import { planChainedManagedSwap } from '../src/official-chained-swap-plan.mjs'
+import { createDraftAttestationChallenge } from '../src/human-draft-attestation.mjs'
+import { inspectAttestedDirectGeneration } from '../src/official-direct-generation-evidence.mjs'
+
+test('direct G attestation never authorizes and fails closed on stale evidence', { skip: process.platform !== 'win32' }, t => {
+  const v = fixture(t)
+  const probe = () => ({ status: 0, stdout: '0\r\n' })
+  prepareChainedGeneration(v.config, v.next, v.expected)
+  const baseline = inspectAttestedDirectGeneration(v.config, v.next, v.expected, { probe })
+  const challenge = createDraftAttestationChallenge(baseline.snapshot)
+  const input = { nonce: challenge.challenge, reviewedAllComposers: true, draftsSavedOrDiscarded: true }
+  const reviewed = inspectAttestedDirectGeneration(v.config, v.next, v.expected, { probe, challenge, input })
+  assert.equal(reviewed.status, 'REVIEW_ATTESTED_ONLY')
+  assert.equal(reviewed.activationAuthorized, false)
+  assert.equal(reviewed.promotionAllowed, false)
+  assert.equal(inspectAttestedDirectGeneration(v.config, v.next, v.expected, { probe,
+    challenge, input: { ...input, nonce: '0'.repeat(48) } }).status, 'NO_GO')
+  writeFileSync(v.config, '{}')
+  assert.throws(() => inspectAttestedDirectGeneration(v.config, v.next, v.expected, { probe, challenge, input }), /chained_swap|provider_config_modified/)
+})
 import { prepareChainedGeneration, recoverPreparedChainedGeneration, transitionChainedGeneration, recoverChainedTransition, rollbackChainedTransition, inspectChainedTransitionLock, proveDeadChainedLock } from '../src/official-chained-swap-stage.mjs'
 import { parseChainArgs } from '../bin/official-chained-swap-plan.mjs'
 
