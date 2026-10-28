@@ -44,3 +44,17 @@ test('an ambiguous original anchor still fails closed', () => {
     ...base, ...base, { role:'user', content:'Continue' },
   ], anchor), /transcript_anchor_ambiguous/)
 })
+
+test('more than sixteen bounded foreign-provider turns retain every record in order', () => {
+  const gap = Array.from({ length: 24 }, (_, index) => ({
+    role: index % 2 ? 'assistant' : 'user',
+    content: 'foreign-' + String(index).padStart(2, '0'),
+  }))
+  const text = continuationWithTranscript([...base, ...gap,
+    { role: 'user', content: 'Current request' }], anchor)
+  for (let index = 0; index < 24; index++) {
+    assert.ok(text.includes('foreign-' + String(index).padStart(2, '0')))
+  }
+  assert.ok(text.indexOf('foreign-00') < text.indexOf('foreign-23'))
+  assert.ok(text.endsWith('Current request'))
+})
