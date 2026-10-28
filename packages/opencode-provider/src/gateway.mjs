@@ -209,8 +209,14 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
       try {
         const cleanup = seenInput && activeTurnID
           ? control.stop(sessionID, activeTurnID) : control.cancelInput(inputID)
-        // Failure to acknowledge cancellation cannot stall a new native turn.
-        void Promise.resolve(cleanup).catch(() => undefined)
+        // Never block a cancelled stream or leak another session's lease.
+        // Track only categorical, non-sensitive acknowledgement; a stop failure
+        // remains UNCONFIRMED, not an invented cancellation success.
+        traceStage(seenInput && activeTurnID ? 'turn_stop_requested' : 'input_cancel_requested')
+        void Promise.resolve(cleanup).then(
+          () => traceStage('cancel_command_acknowledged'),
+          () => traceStage('cancel_command_unconfirmed'),
+        )
       } catch { /* an unconfirmed stop must never be reported as successful */ }
     }
   }
