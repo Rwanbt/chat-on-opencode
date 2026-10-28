@@ -126,11 +126,19 @@ export class CoSControl {
     for (let renewal = 0; renewal < 8; renewal++) {
       let response
       // A new chat may be in the durable outbox before its recorder is queryable.
+      // A transient GET failure is read-only: retry this cursor, NEVER the
+      // already-admitted POST /inputs. Bound consecutive transport failures.
+      let transportFailures = 0
       for (let attempt = 0; attempt < 60; attempt++) {
         try {
           response = await this.request('GET', `/v1/sessions/${sessionID}/events/stream?from=${cursor}&full=1`, undefined, { signal, stream: true })
           break
         } catch (error) {
+          if (error instanceof BridgeError && error.code === 'cos_transport_unavailable' &&
+              ++transportFailures <= 2 && attempt < 59) {
+            await delay(150, undefined, { signal }).catch(() => { throw new BridgeError('cos_stream_aborted', 499) })
+            continue
+          }
           if (!(error instanceof BridgeError) || error.status !== 404 || attempt === 59) throw error
           await delay(500, undefined, { signal }).catch(() => { throw new BridgeError('cos_stream_aborted', 499) })
         }
