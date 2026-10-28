@@ -152,6 +152,10 @@ test('handoff rejects clipped/non-text/incomplete and excessive context without 
   ]), anchor), /transcript_handoff_too_large/)
   assert.throws(() => plainMessages([...prefix, { role: 'assistant', content: [{ type: 'image_url', image_url: 'data' }] }, user]),
     /unsupported_chat_content/)
+  assert.throws(() => continuationWithTranscript(plainMessages([
+    { role: 'user', content: 'initial' }, { role: 'user', content: 'new prompt' },
+  ]), anchor), /transcript_anchor_incomplete/,
+  'retained anchor question without its verified CoS answer must never silently erase history')
   assert.equal(continuationWithTranscript(plainMessages([user]), anchor), 'new prompt',
     'compacted history with no exact anchor remains latest-only')
 })
