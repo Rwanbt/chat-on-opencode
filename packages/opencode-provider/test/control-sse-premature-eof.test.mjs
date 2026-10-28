@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import path from 'node:path'
 import { CoSControl } from '../src/control.mjs'
 
 const encoder = new TextEncoder()
@@ -16,7 +17,7 @@ test('premature upstream SSE EOF resumes verified cursor, no POST or duplicated 
     [ { seq: 3, kind: 'assistant_message', turnId: 'turn-1', message: { text: 'partial' } },
       { seq: 4, kind: 'turn_end', turnId: 'turn-1', outcome: 'completed' } ],
   ]
-  const client = new CoSControl({ directory: '/isolated-test', fetcher: async (url, options) => {
+  const client = new CoSControl({ directory: path.resolve('isolated-test'), fetcher: async (url, options) => {
     assert.equal(options.method, 'GET')
     paths.push(url)
     const batch = batches.shift()
@@ -37,7 +38,7 @@ test('premature upstream SSE EOF resumes verified cursor, no POST or duplicated 
 
 test('repeated premature SSE EOF without progress fails closed', async () => {
   let reads = 0
-  const client = new CoSControl({ directory: '/isolated-test', fetcher: async (_, options) => {
+  const client = new CoSControl({ directory: path.resolve('isolated-test'), fetcher: async (_, options) => {
     assert.equal(options.method, 'GET')
     reads++
     return { ok: true, body: stream('') }
