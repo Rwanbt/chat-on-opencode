@@ -87,3 +87,38 @@ test('transient SSE GET failures stop after bounded retries', async () => {
   }, /cos_transport_unavailable/)
   assert.equal(attempts, 3)
 })
+
+test('mid-stream reader reset resumes partial answer from exact next event', async () => {
+  let opens = 0
+  const client = new CoSControl({ directory:path.resolve('isolated-test'), fetcher:async (url, options) => {
+    assert.equal(options.method, 'GET')
+    opens++
+    if (opens === 1) {
+      assert.match(url, /from=0&full=1/)
+      let n = 0
+      return { ok:true, body:new ReadableStream({
+        pull(controller) {
+          if (n++ === 0) controller.enqueue(encoder.encode([
+            { seq:1, kind:'user_message', inputId:'input-1' },
+            { seq:2, kind:'turn_start', turnId:'turn-1', inputId:'input-1' },
+            { seq:3, kind:'assistant_message', turnId:'turn-1', message:{text:'partial'} },
+          ].map(frame).join('')))
+          else controller.error(Error('connection reset during stream'))
+        },
+      }) }
+    }
+    assert.match(url, /from=4&full=1/)
+    return { ok:true, body:stream([
+      { seq:4, kind:'assistant_message', turnId:'turn-1', message:{text:'partial completed'} },
+      { seq:5, kind:'turn_end', turnId:'turn-1', outcome:'completed' },
+    ].map(frame).join('')) }
+  } })
+  client.base='http://127.0.0.1:50001'; client.token='test-only'
+  const observed=[]
+  for await (const event of client.events('session-1')) {
+    observed.push(event.seq)
+    if (event.kind === 'turn_end') break
+  }
+  assert.deepEqual(observed,[1,2,3,4,5])
+  assert.equal(opens,2)
+})
