@@ -4,7 +4,8 @@
  *
  * Both generations advertise the SAME model ID. A provider-import marker is
  * necessary but never sufficient: the unique generated text must actually
- * appear in the owned Desktop renderer. Compare cold A, hot reload B, cold B.
+ * appear in the owned Desktop renderer. On CI, prove the restart-only A→B
+ * pointer with real idle-process enforcement, hot reload and cold rollback.
  */
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
@@ -13,8 +14,10 @@ import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import http from 'node:http'
 import path from 'node:path'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { createOpenCodeConfig } from '../packages/opencode-provider/src/config.mjs'
+import { candidateDigest } from '../packages/opencode-provider/src/official-upgrade.mjs'
+import { inspectRestartOnlyPointer, publishRestartOnlyPointer } from '../packages/opencode-provider/src/official-versioned-pointer.mjs'
 
 assert.equal(process.platform, 'win32', 'windows_only')
 const ci = process.env.GITHUB_ACTIONS === 'true'
@@ -48,6 +51,7 @@ for (const folder of ['Documents','Desktop','Downloads','Pictures','Music','Vide
 }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const mark = generation => 'GUI_GENERATOR_ACTUAL_' + generation + '_271828'
+const sha = bytes => createHash('sha256').update(bytes).digest('hex')
 const packageRoot = path.join(import.meta.dirname, '..', 'packages', 'opencode-provider')
 const configFile = path.join(dirs.config, 'opencode.jsonc')
 const windowProbe = path.join(import.meta.dirname, '..', 'scripts', 'probe-official-desktop-window.ps1')
@@ -63,6 +67,7 @@ async function port() {
   return found
 }
 const configs = new Map()
+const generationDirs = new Map()
 for (const generation of ['A', 'B']) {
   // Independent offline CoS runtimes return DIFFERENT generated strings from
   // the very same provider model ID. Never connect to a ChatGPT account.
@@ -112,17 +117,30 @@ for (const generation of ['A', 'B']) {
   assert.equal(build.status, 0, 'mock_runtime_build_failed')
   const pluginDir = path.join(dirs.bundles, generation)
   await mkdir(pluginDir)
+  generationDirs.set(generation, pluginDir)
   for (const name of ['bin', 'plugin', 'src']) {
     await cp(path.join(packageRoot, name), path.join(pluginDir, name), { recursive: true })
   }
   const entry = path.join(pluginDir, 'plugin', 'index.ts')
   const source = await readFile(entry, 'utf8')
   const importReceipt = path.join(dirs.receipts, generation + '.import')
+  const providerPort = await port()
+  // A pointer changes only plugins[0].package. The unchanged JSONC retains
+  // generation A's options/baseURL. Synthetic immutable A and B plugin source
+  // therefore pins its OWN offline CoS process and port, making a real GUI
+  // response identify the imported version (not merely the old config).
+  const originalPort = "const port = Number(option('port') ?? '45861')"
+  const originalRuntime = "runtimeExecutable: option('runtimeExecutable'),"
+  assert.ok(source.includes(originalPort) && source.includes(originalRuntime),
+    'plugin_lifecycle_contract_changed')
+  const pinnedSource = source
+    .replace(originalPort, 'const port = ' + providerPort)
+    .replace(originalRuntime, 'runtimeExecutable: ' + JSON.stringify(binary) + ',')
   await writeFile(entry, "import { writeFileSync as guiImportReceipt } from 'node:fs'\n" +
-    'guiImportReceipt(' + JSON.stringify(importReceipt) + ', ' + JSON.stringify(generation) + ')\n' + source)
+    'guiImportReceipt(' + JSON.stringify(importReceipt) + ', ' + JSON.stringify(generation) + ')\n' + pinnedSource)
   const config = createOpenCodeConfig({
     runtimeExecutable: binary, runtimeData: dirs.provider,
-    nodeExecutable: process.execPath, pluginDir, port: await port(),
+    nodeExecutable: process.execPath, pluginDir, port: providerPort,
   })
   config.model = 'chat-on-opencode/chatgpt-default'
   configs.set(generation, config)
@@ -453,30 +471,89 @@ async function realGeneratedReader(prompt, expected) {
 }
 try {
   await configFor('A')
+  const initialConfig = await readFile(configFile)
+  const initialSha = sha(initialConfig)
+  const a = generationDirs.get('A')
+  const b = generationDirs.get('B')
+  const aSha = candidateDigest(a)
+  const bSha = candidateDigest(b)
+  assert.equal(configs.get('A').model, configs.get('B').model, 'different_model_ids')
   await startDesktop()
   const coldA = await realGeneratedReader('Offline cold A actual reader marker', 'A')
   assert.ok(existsSync(path.join(dirs.receipts, 'A.import')), 'actual_plugin_A_never_imported')
-  await stopDesktop()
-  // A Desktop process restart without stopping its background CLI is NOT cold:
-  // that service retains plugin modules, model settings and session state.
-  // Stop ONLY the disposable service on this exact test-owned port first.
-  assert.match(stopOwnedManagedCli(), /ONLY_TEST_OWNED_SERVICE_STOPPED|OWNED_SERVICE_ALREADY_ABSENT/)
-  await configFor('B')
-  await startDesktop()
-  const coldB = await realGeneratedReader('Offline cold B actual reader marker', 'B')
-  assert.ok(existsSync(path.join(dirs.receipts, 'B.import')), 'actual_plugin_B_never_imported')
-  // A hot renderer reload is not a service restart; observe whether the
-  // running B service preserves B or imports A after changing the config.
-  await configFor('A')
-  await cdp.call('Page.reload', { ignoreCache: true })
-  await sleep(1500)
-  const hot = await realGeneratedReader('Offline hot reload actual reader marker', 'A')
-  await stopDesktop()
-  process.stdout.write(JSON.stringify({
-    verified: 'ACTUAL_OFFICIAL_GUI_GENERATED_RENDER',
-    modelId: 'chat-on-opencode/chatgpt-default', coldA, hot, coldB,
-    onlyTestOwnedWindows: true, personalProfilesUntouched: true,
-  }) + '\n')
+  if (ci) {
+    // The publisher MUST reject a live official GUI. This is the required
+    // RED case: do not bypass its real Windows process scan with a fake probe.
+    const firstProof = { configSha:initialSha, fromSha:aSha, toSha:bSha }
+    assert.throws(() => publishRestartOnlyPointer(configFile, a, b, firstProof),
+      /versioned_pointer_busy_or_unknown/, 'live_gui_must_block_pointer')
+    assert.deepEqual(await readFile(configFile), initialConfig, 'busy_attempt_modified_config')
+    await cdp.call('Page.reload', { ignoreCache:true })
+    await sleep(1500)
+    const hotA = await realGeneratedReader('Offline hot A same active reader', 'A')
+    await stopDesktop()
+    // Closing the HWND alone is insufficient: the vendor's managed CLI keeps
+    // plugin modules in memory. Stop only the disposable service on our port.
+    assert.match(stopOwnedManagedCli(), /ONLY_TEST_OWNED_SERVICE_STOPPED|OWNED_SERVICE_ALREADY_ABSENT/)
+    assert.throws(() => publishRestartOnlyPointer(configFile, a, b, {
+      ...firstProof, fault:point => { if (point === 'before_publish') throw Error('RED_before_commit') },
+    }), /RED_before_commit/, 'pre_rename_failure_must_be_observable')
+    assert.deepEqual(await readFile(configFile), initialConfig, 'RED_modified_config')
+    const promoted = publishRestartOnlyPointer(configFile, a, b, firstProof)
+    assert.equal(promoted.status, 'RESTART_REQUIRED_ONLY')
+    assert.equal(promoted.activationAuthorized, false)
+    assert.equal(inspectRestartOnlyPointer(configFile, initialSha,
+      promoted.publishedConfigSha256).state, 'NEW')
+    const promotedConfig = JSON.parse(await readFile(configFile, 'utf8'))
+    assert.equal(promotedConfig.plugins[0].package, path.join(b, 'plugin'),
+      'versioned_pointer_did_not_select_B_package')
+    assert.deepEqual(promotedConfig.plugins[0].options, configs.get('A').plugins[0].options,
+      'pointer_must_preserve_existing_runtime_options')
+    assert.deepEqual(promotedConfig.providers, configs.get('A').providers,
+      'pointer_must_preserve_provider_declaration')
+    assert.equal(promotedConfig.model,
+      'chat-on-opencode/chatgpt-default')
+    assert.equal(candidateDigest(a), aSha, 'immutable_A_changed')
+    assert.equal(candidateDigest(b), bSha, 'immutable_B_changed')
+    await startDesktop()
+    const coldB = await realGeneratedReader('Offline cold B through published pointer', 'B')
+    assert.ok(existsSync(path.join(dirs.receipts, 'B.import')), 'actual_plugin_B_never_imported')
+    await cdp.call('Page.reload', { ignoreCache:true })
+    await sleep(1500)
+    const hotB = await realGeneratedReader('Offline hot B same active reader', 'B')
+    await stopDesktop()
+    assert.match(stopOwnedManagedCli(), /ONLY_TEST_OWNED_SERVICE_STOPPED|OWNED_SERVICE_ALREADY_ABSENT/)
+    const reverted = publishRestartOnlyPointer(configFile, b, a, {
+      configSha:promoted.publishedConfigSha256, fromSha:bSha, toSha:aSha,
+    })
+    assert.equal(reverted.status, 'RESTART_REQUIRED_ONLY')
+    assert.deepEqual(await readFile(configFile), initialConfig, 'rollback_not_byte_exact')
+    await startDesktop()
+    const rollbackColdA = await realGeneratedReader('Offline cold A restored pointer', 'A')
+    await stopDesktop()
+    process.stdout.write(JSON.stringify({
+      verified:'ACTUAL_OFFICIAL_GUI_VERSIONED_POINTER_RESTART_ONLY',
+      modelId:'chat-on-opencode/chatgpt-default', coldA, hotA, coldB, hotB, rollbackColdA,
+      livePointerRefused:true, faultBeforePublishRefused:true, exactRollback:true,
+      onlyTestOwnedWindows:true, personalProfilesUntouched:true,
+    }) + '\n')
+  } else {
+    // Explicit disposable local extracts keep the earlier A→cold B smoke.
+    await stopDesktop()
+    assert.match(stopOwnedManagedCli(), /ONLY_TEST_OWNED_SERVICE_STOPPED|OWNED_SERVICE_ALREADY_ABSENT/)
+    await configFor('B')
+    await startDesktop()
+    const coldB = await realGeneratedReader('Offline cold B actual reader marker', 'B')
+    assert.ok(existsSync(path.join(dirs.receipts, 'B.import')), 'actual_plugin_B_never_imported')
+    await configFor('A')
+    await cdp.call('Page.reload', { ignoreCache:true })
+    await sleep(1500)
+    const hotB = await realGeneratedReader('Offline hot B actual reader marker', 'B')
+    await stopDesktop()
+    process.stdout.write(JSON.stringify({ verified:'ACTUAL_OFFICIAL_GUI_GENERATED_RENDER',
+      modelId:'chat-on-opencode/chatgpt-default', coldA, coldB, hotB,
+      onlyTestOwnedWindows:true, personalProfilesUntouched:true }) + '\n')
+  }
 } finally {
   try { await stopDesktop() } finally {
     const responseStatusCount = Object.fromEntries([...new Set(ownedNetwork.responses)].map(
