@@ -4,17 +4,20 @@
  *
  * Both generations advertise the SAME model ID. A provider-import marker is
  * necessary but never sufficient: the unique generated text must actually
- * appear in the owned Desktop renderer. Compare cold A, hot reload B, cold B.
+ * appear in the owned Desktop renderer. On CI, prove the restart-only A→B
+ * pointer with real idle-process enforcement, hot reload and cold rollback.
  */
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import http from 'node:http'
 import path from 'node:path'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { createOpenCodeConfig } from '../packages/opencode-provider/src/config.mjs'
+import { candidateDigest } from '../packages/opencode-provider/src/official-upgrade.mjs'
+import { inspectRestartOnlyPointer, publishRestartOnlyPointer } from '../packages/opencode-provider/src/official-versioned-pointer.mjs'
 
 assert.equal(process.platform, 'win32', 'windows_only')
 const ci = process.env.GITHUB_ACTIONS === 'true'
@@ -48,6 +51,7 @@ for (const folder of ['Documents','Desktop','Downloads','Pictures','Music','Vide
 }
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const mark = generation => 'GUI_GENERATOR_ACTUAL_' + generation + '_271828'
+const sha = bytes => createHash('sha256').update(bytes).digest('hex')
 const packageRoot = path.join(import.meta.dirname, '..', 'packages', 'opencode-provider')
 const configFile = path.join(dirs.config, 'opencode.jsonc')
 const windowProbe = path.join(import.meta.dirname, '..', 'scripts', 'probe-official-desktop-window.ps1')
@@ -63,6 +67,7 @@ async function port() {
   return found
 }
 const configs = new Map()
+const generationDirs = new Map()
 for (const generation of ['A', 'B']) {
   // Independent offline CoS runtimes return DIFFERENT generated strings from
   // the very same provider model ID. Never connect to a ChatGPT account.
@@ -112,17 +117,52 @@ for (const generation of ['A', 'B']) {
   assert.equal(build.status, 0, 'mock_runtime_build_failed')
   const pluginDir = path.join(dirs.bundles, generation)
   await mkdir(pluginDir)
+  generationDirs.set(generation, pluginDir)
   for (const name of ['bin', 'plugin', 'src']) {
     await cp(path.join(packageRoot, name), path.join(pluginDir, name), { recursive: true })
   }
   const entry = path.join(pluginDir, 'plugin', 'index.ts')
   const source = await readFile(entry, 'utf8')
+  // The test-only copy records sanitized gateway failure codes; this exposes
+  // the exact early 409/503 reason when a GUI request never yields a reply.
+  const gatewayFile = path.join(pluginDir, 'src', 'gateway.mjs')
+  const gatewaySource = await readFile(gatewayFile, 'utf8')
+  assert.ok(gatewaySource.includes('diagnostics.lastFailure = code'),
+    'gateway_error_contract_changed')
+  await writeFile(gatewayFile, gatewaySource.replace('diagnostics.lastFailure = code',
+    'diagnostics.lastFailure = code\n      traceStage(code)'))
+  // A live Desktop may add native text-only bookkeeping around the prior answer.
+  // Instrument only synthetic request role/length structure, never content.
+  const transcriptFile = path.join(pluginDir, 'src', 'transcript-handoff.mjs')
+  const transcriptSource = await readFile(transcriptFile, 'utf8')
+  const gapSource = 'const gap = dialogue.slice(matching[0] + 1, -1)'
+  assert.ok(transcriptSource.includes(gapSource), 'transcript_handoff_contract_changed')
+  const shapeReceipt = path.join(dirs.receipts, generation + '.transcript-shape.jsonl')
+  const syntheticTrace = 'try { logSyntheticShape(' + JSON.stringify(shapeReceipt) +
+    ', JSON.stringify({ roles:dialogue.map(item=>item.role),' +
+    ' gap:gap.map(item=>({role:item.role,chars:item.content.length})), matches:matching.length })' +
+    ' + "\\n") } catch {}'
+  await writeFile(transcriptFile,
+    "import { appendFileSync as logSyntheticShape } from 'node:fs'\n" +
+    transcriptSource.replace(gapSource, gapSource + '\n' + syntheticTrace))
   const importReceipt = path.join(dirs.receipts, generation + '.import')
+  const providerPort = await port()
+  // A pointer changes only plugins[0].package. The unchanged JSONC retains
+  // generation A's options/baseURL. Synthetic immutable A and B plugin source
+  // therefore pins its OWN offline CoS process and port, making a real GUI
+  // response identify the imported version (not merely the old config).
+  const originalPort = "const port = Number(option('port') ?? '45861')"
+  const originalRuntime = "runtimeExecutable: option('runtimeExecutable'),"
+  assert.ok(source.includes(originalPort) && source.includes(originalRuntime),
+    'plugin_lifecycle_contract_changed')
+  const pinnedSource = source
+    .replace(originalPort, 'const port = ' + providerPort)
+    .replace(originalRuntime, 'runtimeExecutable: ' + JSON.stringify(binary) + ',')
   await writeFile(entry, "import { writeFileSync as guiImportReceipt } from 'node:fs'\n" +
-    'guiImportReceipt(' + JSON.stringify(importReceipt) + ', ' + JSON.stringify(generation) + ')\n' + source)
+    'guiImportReceipt(' + JSON.stringify(importReceipt) + ', ' + JSON.stringify(generation) + ')\n' + pinnedSource)
   const config = createOpenCodeConfig({
     runtimeExecutable: binary, runtimeData: dirs.provider,
-    nodeExecutable: process.execPath, pluginDir, port: await port(),
+    nodeExecutable: process.execPath, pluginDir, port: providerPort,
   })
   config.model = 'chat-on-opencode/chatgpt-default'
   configs.set(generation, config)
@@ -138,7 +178,10 @@ Object.assign(env, {
   XDG_CACHE_HOME: dirs.cache, XDG_STATE_HOME: dirs.state,
   OPENCODE_CONFIG_DIR: dirs.config, OPENCODE_DESKTOP_TEST_ROOT: dirs.desktopRoot,
   CHAT_ON_OPENCODE_STAGE_TRACE: path.join(dirs.receipts, 'stages.txt'),
-  CHAT_ON_OPENCODE_TEST_TRACE_DIR: dirs.provider,
+  // Mock route tracing checks path.dirname(runtimeData); log only synthetic
+  // request method/path into the disposable runtime, and redact session IDs
+  // when reporting a failure.
+  CHAT_ON_OPENCODE_TEST_TRACE_DIR: root,
   OPENCODE_CONFIG_PROJECT_DISABLE: '1', OPENCODE_DISABLE_DEFAULT_PLUGINS: '1',
   OPENCODE_DISABLE_AUTOUPDATE: '1', OPENCODE_DISABLE_MODELS_FETCH: '1',
   HTTP_PROXY: 'http://127.0.0.1:9', HTTPS_PROXY: 'http://127.0.0.1:9',
@@ -154,6 +197,7 @@ const allowedProviderPorts = [...configs.values()].map(config =>
 const allowedPorts = new Set([ownedServicePort, ...allowedProviderPorts])
 let blockedExternal = 0
 let forwardedLocal = 0
+let transientProxyResets = 0
 // Chromium's forced proxy previously swallowed every localhost fetch.
 // Instead, the test owns a loopback-only proxy that forwards exclusively to
 // explicitly generated disposable service/provider ports. HTTPS CONNECT,
@@ -188,14 +232,39 @@ const ownedProxy = http.createServer((request, response) => {
     if (!response.headersSent) response.writeHead(502)
     response.end()
   })
+  // Renderer reload or a cold GUI shutdown may interrupt an in-flight
+  // proxy request. A client disconnect is not a test process crash.
+  request.on('error', error => {
+    if (error.code === 'ECONNRESET' || error.code === 'EPIPE') transientProxyResets++
+    else ownedNetwork.failures.push('proxy_request_' + String(error.code || 'unknown'))
+    upstream.destroy()
+  })
+  response.on('error', error => {
+    if (error.code === 'ECONNRESET' || error.code === 'EPIPE') transientProxyResets++
+    else ownedNetwork.failures.push('proxy_response_' + String(error.code || 'unknown'))
+    upstream.destroy()
+  })
   request.pipe(upstream)
+})
+ownedProxy.on('clientError', (error, socket) => {
+  if (error.code === 'ECONNRESET' || error.code === 'EPIPE') transientProxyResets++
+  else ownedNetwork.failures.push('proxy_client_' + String(error.code || 'unknown'))
+  socket.destroy()
 })
 ownedProxy.on('connect', (_request, socket) => {
   blockedExternal++
+  socket.on('error', error => {
+    if (error.code === 'ECONNRESET' || error.code === 'EPIPE') transientProxyResets++
+    else ownedNetwork.failures.push('proxy_connect_' + String(error.code || 'unknown'))
+  })
   socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
 })
 ownedProxy.on('upgrade', (_request, socket) => {
   blockedExternal++
+  socket.on('error', error => {
+    if (error.code === 'ECONNRESET' || error.code === 'EPIPE') transientProxyResets++
+    else ownedNetwork.failures.push('proxy_upgrade_' + String(error.code || 'unknown'))
+  })
   socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
 })
 await new Promise((resolve,reject) =>
@@ -348,6 +417,27 @@ async function stopDesktop() {
   }
   owned = null
 }
+async function reloadOwnedRenderer() {
+  // Register BEFORE navigation so a fast local renderer cannot beat the
+  // observer. A fixed delay would be a race on slower/faster CI hosts.
+  const client = cdp
+  const loaded = new Promise((resolve, reject) => {
+    const complete = event => {
+      let payload
+      try { payload = JSON.parse(event.data) } catch { return }
+      if (payload.method !== 'Page.loadEventFired') return
+      clearTimeout(timer)
+      client.socket.removeEventListener('message', complete)
+      resolve()
+    }
+    const timer = setTimeout(() => {
+      client.socket.removeEventListener('message', complete)
+      reject(Error('owned_renderer_reload_timeout'))
+    }, 15_000)
+    client.socket.addEventListener('message', complete)
+  })
+  await Promise.all([client.call('Page.reload', { ignoreCache:true }), loaded])
+}
 function stopOwnedManagedCli() {
   // Desktop may leave its child service alive after the owned HWND exits.
   // Resolve ONLY the disposable port that this runner chose and verify the
@@ -377,6 +467,157 @@ function stopOwnedManagedCli() {
   assert.equal(result.status, 0, 'owned_service_cleanup_unproven:' +
     String(result.stderr).slice(0, 350).replaceAll(dirs.desktopRoot, '[owned-root]'))
   return result.stdout.trim()
+}
+const ownedEndpoint = path.join(dirs.provider, 'control-api', 'endpoint.json')
+async function ownedRuntimePid() {
+  if (!existsSync(ownedEndpoint)) return null
+  const endpoint = JSON.parse(await readFile(ownedEndpoint, 'utf8'))
+  assert.ok(Number.isSafeInteger(endpoint.pid) && endpoint.pid > 0,
+    'test_owned_runtime_endpoint_invalid')
+  return endpoint.pid
+}
+async function awaitRuntimeStopped(pid) {
+  // Close may leave the compiled test-only CoS mock running with a stale
+  // control endpoint even when the official managed CLI is already gone.
+  // Allow a short natural exit first; on hosted CI, the exact binary path
+  // AND service switch must prove it is our synthetic runtime before a kill.
+  const isAlive = () => {
+    if (pid === null) return false
+    const script = '$p=Get-Process -Id ' + pid +
+      ' -ErrorAction SilentlyContinue; if ($null -eq $p) { "ABSENT" } else { "ALIVE" }'
+    const result = spawnSync('powershell.exe', ['-NoProfile','-NonInteractive','-Command',script], {
+      windowsHide:true,shell:false,encoding:'utf8',timeout:7000,
+    })
+    assert.equal(result.status, 0, 'owned_runtime_exit_unverifiable')
+    return /^ALIVE\s*$/.test(result.stdout)
+  }
+  const naturalDeadline = Date.now() + 4_000
+  while (Date.now() < naturalDeadline) {
+    if (!isAlive() && !existsSync(ownedEndpoint)) return
+    await sleep(250)
+  }
+  const running = isAlive()
+  process.stderr.write('TEST_ONLY_COLD_STOP_DIAGNOSTIC=' +
+    JSON.stringify({ endpointPresent:existsSync(ownedEndpoint), runtimeAlive:running }) + '\n')
+  if (running) {
+    const escape = value => "'" + value.replaceAll("'", "''") + "'"
+    const allowed = ['A','B'].map(g => escape(path.join(dirs.binaries,g+'.exe'))).join(',')
+    const script = [
+      '$ErrorActionPreference="Stop"',
+      '$id=' + pid,
+      '$p=Get-CimInstance Win32_Process -Filter ("ProcessId=" + $id)',
+      'if ($null -eq $p) { Write-Output "TEST_MOCK_ALREADY_EXITED"; exit 0 }',
+      '$expected=@(' + allowed + ')',
+      'if (-not ($expected -contains $p.ExecutablePath)) { throw "UNOWNED_RUNTIME_PATH_NO_SIGNAL" }',
+      'if ($p.CommandLine -notlike "*--chat-on-opencode-provider-service*") { throw "UNOWNED_RUNTIME_ARGS_NO_SIGNAL" }',
+      'Stop-Process -Id $id -Force -ErrorAction Stop',
+      'Write-Output "VERIFIED_SYNTHETIC_RUNTIME_STOPPED"',
+    ].join('; ')
+    const result = spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{
+      windowsHide:true,shell:false,encoding:'utf8',timeout:8000,
+    })
+    assert.equal(result.status,0,'synthetic_runtime_cleanup_unproven:' +
+      String(result.stderr).slice(0,200).replaceAll(root,'[runner-owned]'))
+    assert.match(result.stdout,/VERIFIED_SYNTHETIC_RUNTIME_STOPPED|TEST_MOCK_ALREADY_EXITED/)
+  }
+  const exitDeadline = Date.now() + 8_000
+  while (Date.now() < exitDeadline && isAlive()) await sleep(250)
+  assert.equal(isAlive(),false,'test_mock_runtime_refused_exit')
+  // The old mock can die without its SIGTERM listener, leaving only its
+  // synthetic endpoint/token. Delete these two files only AFTER its exact
+  // process has exited, so the cold B service cannot adopt stale transport.
+  await rm(ownedEndpoint,{force:true})
+  await rm(path.join(dirs.provider,'control-api','token'),{force:true})
+  assert.equal(existsSync(ownedEndpoint),false,'owned_endpoint_cleanup_failed')
+}
+
+function drainOnlyRunnerOwnedOpenCode() {
+  // The publisher correctly counts ALL official OpenCode GUI/CLI/provider
+  // processes, including orphan renderer children with no listening port.
+  // On the disposable runner, stop only executables proven to reside inside
+  // RUNNER_TEMP. An unrelated personal process blocks the test without signal.
+  const q = value => "'" + value.replaceAll("'", "''") + "'"
+  const script = [
+    '$ErrorActionPreference="Stop"',
+    '$root=' + q(path.resolve(base)),
+    '$prefix=$root.TrimEnd([char]92)+[IO.Path]::DirectorySeparatorChar',
+    '$names=@("OpenCode","opencode","opencode-cli","Chat On OpenCode Provider")',
+    '$targets=@([Diagnostics.Process]::GetProcesses() | Where-Object { $_.ProcessName -in $names })',
+    '$verified=@()',
+    'foreach($proc in $targets) {',
+    '  $detail=Get-CimInstance Win32_Process -Filter ("ProcessId="+$proc.Id)',
+    '  if ($null -eq $detail) { continue }',
+    '  if ([string]::IsNullOrWhiteSpace($detail.ExecutablePath) -or ' +
+      '-not $detail.ExecutablePath.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) { ' +
+      'throw "EXTERNAL_OPEN_CODE_PROCESS_NO_SIGNAL" }',
+    '  $verified+=,$detail',
+    '}',
+    'foreach($prior in $verified) {',
+    '  $current=Get-CimInstance Win32_Process -Filter ("ProcessId="+$prior.ProcessId)',
+    '  if ($null -eq $current) { continue }',
+    '  if ($current.ExecutablePath -ne $prior.ExecutablePath -or ' +
+      '$current.CreationDate -ne $prior.CreationDate) { throw "OPEN_CODE_PID_REUSED_NO_SIGNAL" }',
+    '  Stop-Process -Id $prior.ProcessId -Force -ErrorAction Stop',
+    '}',
+    'Write-Output ("VERIFIED_RUNNER_OWNED_OPENCODE_STOPPED="+$verified.Count)',
+  ].join('\n')
+  const result = spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{
+    shell:false,windowsHide:true,encoding:'utf8',timeout:10_000,
+  })
+  assert.equal(result.status,0,'runner_owned_opencode_drain_unproven:' +
+    String(result.stderr).slice(0,250).replaceAll(base,'[runner-temp]'))
+  assert.match(result.stdout,/^VERIFIED_RUNNER_OWNED_OPENCODE_STOPPED=\d+\s*$/)
+  process.stderr.write('TEST_ONLY_OPEN_CODE_IDLE_DRAIN=' + result.stdout.trim() + '\n')
+}
+async function coldStopDesktop() {
+  const runtimePid = await ownedRuntimePid()
+  await stopDesktop()
+  assert.match(stopOwnedManagedCli(), /ONLY_TEST_OWNED_SERVICE_STOPPED|OWNED_SERVICE_ALREADY_ABSENT/)
+  drainOnlyRunnerOwnedOpenCode()
+  await awaitRuntimeStopped(runtimePid)
+}
+async function journalState() {
+  const file = path.join(dirs.provider, 'offline-synthetic-journal.json')
+  if (!existsSync(file)) return { exists:false }
+  const saved = JSON.parse(await readFile(file, 'utf8'))
+  assert.ok(Array.isArray(saved.sessions) && Array.isArray(saved.events),
+    'synthetic_journal_invalid')
+  const records = saved.events.flatMap(entry => Array.isArray(entry[1]) ? entry[1] : [])
+  return { exists:true, sessionCount:saved.sessions.length,
+    eventGroupCount:saved.events.length, records:records.length,
+    userReceipts:records.filter(event => event.kind === 'user_message').length,
+    completedTurns:records.filter(event => event.kind === 'turn_end' && event.outcome === 'completed').length,
+    custodyFiles:existsSync(path.join(dirs.provider, '.chat-on-opencode-turn-custody'))
+      ? (await readdir(path.join(dirs.provider, '.chat-on-opencode-turn-custody'))).length : 0 }
+}
+async function openOwnedFreshSession(priorGeneration) {
+  // Official signed 2.1.4 exposes exactly one visible "New session" native
+  // button. Click the real GUI; never create a session via SDK/direct HTTP.
+  const newButton = '[...document.querySelectorAll("button,[role=button]")].filter(e=>' +
+    'e.getClientRects().length && e.getAttribute("aria-label")==="New session")'
+  const limit = Date.now() + 15_000
+  let count = 0
+  while (Date.now() < limit) {
+    count = await cdp.eval('(() => ' + newButton + '.length)()')
+    if (count === 1) break
+    if (count > 1) throw Error('ambiguous_native_new_session_buttons')
+    await sleep(250)
+  }
+  assert.equal(count, 1, 'native_new_session_button_not_found')
+  assert.equal(await cdp.eval('(() => {const buttons=' + newButton +
+    ';if(buttons.length!==1)return false;buttons[0].click();return true})()'),
+    true, 'native_new_session_click_failed')
+  const old = priorGeneration ? mark(priorGeneration) : ''
+  const deadline = Date.now() + 16_000
+  while (Date.now() < deadline) {
+    const status = await cdp.eval('(() => ({ oldAnswerPresent:' +
+      '(document.body?.innerText??"").includes(' + JSON.stringify(old) + '),' +
+      'composers:[...document.querySelectorAll("textarea,[contenteditable=true],[role=textbox]")]' +
+      '.filter(e=>e.getClientRects().length>0&&!e.disabled).length }))()')
+    if (status.composers === 1 && !status.oldAnswerPresent) return
+    await sleep(250)
+  }
+  throw Error('native_new_session_did_not_display_fresh_composer')
 }
 async function realGeneratedReader(prompt, expected) {
   // An actual on-screen composer must accept user input. Do not send a model
@@ -432,6 +673,9 @@ async function realGeneratedReader(prompt, expected) {
     for (const generation of ['A', 'B']) {
       if (text.includes(exactReply(generation))) {
         if (expected) assert.equal(generation, expected, 'wrong_real_gui_generator')
+        process.stdout.write('OWNED_REAL_GUI_NONCE_RESPONSE=' + JSON.stringify({
+          generation, probe:prompt, match:true, modelId:'chat-on-opencode/chatgpt-default',
+        }) + '\n')
         return generation
       }
     }
@@ -444,6 +688,22 @@ async function realGeneratedReader(prompt, expected) {
     historicMarkers:['A','B'].filter(gen => body.includes(mark(gen))),
     pluginAImported:existsSync(path.join(dirs.receipts,'A.import')),
     pluginBImported:existsSync(path.join(dirs.receipts,'B.import')),
+    syntheticJournal:await journalState(),
+    transcriptRoles:await Promise.all(['A','B'].map(async generation => {
+      const file = path.join(dirs.receipts, generation + '.transcript-shape.jsonl')
+      if (!existsSync(file)) return { generation, exists:false }
+      const lines = (await readFile(file,'utf8')).trim().split(/\r?\n/).filter(Boolean)
+      return { generation, shapes:lines.slice(-5).map(line => JSON.parse(line)) }
+    })),
+    failureKinds:['turn_first_message_pending','turn_first_message_conflict',
+      'cos_replay_input_unavailable','cos_transport_unavailable','cos_stream_ended_without_terminal']
+      .filter(kind => body.includes(kind)),
+    syntheticControlRoutes:existsSync(path.join(dirs.provider,'fixture-routes.txt'))
+      ? (await readFile(path.join(dirs.provider,'fixture-routes.txt'),'utf8')).trim()
+        .split(/\r?\n/).slice(-22).map(route => route
+          .replace(/\/v1\/sessions\/[0-9a-z-]+/g, '/v1/sessions/{id}')
+          .replace(/\/v1\/inputs\/[0-9a-z-]+/g, '/v1/inputs/{id}'))
+      : [],
     stages:existsSync(path.join(dirs.receipts,'stages.txt'))
       ? (await readFile(path.join(dirs.receipts,'stages.txt'),'utf8')).trim().split(/\r?\n/).slice(-16)
       : [],
@@ -453,30 +713,99 @@ async function realGeneratedReader(prompt, expected) {
 }
 try {
   await configFor('A')
+  const initialConfig = await readFile(configFile)
+  const initialSha = sha(initialConfig)
+  const a = generationDirs.get('A')
+  const b = generationDirs.get('B')
+  const aSha = candidateDigest(a)
+  const bSha = candidateDigest(b)
+  assert.equal(configs.get('A').model, configs.get('B').model, 'different_model_ids')
   await startDesktop()
   const coldA = await realGeneratedReader('Offline cold A actual reader marker', 'A')
   assert.ok(existsSync(path.join(dirs.receipts, 'A.import')), 'actual_plugin_A_never_imported')
-  await stopDesktop()
-  // A Desktop process restart without stopping its background CLI is NOT cold:
-  // that service retains plugin modules, model settings and session state.
-  // Stop ONLY the disposable service on this exact test-owned port first.
-  assert.match(stopOwnedManagedCli(), /ONLY_TEST_OWNED_SERVICE_STOPPED|OWNED_SERVICE_ALREADY_ABSENT/)
-  await configFor('B')
-  await startDesktop()
-  const coldB = await realGeneratedReader('Offline cold B actual reader marker', 'B')
-  assert.ok(existsSync(path.join(dirs.receipts, 'B.import')), 'actual_plugin_B_never_imported')
-  // A hot renderer reload is not a service restart; observe whether the
-  // running B service preserves B or imports A after changing the config.
-  await configFor('A')
-  await cdp.call('Page.reload', { ignoreCache: true })
-  await sleep(1500)
-  const hot = await realGeneratedReader('Offline hot reload actual reader marker', 'A')
-  await stopDesktop()
-  process.stdout.write(JSON.stringify({
-    verified: 'ACTUAL_OFFICIAL_GUI_GENERATED_RENDER',
-    modelId: 'chat-on-opencode/chatgpt-default', coldA, hot, coldB,
-    onlyTestOwnedWindows: true, personalProfilesUntouched: true,
-  }) + '\n')
+  const persistedA = await journalState()
+  assert.ok(persistedA.exists && persistedA.sessionCount > 0 &&
+    persistedA.userReceipts > 0 && persistedA.completedTurns > 0,
+  'synthetic_CoS_journal_not_durable_after_first_reply')
+  process.stderr.write('SYNTHETIC_FIRST_TURN_PERSISTENCE=' + JSON.stringify(persistedA) + '\n')
+  const uiNav = await cdp.eval('(() => [...document.querySelectorAll("button,[role=button]")]' +
+    '.filter(e=>e.getClientRects().length)' +
+    '.map(e=>({label:(e.getAttribute("aria-label")||e.getAttribute("title")||"").slice(0,80)}))' +
+    '.filter(e=>/new|nouve|chat|session|conversation/i.test(e.label)).slice(0,20))()')
+  process.stderr.write('SYNTHETIC_OFFICIAL_GUI_NAV=' + JSON.stringify(uiNav) + '\n')
+  if (ci) {
+    // The publisher MUST reject a live official GUI. This is the required
+    // RED case: do not bypass its real Windows process scan with a fake probe.
+    const firstProof = { configSha:initialSha, fromSha:aSha, toSha:bSha }
+    assert.throws(() => publishRestartOnlyPointer(configFile, a, b, firstProof),
+      /versioned_pointer_busy_or_unknown/, 'live_gui_must_block_pointer')
+    assert.deepEqual(await readFile(configFile), initialConfig, 'busy_attempt_modified_config')
+    await reloadOwnedRenderer()
+    await openOwnedFreshSession('A')
+    const hotA = await realGeneratedReader('Offline hot A same active reader', 'A')
+    await coldStopDesktop()
+    // Closing the HWND alone is insufficient: the vendor's managed CLI keeps
+    // plugin modules in memory. Stop only the disposable service on our port.
+    assert.throws(() => publishRestartOnlyPointer(configFile, a, b, {
+      ...firstProof, fault:point => { if (point === 'before_publish') throw Error('RED_before_commit') },
+    }), /RED_before_commit/, 'pre_rename_failure_must_be_observable')
+    assert.deepEqual(await readFile(configFile), initialConfig, 'RED_modified_config')
+    const promoted = publishRestartOnlyPointer(configFile, a, b, firstProof)
+    assert.equal(promoted.status, 'RESTART_REQUIRED_ONLY')
+    assert.equal(promoted.activationAuthorized, false)
+    assert.equal(inspectRestartOnlyPointer(configFile, initialSha,
+      promoted.publishedConfigSha256).state, 'NEW')
+    const promotedConfig = JSON.parse(await readFile(configFile, 'utf8'))
+    assert.equal(promotedConfig.plugins[0].package, path.join(b, 'plugin'),
+      'versioned_pointer_did_not_select_B_package')
+    assert.deepEqual(promotedConfig.plugins[0].options, configs.get('A').plugins[0].options,
+      'pointer_must_preserve_existing_runtime_options')
+    assert.deepEqual(promotedConfig.providers, configs.get('A').providers,
+      'pointer_must_preserve_provider_declaration')
+    assert.equal(promotedConfig.model,
+      'chat-on-opencode/chatgpt-default')
+    assert.equal(candidateDigest(a), aSha, 'immutable_A_changed')
+    assert.equal(candidateDigest(b), bSha, 'immutable_B_changed')
+    await startDesktop()
+    await openOwnedFreshSession('A')
+    const coldB = await realGeneratedReader('Offline cold B through published pointer', 'B')
+    assert.ok(existsSync(path.join(dirs.receipts, 'B.import')), 'actual_plugin_B_never_imported')
+    await reloadOwnedRenderer()
+    await openOwnedFreshSession('B')
+    const hotB = await realGeneratedReader('Offline hot B same active reader', 'B')
+    await coldStopDesktop()
+    const reverted = publishRestartOnlyPointer(configFile, b, a, {
+      configSha:promoted.publishedConfigSha256, fromSha:bSha, toSha:aSha,
+    })
+    assert.equal(reverted.status, 'RESTART_REQUIRED_ONLY')
+    assert.deepEqual(await readFile(configFile), initialConfig, 'rollback_not_byte_exact')
+    await startDesktop()
+    await openOwnedFreshSession('B')
+    const rollbackColdA = await realGeneratedReader('Offline cold A restored pointer', 'A')
+    await coldStopDesktop()
+    process.stdout.write(JSON.stringify({
+      verified:'ACTUAL_OFFICIAL_GUI_VERSIONED_POINTER_RESTART_ONLY',
+      modelId:'chat-on-opencode/chatgpt-default', coldA, hotA, coldB, hotB, rollbackColdA,
+      livePointerRefused:true, faultBeforePublishRefused:true, exactRollback:true,
+      onlyTestOwnedWindows:true, personalProfilesUntouched:true,
+    }) + '\n')
+  } else {
+    // Explicit disposable local extracts keep the earlier A→cold B smoke.
+    await coldStopDesktop()
+    await configFor('B')
+    await startDesktop()
+    await openOwnedFreshSession('A')
+    const coldB = await realGeneratedReader('Offline cold B actual reader marker', 'B')
+    assert.ok(existsSync(path.join(dirs.receipts, 'B.import')), 'actual_plugin_B_never_imported')
+    await configFor('A')
+    await reloadOwnedRenderer()
+    await openOwnedFreshSession('B')
+    const hotB = await realGeneratedReader('Offline hot B actual reader marker', 'B')
+    await coldStopDesktop()
+    process.stdout.write(JSON.stringify({ verified:'ACTUAL_OFFICIAL_GUI_GENERATED_RENDER',
+      modelId:'chat-on-opencode/chatgpt-default', coldA, coldB, hotB,
+      onlyTestOwnedWindows:true, personalProfilesUntouched:true }) + '\n')
+  }
 } finally {
   try { await stopDesktop() } finally {
     const responseStatusCount = Object.fromEntries([...new Set(ownedNetwork.responses)].map(
@@ -491,7 +820,7 @@ try {
     await new Promise(resolve => ownedProxy.close(resolve))
     process.stderr.write('OWNED_PROXY_PROOF=' +
       JSON.stringify({forwardedLocal,blockedExternal,restrictedPorts:allowedPorts.size,
-        closed:true}) + '\n')
+        closed:true,transientProxyResets}) + '\n')
   }
   // CI runner owns cleanup of all disposable app storage and helper handles.
 }
