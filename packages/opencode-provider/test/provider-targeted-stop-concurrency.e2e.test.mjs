@@ -55,12 +55,12 @@ test('cancelled renderer stream stops exact CoS turn without stopping a concurre
     })
     return {promise,abort:()=>req.destroy(Error('user_pressed_Stop'))}
   }
-  const a=run('cancel-A','a1',true)
+  const a=run('cancel-A','msg-a001',true)
   a.promise.catch(()=>undefined)
   await Promise.race([aReady,new Promise((_,reject)=>setTimeout(()=>reject(Error('a_never_streamed')),3000))])
   a.abort()
   await assert.rejects(a.promise,/user_pressed_Stop|client_aborted|ECONNRESET/)
-  const b=await Promise.race([run('cancel-B','b1',false).promise,new Promise((_,reject)=>setTimeout(()=>reject(Error('other_session_blocked')),3000))])
+  const b=await Promise.race([run('cancel-B','msg-b001',false).promise,new Promise((_,reject)=>setTimeout(()=>reject(Error('other_session_blocked')),3000))])
   assert.equal(b.status,200)
   assert.match(b.body,/SAFE-B/)
   await new Promise(resolve=>setTimeout(resolve,50))
