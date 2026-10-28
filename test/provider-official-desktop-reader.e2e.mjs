@@ -750,6 +750,8 @@ async function realGeneratedReader(prompt, expected) {
           proxiedSseResponses:ownedSse.responses-proxiedSseAtStart.responses,
           proxiedSseElapsedMs:ownedSse.firstAt===null ? 0 : Math.max(0,ownedSse.lastAt-ownedSse.firstAt),
         }) + '\n')
+        assert.ok(domStream?.partialBeforeFull && domStream?.partialLeadMs > 0,
+          'official_gui_synthetic_partial_not_rendered_before_final')
         process.stdout.write('OWNED_REAL_GUI_NONCE_RESPONSE=' + JSON.stringify({
           generation, probe:prompt, match:true, modelId:'chat-on-opencode/chatgpt-default',
         }) + '\n')
