@@ -48,6 +48,15 @@ class FakeCoS {
   }
 }
 
+test('native Stop at terminal handoff must not publish a late successful answer', async () => {
+  const abort = new AbortController()
+  const cos = new FakeCoS(['complete answer'])
+  await assert.rejects(runTurn(cos, request, {
+    sessionKey:'ses_terminal_abort', messageKey:'msg_terminal_abort_001',
+    signal:abort.signal, emit:()=>{}, onTerminal:()=>abort.abort(),
+  }), /opencode_turn_cancelled/)
+})
+
 test('durable input POST inherits native cancellation without changing its idempotent input id', async () => {
   const abort = new AbortController()
   const cos = new FakeCoS()

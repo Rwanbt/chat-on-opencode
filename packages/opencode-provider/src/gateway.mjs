@@ -214,6 +214,9 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
       await emit(textSoFar)
     }
     onTerminal?.(terminalSeq)
+    // A native Stop can win the finalization handoff after the broker has
+    // already recorded turn_end. Never publish success for a closed consumer.
+    if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
     return textSoFar
   } finally {
     if (signal?.aborted && !complete && sendStarted) {
@@ -420,6 +423,7 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody, 
           recordNativeSSE('native_sse_frame_written')
         }
       } })
+      if (cancel.signal.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
       if (!isToolResult && typeof result === 'string' && !cancel.signal.aborted) {
         const anchor = completedTranscriptAnchor(body.messages, result)
         if (anchor && (!priorAnchor || terminalSeq === null || terminalSeq > priorAnchor.seq)) {
@@ -453,6 +457,7 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody, 
       }
       if (isToolResult) issuedReads.delete(sessionKey)
       if (stream) {
+        if (cancel.signal.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
         if (!res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
         nativeSSETerminated = true
         res.end('data: ' + JSON.stringify(chunk({}, 'stop')) + '\n\ndata: [DONE]\n\n')
