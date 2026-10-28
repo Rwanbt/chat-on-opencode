@@ -186,7 +186,12 @@ export class CoSControl {
         }
       } finally {
         signal?.removeEventListener('abort', onAbort)
-        await reader.cancel().catch(() => undefined)
+        // A rotation (max_duration) must advance to the next journal cursor
+        // even if the old stream's cancellation handshake never settles.
+        // Likewise, a completed turn must release the native HTTP response
+        // without waiting on a now-obsolete upstream reader.
+        try { void reader.cancel().catch(() => undefined) }
+        catch { /* cleanup is best-effort after the stream is no longer owned */ }
       }
       if (!rotated) throw new BridgeError('cos_stream_ended_without_terminal', 502)
     }
