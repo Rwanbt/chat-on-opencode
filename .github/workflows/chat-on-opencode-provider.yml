@@ -233,6 +233,12 @@ jobs:
         run: |
           ./scripts/verify-official-desktop-bundle.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Offline restart-only versioned config pointer through authentic Desktop bundled CLI
+        shell: pwsh
+        run: |
+          $env:CHAT_ON_OPENCODE_TEST_OFFICIAL_CLI = $env:CHAT_ON_OPENCODE_TEST_CLI
+          node --test packages/opencode-provider/test/official-immutable-cli.e2e.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Bundled Desktop CLI 2.1.4 starts real packaged provider Electron (unpaired)
         shell: pwsh
         run: |
