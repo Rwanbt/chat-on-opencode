@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { traceStage } from './stage-trace.mjs'
 import { BridgeError } from './control.mjs'
 import { READ_INSTRUCTIONS, validateNativeTools, readResultPrompt, parseReadCall } from './native-read.mjs'
+import { plainMessages, completedTranscriptAnchor, continuationWithTranscript } from './transcript-handoff.mjs'
 
 // Deterministic names survive restart; never infer session identity from prompt text.
 export function stableUUID(value) {
@@ -15,18 +16,7 @@ export function stableUUID(value) {
 }
 
 export function requestText(messages, first) {
-  if (!Array.isArray(messages) || !messages.length) throw new BridgeError('messages_required', 400)
-  const plain = messages.map(part => {
-    if (!['system', 'developer', 'user', 'assistant'].includes(part?.role)) throw new BridgeError('unsupported_chat_content', 422)
-    // AI SDK/OpenAI-compatible transports can encode a text-only message as content parts.
-    // Image, audio, tool and binary parts must not disappear silently.
-    const content = typeof part.content === 'string' ? part.content
-      : Array.isArray(part.content) && part.content.length > 0 &&
-        part.content.every(entry => entry?.type === 'text' && typeof entry.text === 'string')
-        ? part.content.map(entry => entry.text).join('') : null
-    if (content === null) throw new BridgeError('unsupported_chat_content', 422)
-    return { role: part.role, content }
-  })
+  const plain = plainMessages(messages)
   const last = plain.at(-1)
   if (last.role !== 'user' || !last.content.trim()) throw new BridgeError('last_message_must_be_user', 422)
   if (!first) return last.content
@@ -83,7 +73,8 @@ export async function awaitProviderReady(control, {
   }
 }
 
-export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal, nativeTools = 'off' } = {}) {
+export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal,
+  nativeTools = 'off', checkpoint, previousInput, rememberInput } = {}) {
   traceStage('gateway_turn_received')
   if (!sessionKey || sessionKey.length > 256 || /[\r\n]/.test(sessionKey)) throw new BridgeError('opencode_session_id_required', 422)
   if (!messageKey || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
@@ -97,8 +88,10 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
   const turnID = stableUUID('turn:' + sessionKey + ':' + messageKey + (result ? ':' + result.callId : ''))
   const first = !(await abortableRead(control.hasSession(sessionID, { signal }), signal))
   if (result && first) throw new BridgeError('native_tool_result_without_session', 422)
-  const text = result ? result.text : requestText(request.messages, first) +
-    (readEnabled ? '\n\n' + READ_INSTRUCTIONS : '')
+  const text = previousInput ?? (result ? result.text : (first || readEnabled
+    ? requestText(request.messages, first)
+    : continuationWithTranscript(plainMessages(request.messages), checkpoint)) +
+    (readEnabled ? '\n\n' + READ_INSTRUCTIONS : ''))
   if (text.length > 64000) throw new BridgeError('cos_input_too_large', 413)
   const inputID = first ? sessionID : turnID
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
@@ -120,6 +113,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
     // request was cancelled during admission, CoS must decide whether the exact
     // outbox input can still be cancelled.
     sendStarted = true
+    rememberInput?.(text)
     await control.send({ id: inputID, ...(first ? {} : { sessionId: sessionID }), text })
     traceStage('input_admitted')
     if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
@@ -180,6 +174,15 @@ export function createGateway({ control, key, nativeTools = 'off' }) {
   // not invent a tool-result message and have it forwarded into ChatGPT.
   // Gateway restart loses custody and intentionally refuses the result.
   const issuedReads = new Map()
+  // Only completed CoS turns create anchors. Do not persist transcript content;
+  // a service restart safely loses this optional handoff proof.
+  const checkpoints = new Map()
+  // Freeze the exact submitted payload per native message for idempotent retry.
+  const submittedInputs = new Map()
+  const rememberBounded = (map, id, value, limit = 128) => {
+    map.delete(id); map.set(id, value)
+    while (map.size > limit) map.delete(map.keys().next().value)
+  }
   const secret = Buffer.from('Bearer ' + key)
   // Protected /health gives only categorical diagnostics. No prompt, path, headers or secrets.
   const diagnostics = { attempted: 0, authRefused: 0, lastFailure: null }
@@ -248,13 +251,26 @@ export function createGateway({ control, key, nativeTools = 'off' }) {
       const chunk = (delta, finish = null) => ({ id, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: body.model, choices: [{ index: 0, delta, finish_reason: finish }] })
       let answer = ''
       // Do not announce SSE success until we have validated the request and upstream admission.
-      const result = await runTurn(control, body, { sessionKey, messageKey, nativeTools, signal: cancel.signal, emit: async (delta) => {
+      const inputKey = sessionKey + '\0' + messageKey
+      const messageFingerprint = createHash('sha256').update(JSON.stringify(body.messages ?? null)).digest('hex')
+      const priorInput = !isToolResult && submittedInputs.get(inputKey)
+      if (priorInput && priorInput.messageFingerprint !== messageFingerprint) {
+        throw new BridgeError('opencode_message_identity_reused_with_changed_history', 409)
+      }
+      const result = await runTurn(control, body, { sessionKey, messageKey, nativeTools, signal: cancel.signal,
+        checkpoint: checkpoints.get(sessionKey), previousInput: priorInput?.text,
+        rememberInput: isToolResult ? undefined : text => rememberBounded(submittedInputs, inputKey,
+          { text, messageFingerprint }), emit: async (delta) => {
         answer += delta
         if (stream) {
           if (!res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'close' })
           res.write('data: ' + JSON.stringify(chunk({ content: delta })) + '\n\n')
         }
       } })
+      if (!isToolResult && typeof result === 'string' && !cancel.signal.aborted) {
+        const anchor = completedTranscriptAnchor(body.messages, result)
+        if (anchor) rememberBounded(checkpoints, sessionKey, anchor)
+      }
       if (typeof result === 'object' && result?.toolCall) {
         if (res.headersSent) throw new BridgeError('native_tool_call_after_text', 502)
         const call = result.toolCall
