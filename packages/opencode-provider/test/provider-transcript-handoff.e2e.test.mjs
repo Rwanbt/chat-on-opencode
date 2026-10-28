@@ -58,14 +58,29 @@ test('Windows HTTP provider A→foreign B→A preserves CoS session and transpor
     ]))
     assert.equal(another.status, 200)
     assert.equal(submitted[2].text, 'ordinary next', 'the foreign transcript must never replay on later turns')
+    // Actual native renderer's consecutive user records after the most recent
+    // verified CoS completion stay inside this SAME native session.
+    const nativeGap = await send('message-004', primary('continue in the same session', [
+      ...history, { role: 'user', content: 'back to ChatGPT' },
+      { role: 'assistant', content: 'CoS-Answer-2' },
+      { role: 'user', content: 'ordinary next' },
+      { role: 'assistant', content: 'CoS-Answer-3' },
+      { role: 'user', content: 'renderer context A' },
+      { role: 'user', content: 'renderer context B' },
+    ]))
+    assert.equal(nativeGap.status, 200)
+    assert.match(submitted.at(-1).text, /renderer context A/)
+    assert.match(submitted.at(-1).text, /renderer context B/)
+    assert.match(submitted.at(-1).text, /quoted context only/)
+    assert.doesNotMatch(submitted.at(-1).text, /CoS-Answer-3/, 'verified CoS reply never replayed')
+    assert.equal(submitted.at(-1).sessionId, stableUUID('session:same-native-session'))
     const reuse = await send('message-002', primary('back to ChatGPT', history))
     assert.equal(reuse.status, 200)
     assert.equal(submitted.at(-1).text, submitted[1].text, 'idempotent retry keeps original handoff bytes')
     const conflict = await send('message-002', primary('modified after admission', history))
     assert.equal(conflict.status, 409, 'same native message id cannot replace its history')
-    assert.equal(submitted.length, 4)
+    assert.equal(submitted.length, 5)
   })
-
 test('unverified or ambiguous text cannot be imported as foreign transcript', async t => {
   const submitted = []
   const sessions = new Set()
@@ -121,11 +136,18 @@ test('handoff rejects clipped/non-text/incomplete and excessive context without 
   ]), anchor)
   assert.match(complete, /foreign answer/)
   assert.doesNotMatch(complete, /CoS-1/)
-  assert.throws(() => continuationWithTranscript(plainMessages([
+  const consecutive = continuationWithTranscript(plainMessages([
     ...prefix, { role: 'user', content: 'orphan' }, user,
-  ]), anchor), /transcript_handoff_incomplete/)
-  assert.throws(() => continuationWithTranscript(plainMessages([
+  ]), anchor)
+  assert.match(consecutive, /"role":"user","content":"orphan"/)
+  assert.match(consecutive, /quoted context only/)
+  const largeBounded = continuationWithTranscript(plainMessages([
     ...prefix, { role: 'user', content: 'X'.repeat(17000) },
+      { role: 'assistant', content: 'reply' }, user,
+  ]), anchor)
+  assert.ok(largeBounded.includes('X'.repeat(17000)))
+  assert.throws(() => continuationWithTranscript(plainMessages([
+    ...prefix, { role: 'user', content: 'Y'.repeat(49000) },
       { role: 'assistant', content: 'reply' }, user,
   ]), anchor), /transcript_handoff_too_large/)
   assert.throws(() => plainMessages([...prefix, { role: 'assistant', content: [{ type: 'image_url', image_url: 'data' }] }, user]),
