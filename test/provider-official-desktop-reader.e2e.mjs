@@ -56,9 +56,10 @@ const sha = bytes => createHash('sha256').update(bytes).digest('hex')
 const packageRoot = path.join(import.meta.dirname, '..', 'packages', 'opencode-provider')
 const configFile = path.join(dirs.config, 'opencode.jsonc')
 const windowProbe = path.join(import.meta.dirname, '..', 'scripts', 'probe-official-desktop-window.ps1')
-await writeFile(path.join(dirs.provider, 'config.json'), JSON.stringify({
-  ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
-}))
+// Reuse the schema-complete, explicitly consented TEST fixture. The previous
+// three-field config was quarantined by Electron before broker initialization.
+await writeFile(path.join(dirs.provider, 'config.json'),
+  await readFile(path.join(packageRoot, 'test', 'fixtures', 'valid-provider-config.json')))
 
 async function port() {
   const socket = createServer()
