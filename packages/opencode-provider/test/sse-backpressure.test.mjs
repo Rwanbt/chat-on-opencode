@@ -34,3 +34,23 @@ test('closed native reader refuses another delta', async () => {
   output.destroy()
   await assert.rejects(writeSSE(output, 'data: late\\n\\n'), /opencode_turn_cancelled/)
 })
+
+test('synchronous drain before observer is installed settles exactly once', async () => {
+  const output = new PassThrough({ highWaterMark: 1 })
+  const originalWrite = output.write.bind(output)
+  output.write = (...args) => {
+    const returned = originalWrite(...args)
+    output.read()
+    // Deliberately simulate the edge in which the writer drains before
+    // writeSSE installs its once('drain') listener.
+    output.emit('drain')
+    return returned
+  }
+  await Promise.race([
+    writeSSE(output, 'data: immediate\\n\\n'),
+    new Promise((_, reject) => setTimeout(() => reject(Error('missed_synchronous_drain')), 500)),
+  ])
+  assert.equal(output.listenerCount('drain'), 0)
+  assert.equal(output.listenerCount('close'), 0)
+  output.destroy()
+})
