@@ -156,7 +156,18 @@ export class CoSControl {
       let rotated = false
       try {
         readStream: for (;;) {
-          const { done, value } = await reader.read()
+          let packet
+          try { packet = await reader.read() }
+          catch (error) {
+            if (signal?.aborted) throw new BridgeError('cos_stream_aborted', 499)
+            // Network-level reader failure after a partial response: resume
+            // from the last durable event sequence, never replay the input.
+            // No malformed SSE or sequence error is swallowed by this catch.
+            if (++consecutivePrematureEOF > 2) throw new BridgeError('cos_stream_transport_lost', 503)
+            rotated = true
+            break readStream
+          }
+          const { done, value } = packet
           if (signal?.aborted) throw new BridgeError('cos_stream_aborted', 499)
           if (done) {
             // The browser bridge can close a valid SSE transport without an
