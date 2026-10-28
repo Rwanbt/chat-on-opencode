@@ -53,9 +53,7 @@ for (const decision of ['allow', 'deny']) test('actual OpenCode V2 native read '
     const profile = path.join(root, 'provider-data')
     const toolFile = path.join(root, 'workspace', 'explicitly-approved.txt')
     await writeFile(toolFile, 'NATIVE_READ_PROOF_8729', { flag: 'wx' })
-    await writeFile(path.join(profile, 'config.json'), JSON.stringify({
-      ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
-    }))
+    await writeFile(path.join(profile, 'config.json'), await readFile(new URL('./fixtures/valid-provider-config.json', import.meta.url)))
     const port = await freePort()
     // Exercise the same shipped configuration generator as a real offline installation.
     // The native SDK must receive the plugin-generated bearer without a launcher secret.

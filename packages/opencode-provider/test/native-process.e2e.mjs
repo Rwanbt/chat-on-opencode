@@ -54,9 +54,7 @@ test('real Node gateway launches owned Bun service and streams two correlated na
     const personal = path.join(root, 'untouched-personal')
     await mkdir(profile)
     await mkdir(personal)
-    await writeFile(path.join(profile, 'config.json'), JSON.stringify({
-      ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
-    }))
+    await writeFile(path.join(profile, 'config.json'), await readFile(new URL('./fixtures/valid-provider-config.json', import.meta.url)))
     const executable = path.join(root, process.platform === 'win32' ? 'offline-cos.exe' : 'offline-cos')
     const compiled = spawnSync('bun', ['build', fixtureEntry, '--compile', '--outfile', executable], {
       cwd: packageDir, encoding: 'utf8', timeout: 35000, windowsHide: true, shell: false,

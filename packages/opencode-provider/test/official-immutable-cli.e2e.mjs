@@ -41,9 +41,7 @@ test('official OpenCode CLI actually imports generation G and returns to A after
     const runtime = path.join(root, 'runtime.exe')
     await writeFile(runtime, 'offline fixture; never executed')
     await writeFile(configFile, '{"plugins":[],"providers":{},"goal":"preserved","loop":"preserved","daemon":true}')
-    await writeFile(path.join(root, 'provider', 'config.json'), JSON.stringify({
-      ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
-    }))
+    await writeFile(path.join(root, 'provider', 'config.json'), await readFile(new URL('./fixtures/valid-provider-config.json', import.meta.url)))
     const install = { configFile, officialCli: official, bundleDir: bundle,
       runtimeExecutable: runtime, runtimeData: path.join(root, 'provider'), nodeExecutable: process.execPath }
     const runner = () => version

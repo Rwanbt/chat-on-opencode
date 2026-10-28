@@ -53,9 +53,7 @@ for (const legacyOverlay of [false, true]) test(legacyOverlay
     })
     assert.equal(compiled.status, 0, `offline CoS fixture failed to build: ${compiled.stderr?.slice(-1500)}`)
     const profile = path.join(root, 'provider-data')
-    await writeFile(path.join(profile, 'config.json'), JSON.stringify({
-      ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
-    }))
+    await writeFile(path.join(profile, 'config.json'), await readFile(new URL('./fixtures/valid-provider-config.json', import.meta.url)))
     const port = await freePort()
     // Exercise the same shipped configuration generator as a real offline installation.
     // The plugin must create its own transient bearer key without a process env secret.
