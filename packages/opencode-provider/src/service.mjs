@@ -1,5 +1,8 @@
 import { createGateway } from './gateway.mjs'
 import { traceStage } from './stage-trace.mjs'
+import { TurnCustody } from './turn-custody.mjs'
+import path from 'node:path'
+import { realpathSync } from 'node:fs'
 
 /** One process owns both the gateway listener and its isolated CoS runtime. */
 export async function startService({ runtime, key, port, owner = process, owned = false,
@@ -36,7 +39,12 @@ export async function startService({ runtime, key, port, owner = process, owned 
       if (!stopped) shutdown(0)
       return
     }
-    server = gatewayFactory({ control, key, nativeTools })
+    // runtime.start() has already validated this is the explicitly consented
+    // isolated CoS profile, disjoint from the personal installation.
+    const turnCustody = runtime.options?.profile
+      ? new TurnCustody(path.join(realpathSync(runtime.options.profile), '.chat-on-opencode-turn-custody'))
+      : undefined
+    server = gatewayFactory({ control, key, nativeTools, turnCustody })
     server.once('error', () => {
       console.error('Chat On OpenCode gateway refused to listen on its private port')
       shutdown(1)
