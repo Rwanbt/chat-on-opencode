@@ -15,6 +15,7 @@ import { createServer } from 'node:net'
 import http from 'node:http'
 import path from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
+import { createSseDataFieldCounter } from './helpers/sse-framing.mjs'
 import { createOpenCodeConfig } from '../packages/opencode-provider/src/config.mjs'
 import { candidateDigest } from '../packages/opencode-provider/src/official-upgrade.mjs'
 import { inspectRestartOnlyPointer, publishRestartOnlyPointer } from '../packages/opencode-provider/src/official-versioned-pointer.mjs'
@@ -88,6 +89,8 @@ for (const generation of ['A', 'B']) {
   assert.ok(original.includes('const sessions = new Set<string>()'))
   assert.ok(original.includes('const events = new Map<string, Array<Record<string, unknown>>>()'))
   assert.ok(original.includes('    events.set(id, list)'))
+  assert.ok(original.includes("list.push({ seq: seq + 2, kind: 'assistant_message'"))
+  assert.ok(original.includes("list.push({ seq: seq + 3, kind: 'turn_end'"))
   const durableMock = "import { readFileSync as readOfflineJournal } from 'node:fs'\n" +
     original
       .replace('const sessions = new Set<string>()',
@@ -99,6 +102,16 @@ for (const generation of ['A', 'B']) {
       .replace('    events.set(id, list)',
         '    events.set(id, list)\n' +
         '    await writeFile(journalFile, JSON.stringify({ sessions: [...sessions], events: [...events] }))')
+      // Only the disposable synthetic runtime emits two temporally separated
+      // assistant revisions. Their final answer and nonce are unchanged.
+      .replace("    list.push({ seq: seq + 2, kind: 'assistant_message', turnId, message: { text: assistantText, truncated: false } })",
+        "    list.push({ seq: seq + 2, kind: 'assistant_message', turnId, message: { text: assistantText.slice(0, -5), truncated: false } })\n" +
+        "    list.push({ seq: seq + 3, kind: 'assistant_message', turnId, message: { text: assistantText, truncated: false } })")
+      .replace("    list.push({ seq: seq + 3, kind: 'turn_end'",
+        "    list.push({ seq: seq + 4, kind: 'turn_end'")
+      .replace("    for (const event of list) if ((event.seq as number) >= Number(stream[2])) {",
+        "    for (const event of list) if ((event.seq as number) >= Number(stream[2])) {\n" +
+        "      if (event.kind === 'assistant_message') await new Promise(resolve => setTimeout(resolve, 400))")
       .replace("'OFFLINE_FORK_OK'", syntheticText)
   await writeFile(fixture, durableMock)
   // The compiler must not inherit ChatGPT/browser/account tokens or unrelated
@@ -198,6 +211,9 @@ const allowedPorts = new Set([ownedServicePort, ...allowedProviderPorts])
 let blockedExternal = 0
 let forwardedLocal = 0
 let transientProxyResets = 0
+// Count bounded SSE framing and timings in the disposable strict localhost proxy.
+// Never retain or log payloads, user prompts, provider tokens, or event contents.
+const ownedSse = { responses:0, frames:0, firstAt:null, lastAt:null }
 // Chromium's forced proxy previously swallowed every localhost fetch.
 // Instead, the test owns a loopback-only proxy that forwards exclusively to
 // explicitly generated disposable service/provider ports. HTTPS CONNECT,
@@ -224,6 +240,21 @@ const ownedProxy = http.createServer((request, response) => {
     method:request.method,headers,
     agent:false,
   }, reply => {
+    if (/\btext\/event-stream\b/i.test(String(reply.headers['content-type'] ?? ''))) {
+      ownedSse.responses++
+      const counter = createSseDataFieldCounter()
+      reply.on('data', chunk => {
+        const before = counter.snapshot().fields
+        counter.push(chunk)
+        const added = counter.snapshot().fields - before
+        if (added > 0) {
+          const now = Date.now()
+          if (ownedSse.firstAt === null) ownedSse.firstAt = now
+          ownedSse.lastAt = now
+          ownedSse.frames += added
+        }
+      })
+    }
     response.writeHead(reply.statusCode, reply.headers)
     reply.pipe(response)
   })
@@ -679,6 +710,12 @@ async function realGeneratedReader(prompt, expected) {
     process.stderr.write('OFFICIAL_214_ISOLATED_GUI_CONTROLS=' + JSON.stringify(diagnostic) + '\n')
   }
   assert.equal(available, true, 'desktop_composer_not_uniquely_visible')
+  // Test-owned renderer only: watch *lengths* and monotonic timings, never response text.
+  // A completed synthetic reply does not itself prove progressive rendering.
+  const ownedExpectedReply = expected ? exactReply(expected) : ''
+  const ownedDomObserverScript = "(() => {const root=document.body;const state={mutations:0,distinctLengths:0,firstAt:null,lastAt:null,lastLength:root?.innerText?.length??0,partialBeforeFull:false,partialAt:null,fullAt:null};window.__cooOwnedDomStream=state;const observer=new MutationObserver(()=>{const t=performance.now();state.mutations++;const text=root?.innerText??\"\";if(state.partialAt===null&&text.includes(partial)&&!text.includes(full)){state.partialBeforeFull=true;state.partialAt=t}if(state.fullAt===null&&text.includes(full))state.fullAt=t;const length=text.length;if(length!==state.lastLength){state.distinctLengths++;state.lastLength=length;if(state.firstAt===null)state.firstAt=t;state.lastAt=t}});observer.observe(root,{subtree:true,childList:true,characterData:true});window.__cooOwnedDomStreamStop=()=>observer.disconnect()})()".replace('const root=', 'const partial=' + JSON.stringify(ownedExpectedReply.slice(0, -5)) + ';const full=' + JSON.stringify(ownedExpectedReply) + ';const root=')
+  await cdp.eval(ownedDomObserverScript)
+  const proxiedSseAtStart = { frames:ownedSse.frames, responses:ownedSse.responses }
   await cdp.eval('(() => {const items=' + visible + ';items[0].focus()})()')
   await cdp.call('Input.insertText', { text: prompt + ' ' + nonce })
   await cdp.call('Input.dispatchKeyEvent', { type:'keyDown', key:'Enter', code:'Enter', windowsVirtualKeyCode:13 })
@@ -705,6 +742,16 @@ async function realGeneratedReader(prompt, expected) {
     for (const generation of ['A', 'B']) {
       if (text.includes(exactReply(generation))) {
         if (expected) assert.equal(generation, expected, 'wrong_real_gui_generator')
+        const domStream = await cdp.eval("(() => {const s=window.__cooOwnedDomStream;window.__cooOwnedDomStreamStop?.();return s?{mutations:s.mutations,distinctLengths:s.distinctLengths,elapsedMs:s.firstAt===null?0:Math.round(s.lastAt-s.firstAt),partialBeforeFull:s.partialBeforeFull,partialLeadMs:s.partialAt===null||s.fullAt===null?null:Math.round(s.fullAt-s.partialAt)}:null})()")
+        process.stdout.write('OFFICIAL_GUI_DOM_STREAM_CATEGORICAL=' + JSON.stringify({
+          synthetic:true, observed:domStream, progressiveProven:domStream?.partialBeforeFull===true && domStream?.partialLeadMs>0,
+          loopbackResponses:ownedNetwork.responses.length,
+          proxiedSseFrames:ownedSse.frames-proxiedSseAtStart.frames,
+          proxiedSseResponses:ownedSse.responses-proxiedSseAtStart.responses,
+          proxiedSseElapsedMs:ownedSse.firstAt===null ? 0 : Math.max(0,ownedSse.lastAt-ownedSse.firstAt),
+        }) + '\n')
+        assert.ok(domStream?.partialBeforeFull && domStream?.partialLeadMs > 0,
+          'official_gui_synthetic_partial_not_rendered_before_final')
         process.stdout.write('OWNED_REAL_GUI_NONCE_RESPONSE=' + JSON.stringify({
           generation, probe:prompt, match:true, modelId:'chat-on-opencode/chatgpt-default',
         }) + '\n')
