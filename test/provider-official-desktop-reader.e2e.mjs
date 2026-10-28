@@ -111,7 +111,7 @@ for (const generation of ['A', 'B']) {
         "    if (!stopProbe) list.push({ seq: seq + 4, kind: 'turn_end'")
       .replace("    for (const event of list) if ((event.seq as number) >= Number(stream[2])) {",
         "    for (const event of list) if ((event.seq as number) >= Number(stream[2])) {\n" +
-        "      if (event.kind === 'assistant_message') await new Promise(resolve => setTimeout(resolve, 400))")
+        "      if (event.kind === 'assistant_message') await new Promise(resolve => setTimeout(resolve, 900))")
       .replace("'OFFLINE_FORK_OK'", syntheticText)
   await writeFile(fixture, durableMock)
   // The compiler must not inherit ChatGPT/browser/account tokens or unrelated
