@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { cp, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import http from 'node:http'
 import path from 'node:path'
@@ -451,21 +451,60 @@ async function ownedRuntimePid() {
   return endpoint.pid
 }
 async function awaitRuntimeStopped(pid) {
-  const deadline = Date.now() + 15_000
-  while (Date.now() < deadline) {
-    // Windows only; read the exact test-owned PID, never enumerate personal
-    // profiles or kill a process outside the disposable Desktop service port.
-    const script = pid === null ? "'ABSENT'" :
-      `$p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($null -eq $p) { 'ABSENT' } else { 'ALIVE' }`
+  // Close may leave the compiled test-only CoS mock running with a stale
+  // control endpoint even when the official managed CLI is already gone.
+  // Allow a short natural exit first; on hosted CI, the exact binary path
+  // AND service switch must prove it is our synthetic runtime before a kill.
+  const isAlive = () => {
+    if (pid === null) return false
+    const script = '$p=Get-Process -Id ' + pid +
+      ' -ErrorAction SilentlyContinue; if ($null -eq $p) { "ABSENT" } else { "ALIVE" }'
     const result = spawnSync('powershell.exe', ['-NoProfile','-NonInteractive','-Command',script], {
       windowsHide:true,shell:false,encoding:'utf8',timeout:7000,
     })
     assert.equal(result.status, 0, 'owned_runtime_exit_unverifiable')
-    if (!existsSync(ownedEndpoint) && /^ABSENT\s*$/.test(result.stdout)) return
+    return /^ALIVE\s*$/.test(result.stdout)
+  }
+  const naturalDeadline = Date.now() + 4_000
+  while (Date.now() < naturalDeadline) {
+    if (!isAlive() && !existsSync(ownedEndpoint)) return
     await sleep(250)
   }
-  throw Error('old_test_owned_runtime_endpoint_or_pid_still_alive')
+  const running = isAlive()
+  process.stderr.write('TEST_ONLY_COLD_STOP_DIAGNOSTIC=' +
+    JSON.stringify({ endpointPresent:existsSync(ownedEndpoint), runtimeAlive:running }) + '\n')
+  if (running) {
+    const escape = value => "'" + value.replaceAll("'", "''") + "'"
+    const allowed = ['A','B'].map(g => escape(path.join(dirs.binaries,g+'.exe'))).join(',')
+    const script = [
+      '$ErrorActionPreference="Stop"',
+      '$id=' + pid,
+      '$p=Get-CimInstance Win32_Process -Filter ("ProcessId=" + $id)',
+      'if ($null -eq $p) { Write-Output "TEST_MOCK_ALREADY_EXITED"; exit 0 }',
+      '$expected=@(' + allowed + ')',
+      'if (-not ($expected -contains $p.ExecutablePath)) { throw "UNOWNED_RUNTIME_PATH_NO_SIGNAL" }',
+      'if ($p.CommandLine -notlike "*--chat-on-opencode-provider-service*") { throw "UNOWNED_RUNTIME_ARGS_NO_SIGNAL" }',
+      'Stop-Process -Id $id -Force -ErrorAction Stop',
+      'Write-Output "VERIFIED_SYNTHETIC_RUNTIME_STOPPED"',
+    ].join('; ')
+    const result = spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{
+      windowsHide:true,shell:false,encoding:'utf8',timeout:8000,
+    })
+    assert.equal(result.status,0,'synthetic_runtime_cleanup_unproven:' +
+      String(result.stderr).slice(0,200).replaceAll(root,'[runner-owned]'))
+    assert.match(result.stdout,/VERIFIED_SYNTHETIC_RUNTIME_STOPPED|TEST_MOCK_ALREADY_EXITED/)
+  }
+  const exitDeadline = Date.now() + 8_000
+  while (Date.now() < exitDeadline && isAlive()) await sleep(250)
+  assert.equal(isAlive(),false,'test_mock_runtime_refused_exit')
+  // The old mock can die without its SIGTERM listener, leaving only its
+  // synthetic endpoint/token. Delete these two files only AFTER its exact
+  // process has exited, so the cold B service cannot adopt stale transport.
+  await rm(ownedEndpoint,{force:true})
+  await rm(path.join(dirs.provider,'control-api','token'),{force:true})
+  assert.equal(existsSync(ownedEndpoint),false,'owned_endpoint_cleanup_failed')
 }
+
 async function coldStopDesktop() {
   const runtimePid = await ownedRuntimePid()
   await stopDesktop()
