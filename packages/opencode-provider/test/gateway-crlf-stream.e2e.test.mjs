@@ -32,12 +32,14 @@ test('real local HTTP gateway streams progressive CoS CRLF journal frames withou
     if (pathname.endsWith('/events/stream')) {
       assert.ok(inputID, 'event journal opened before sending an input')
       const revisions = inputs === 1 ? ['Hello', 'Hello world'] : ['Again', 'Again now']
+      const startSeq = inputs === 1 ? 1 : 6
+      const turnId = inputs === 1 ? 'turn-exact-1' : 'turn-exact-2'
       const frames = [
-        { seq: 1, kind: 'user_message', inputId: inputID },
-        { seq: 2, kind: 'turn_start', turnId: 'turn-exact-1' },
-        { seq: 3, kind: 'assistant_message', turnId: 'turn-exact-1', message: { text: revisions[0] } },
-        { seq: 4, kind: 'assistant_message', turnId: 'turn-exact-1', message: { text: revisions[1] } },
-        { seq: 5, kind: 'turn_end', turnId: 'turn-exact-1', outcome: 'complete' },
+        { seq: startSeq, kind: 'user_message', inputId: inputID },
+        { seq: startSeq + 1, kind: 'turn_start', turnId },
+        { seq: startSeq + 2, kind: 'assistant_message', turnId, message: { text: revisions[0] } },
+        { seq: startSeq + 3, kind: 'assistant_message', turnId, message: { text: revisions[1] } },
+        { seq: startSeq + 4, kind: 'turn_end', turnId, outcome: 'complete' },
       ].map(item => 'event: ' + item.kind + '\r\ndata: ' + JSON.stringify(item) + '\r\n\r\n').join('')
       const bytes = new TextEncoder().encode(frames)
       return new Response(new ReadableStream({

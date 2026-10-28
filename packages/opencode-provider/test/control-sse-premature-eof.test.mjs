@@ -122,3 +122,50 @@ test('mid-stream reader reset resumes partial answer from exact next event', asy
   assert.deepEqual(observed,[1,2,3,4,5])
   assert.equal(opens,2)
 })
+
+test('canonical superseded SSE revision is backfilled read-only, without accepting a missing visible event', async () => {
+  const paths = []
+  const frames = [
+    { seq: 1, kind: 'user_message', inputId: 'first' },
+    { seq: 4, kind: 'assistant_message', turnId: 'first-turn', message: { text: 'complete revision' } },
+    { seq: 5, kind: 'turn_end', turnId: 'first-turn', outcome: 'completed' },
+  ]
+  const client = new CoSControl({ directory: path.resolve('isolated-test'), fetcher: async (url, options) => {
+    assert.equal(options.method, 'GET')
+    paths.push(url)
+    if (url.includes('/events?from=2&limit=100')) return {
+      ok: true, json: async () => ({ events: frames.slice(1) }),
+    }
+    if (url.includes('/events/stream')) return { ok: true, body: stream(frames.map(frame).join('')) }
+    throw Error('unexpected_read')
+  } })
+  client.base = 'http://127.0.0.1:50001'
+  client.token = 'test-only'
+  const observed = []
+  for await (const event of client.events('session-1')) {
+    observed.push(event.seq)
+    if (event.kind === 'turn_end') break
+  }
+  assert.deepEqual(observed, [1, 4, 5])
+  assert.equal(paths.filter(url => url.includes('/events?')).length, 1)
+  assert.equal(paths.filter(url => url.includes('/events/stream')).length, 1)
+})
+
+test('SSE gap refuses to skip a still-visible canonical event', async () => {
+  const frames = [
+    { seq: 1, kind: 'user_message', inputId: 'first' },
+    { seq: 4, kind: 'turn_end', turnId: 'first-turn', outcome: 'completed' },
+  ]
+  const client = new CoSControl({ directory: path.resolve('isolated-test'), fetcher: async (url, options) => {
+    assert.equal(options.method, 'GET')
+    if (url.includes('/events?from=2&limit=100')) return {
+      ok: true, json: async () => ({ events: [{ seq: 3, kind: 'assistant_message' }, frames[1]] }),
+    }
+    return { ok: true, body: stream(frames.map(frame).join('')) }
+  } })
+  client.base = 'http://127.0.0.1:50001'
+  client.token = 'test-only'
+  await assert.rejects(async () => {
+    for await (const _event of client.events('session-1')) { /* fail closed */ }
+  }, /cos_event_sequence_gap/)
+})
