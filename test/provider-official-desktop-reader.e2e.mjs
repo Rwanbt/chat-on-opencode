@@ -624,8 +624,10 @@ async function journalState() {
 async function openOwnedFreshSession(priorGeneration) {
   // Official signed 2.1.4 exposes exactly one visible "New session" native
   // button. Click the real GUI; never create a session via SDK/direct HTTP.
-  const newButton = '[...document.querySelectorAll("button,[role=button]")].filter(e=>' +
-    'e.getClientRects().length && e.getAttribute("aria-label")==="New session")'
+  const newButton = '(()=>{const visible=[...document.querySelectorAll("button,[role=button]")].filter(e=>' +
+    'e.getClientRects().length && e.getAttribute("aria-label")==="New session");' +
+    'const primary=visible.filter(e=>e.closest("main"));' +
+    'return primary.length===1 ? primary : (visible.length===1 ? visible : [])})()'
   const limit = Date.now() + 15_000
   let count = 0
   while (Date.now() < limit) {
@@ -815,6 +817,9 @@ try {
   const bSha = candidateDigest(b)
   assert.equal(configs.get('A').model, configs.get('B').model, 'different_model_ids')
   await startDesktop()
+  // The signed Desktop may cold-start on Home, where no composer exists.
+  // Open a real test-owned conversation through its own GUI before prompting.
+  await openOwnedFreshSession()
   const coldA = await realGeneratedReader('Offline cold A actual reader marker', 'A')
   assert.ok(existsSync(path.join(dirs.receipts, 'A.import')), 'actual_plugin_A_never_imported')
   // Real Desktop same-conversation followup, NOT a fresh New session. The
