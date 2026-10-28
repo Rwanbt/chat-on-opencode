@@ -198,6 +198,9 @@ const allowedPorts = new Set([ownedServicePort, ...allowedProviderPorts])
 let blockedExternal = 0
 let forwardedLocal = 0
 let transientProxyResets = 0
+// Count bounded SSE framing and timings in the disposable strict localhost proxy.
+// Never retain or log payloads, user prompts, provider tokens, or event contents.
+const ownedSse = { responses:0, frames:0, firstAt:null, lastAt:null }
 // Chromium's forced proxy previously swallowed every localhost fetch.
 // Instead, the test owns a loopback-only proxy that forwards exclusively to
 // explicitly generated disposable service/provider ports. HTTPS CONNECT,
@@ -224,6 +227,22 @@ const ownedProxy = http.createServer((request, response) => {
     method:request.method,headers,
     agent:false,
   }, reply => {
+    if (/\\btext\\/event-stream\\b/i.test(String(reply.headers['content-type'] ?? ''))) {
+      ownedSse.responses++
+      let suffix = ''
+      reply.on('data', chunk => {
+        // The suffix only joins split framing delimiters; it is never logged.
+        const text = suffix + chunk.toString('utf8')
+        const count = [...text.matchAll(/\\r?\\ndata:\\s/g)].length
+        if (count) {
+          const now = Date.now()
+          if (ownedSse.firstAt === null) ownedSse.firstAt = now
+          ownedSse.lastAt = now
+          ownedSse.frames += count
+        }
+        suffix = text.slice(-7)
+      })
+    }
     response.writeHead(reply.statusCode, reply.headers)
     reply.pipe(response)
   })
@@ -682,6 +701,7 @@ async function realGeneratedReader(prompt, expected) {
   // Test-owned renderer only: watch *lengths* and monotonic timings, never response text.
   // A completed synthetic reply does not itself prove progressive rendering.
   await cdp.eval("(() => { const root=document.querySelector(\"main\")||document.body;const state={mutations:0,distinctLengths:0,firstAt:null,lastAt:null,lastLength:root?.innerText?.length??0};window.__cooOwnedDomStream=state;const observer=new MutationObserver(()=>{const t=performance.now();state.mutations++;const length=root?.innerText?.length??0;if(length!==state.lastLength){state.distinctLengths++;state.lastLength=length;if(state.firstAt===null)state.firstAt=t;state.lastAt=t}});observer.observe(root,{subtree:true,childList:true,characterData:true});window.__cooOwnedDomStreamStop=()=>observer.disconnect() })()")
+  const proxiedSseAtStart = { frames:ownedSse.frames, responses:ownedSse.responses }
   await cdp.eval('(() => {const items=' + visible + ';items[0].focus()})()')
   await cdp.call('Input.insertText', { text: prompt + ' ' + nonce })
   await cdp.call('Input.dispatchKeyEvent', { type:'keyDown', key:'Enter', code:'Enter', windowsVirtualKeyCode:13 })
@@ -712,6 +732,9 @@ async function realGeneratedReader(prompt, expected) {
         process.stdout.write('OFFICIAL_GUI_DOM_STREAM_CATEGORICAL=' + JSON.stringify({
           synthetic:true, observed:domStream, progressiveProven:false,
           loopbackResponses:ownedNetwork.responses.length,
+          proxiedSseFrames:ownedSse.frames-proxiedSseAtStart.frames,
+          proxiedSseResponses:ownedSse.responses-proxiedSseAtStart.responses,
+          proxiedSseElapsedMs:ownedSse.firstAt===null ? 0 : Math.max(0,ownedSse.lastAt-ownedSse.firstAt),
         }) + '\n')
         process.stdout.write('OWNED_REAL_GUI_NONCE_RESPONSE=' + JSON.stringify({
           generation, probe:prompt, match:true, modelId:'chat-on-opencode/chatgpt-default',
