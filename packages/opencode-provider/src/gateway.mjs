@@ -180,6 +180,7 @@ export function createGateway({ control, key, nativeTools = 'off' }) {
     if (req.method !== 'POST' || req.url !== '/v1/chat/completions') return sendJSON(404, { error: 'not_found' })
     diagnostics.attempted++
     let sessionKey = ''
+    let ownsSession = false
     try {
       const header = req.headers['x-opencode-session-id']
       if (typeof header !== 'string' || !/^[\w.:/-]{1,256}$/.test(header)) throw new BridgeError('opencode_session_id_required', 422)
@@ -188,6 +189,7 @@ export function createGateway({ control, key, nativeTools = 'off' }) {
       if (typeof messageKey !== 'string' || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
       if (active.has(sessionKey)) throw new BridgeError('session_busy', 409)
       active.add(sessionKey)
+      ownsSession = true
       let raw = ''
       let bodyBytes = 0
       // HTTP buffers may split a multi-byte codepoint at any boundary. Decoding each
@@ -260,7 +262,7 @@ export function createGateway({ control, key, nativeTools = 'off' }) {
       diagnostics.lastFailure = code
       if (res.headersSent) res.destroy(new Error(code))
       else sendJSON(status, { error: { message: code, type: 'chat_on_opencode_error' } })
-    } finally { if (sessionKey) active.delete(sessionKey) }
+    } finally { if (ownsSession) active.delete(sessionKey) }
   })
   return server
 }
