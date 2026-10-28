@@ -269,4 +269,9 @@ jobs:
         run: |
           node test/provider-official-desktop-gui.e2e.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Real official Desktop GUI generates provider A, cold B, hot A with isolated proxy
+        shell: pwsh
+        run: |
+          node test/provider-official-desktop-reader.e2e.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
