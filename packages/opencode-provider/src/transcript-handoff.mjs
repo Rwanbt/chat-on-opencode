@@ -35,9 +35,12 @@ export function continuationWithTranscript(plain, anchor) {
   const dialogue = plain.filter(item => item.role === 'user' || item.role === 'assistant')
   const matching = []
   for (let index = 1; index < dialogue.length - 1; index++) {
+    const question = hash(dialogue[index - 1].content)
+    const answer = hash(dialogue[index].content)
+    const anchored = digest => anchor.salt ? hash(anchor.salt + '\0' + digest) : digest
     if (dialogue[index - 1].role === 'user' && dialogue[index].role === 'assistant' &&
-        hash(dialogue[index - 1].content) === anchor.questionSha256 &&
-        hash(dialogue[index].content) === anchor.answerSha256) matching.push(index)
+        anchored(question) === anchor.questionSha256 &&
+        anchored(answer) === anchor.answerSha256) matching.push(index)
   }
   if (!matching.length) return recent.content
   if (matching.length !== 1) throw new BridgeError('transcript_anchor_ambiguous', 422)

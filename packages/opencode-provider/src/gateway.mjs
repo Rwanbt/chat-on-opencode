@@ -74,7 +74,7 @@ export async function awaitProviderReady(control, {
 }
 
 export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal,
-  nativeTools = 'off', checkpoint, previousInput, rememberInput, turnCustody, messageFingerprint } = {}) {
+  nativeTools = 'off', checkpoint, previousInput, rememberInput, turnCustody, messageFingerprint, onTerminal } = {}) {
   traceStage('gateway_turn_received')
   if (!sessionKey || sessionKey.length > 256 || /[\r\n]/.test(sessionKey)) throw new BridgeError('opencode_session_id_required', 422)
   if (!messageKey || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
@@ -112,6 +112,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
   let textSoFar = ''
   let activeTurnID = null
   let sendStarted = false
+  let terminalSeq = null
   try {
     // Once POST /inputs begins, completion is no longer a read-only operation.
     // Wait for its bounded response before releasing custody; if the native
@@ -167,6 +168,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
           throw new BridgeError('cos_turn_not_completed', 502)
         }
         complete = true
+        terminalSeq = Number.isSafeInteger(event.seq) && event.seq > 0 ? event.seq : null
         break
       }
     }
@@ -188,6 +190,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
       if (toolCall) return { toolCall }
       await emit(textSoFar)
     }
+    onTerminal?.(terminalSeq)
     return textSoFar
   } finally {
     if (signal?.aborted && !complete && sendStarted) {
@@ -208,8 +211,8 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody }
   // not invent a tool-result message and have it forwarded into ChatGPT.
   // Gateway restart loses custody and intentionally refuses the result.
   const issuedReads = new Map()
-  // Only completed CoS turns create anchors. Do not persist transcript content;
-  // a service restart safely loses this optional handoff proof.
+  // Completed CoS turns create session anchors. Volatile anchors retain support
+  // for older controls without journal sequence numbers.
   const checkpoints = new Map()
   // Freeze the exact submitted payload per native message for idempotent retry.
   const submittedInputs = new Map()
@@ -311,9 +314,16 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody }
           recoveredInput = stored.text
         }
       }
+      const persisted = turnCustody?.readAnchor(sessionKey)
+      const memory = checkpoints.get(sessionKey)
+      const priorAnchor = persisted && (!memory || persisted.seq >= memory.seq)
+        ? { seq: persisted.seq, anchor: { salt: persisted.salt,
+          questionSha256: persisted.question, answerSha256: persisted.answer } }
+        : memory
+      let terminalSeq = null
       const result = await runTurn(control, body, { sessionKey, messageKey, nativeTools, signal: cancel.signal,
-        checkpoint: checkpoints.get(sessionKey), previousInput: priorInput?.text ?? recoveredInput,
-        turnCustody, messageFingerprint,
+        checkpoint: priorAnchor?.anchor, previousInput: priorInput?.text ?? recoveredInput,
+        turnCustody, messageFingerprint, onTerminal: seq => { terminalSeq = seq },
         rememberInput: isToolResult ? undefined : text => rememberBounded(submittedInputs, inputKey,
           { text, messageFingerprint }), emit: async (delta) => {
         answer += delta
@@ -324,7 +334,17 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody }
       } })
       if (!isToolResult && typeof result === 'string' && !cancel.signal.aborted) {
         const anchor = completedTranscriptAnchor(body.messages, result)
-        if (anchor) rememberBounded(checkpoints, sessionKey, anchor)
+        if (anchor && (!priorAnchor || terminalSeq === null || terminalSeq > priorAnchor.seq)) {
+          if (terminalSeq !== null && turnCustody) {
+            // Salted digests only; preserve the highest confirmed CoS event
+            // sequence if an older native message is retried after restart.
+            try { turnCustody.rememberAnchor(sessionKey, anchor, terminalSeq) }
+            catch { console.error('Chat On OpenCode: completed transcript anchor could not be persisted') }
+          }
+          if (terminalSeq !== null || !priorAnchor || priorAnchor.seq === 0) {
+            rememberBounded(checkpoints, sessionKey, { seq: terminalSeq ?? 0, anchor })
+          }
+        }
       }
       if (typeof result === 'object' && result?.toolCall) {
         if (res.headersSent) throw new BridgeError('native_tool_call_after_text', 502)
