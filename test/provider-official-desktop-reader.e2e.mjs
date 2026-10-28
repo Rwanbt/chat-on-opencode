@@ -714,7 +714,7 @@ async function realGeneratedReader(prompt, expected) {
   }
   process.stderr.write('OFFICIAL_214_COMPOSER_READINESS=' + JSON.stringify({
     ready:available,stableFrames,observerTicks,observedCounts:[...observedCounts].sort(),
-  }) + '\\n')
+  }) + '\n')
   if (!available) {
     const diagnostic = await cdp.eval('(() => ({title:document.title,' +
       'origin:location.origin,visibleControls:[...document.querySelectorAll("button,input,textarea,[role=textbox],[contenteditable]")]' +
