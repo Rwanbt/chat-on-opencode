@@ -179,7 +179,14 @@ export class CoSControl {
               if (event.reason === 'max_duration') { rotated = true; break readStream }
               throw new BridgeError('cos_stream_ended_' + (typeof event.reason === 'string' ? event.reason : 'unknown'), 503)
             }
-            if (!Number.isInteger(event.seq) || event.seq < cursor) continue
+            if (!Number.isSafeInteger(event.seq) || event.seq < cursor) continue
+            // Full provider journals are contiguous. A skipped assistant
+            // revision can otherwise be mistaken for a complete response
+            // when a later turn_end arrives. Refuse unverifiable history:
+            // the native caller can safely retry its exact durable input.
+            if (event.seq !== Math.max(1, cursor)) {
+              throw new BridgeError('cos_event_sequence_gap', 502)
+            }
             cursor = event.seq + 1
             yield event
           }
