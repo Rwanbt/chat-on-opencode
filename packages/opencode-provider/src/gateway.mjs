@@ -398,9 +398,13 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody, 
         if (!observedTurnID) return
         recordGatewayEvidence({ stage, sessionID:stableUUID('session:' + sessionKey),
           messageKey, turnId:observedTurnID,
-          seq:stage === 'native_sse_terminal_written' ? terminalSeq : observedRevisionSeq,
+          seq:stage === 'native_sse_terminal_written' || stage === 'native_http_response_finished'
+            ? terminalSeq : observedRevisionSeq,
           atMs:Date.now() })
       }
+      // finish signals the local ServerResponse handed off its final bytes;
+      // it is not SDK reception, a visible renderer revision, or a supplier ack.
+      res.once('finish', () => recordNativeSSE('native_http_response_finished'))
       const result = await runTurn(control, body, { sessionKey, messageKey, nativeTools, signal: cancel.signal,
         checkpoint: priorAnchor?.anchor, resumeAfterSeq: priorAnchor?.seq ?? 0, previousInput: priorInput?.text ?? recoveredInput,
         turnCustody, messageFingerprint, onTerminal: seq => { terminalSeq = seq }, onEvidence:recordGatewayEvidence,

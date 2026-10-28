@@ -421,7 +421,7 @@ test('gateway authenticates, binds to local host and yields Chat Completions SSE
   assert.deepEqual(evidence.map(entry => entry.stage), [
     'input_admitted','turn_started','assistant_revision','native_sse_frame_written','native_delta_emitted',
     'assistant_revision','native_sse_frame_written','native_delta_emitted','turn_completed',
-    'native_sse_terminal_written',
+    'native_sse_terminal_written','native_http_response_finished',
   ])
   assert.deepEqual(evidence.filter(entry => entry.stage === 'native_sse_frame_written').map(entry => entry.seq),
     evidence.filter(entry => entry.stage === 'assistant_revision').map(entry => entry.seq),
