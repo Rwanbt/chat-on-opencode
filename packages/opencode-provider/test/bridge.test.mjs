@@ -120,6 +120,29 @@ test('preserve a CoS session, stream only increasing text and correlate the inpu
   assert.equal(cos.sent[1].text, 'Next')
 })
 
+test('gateway evidence correlates assistant revisions to the admitted turn without exposing text', async () => {
+  const cos = new FakeCoS()
+  const evidence = []
+  const emitted = []
+  const answer = await runTurn(cos, request, {
+    sessionKey:'ses_evidence', messageKey:'msg_evidence_001',
+    emit:delta => emitted.push(delta),
+    onEvidence:entry => { evidence.push(entry); if(entry.stage === 'turn_started') throw Error('observer_must_not_abort') },
+  })
+  assert.equal(answer,'Bonjour')
+  assert.deepEqual(emitted,['Bon','jour'])
+  assert.deepEqual(evidence.map(item => item.stage),[
+    'input_admitted','turn_started','assistant_revision','native_delta_emitted',
+    'assistant_revision','native_delta_emitted','turn_completed',
+  ])
+  assert.ok(evidence.every(entry => entry.sessionID === stableUUID('session:ses_evidence')))
+  assert.ok(evidence.every(entry => entry.messageKey === 'msg_evidence_001'))
+  assert.ok(evidence.slice(1).every(entry => entry.turnId === 'fake-current-turn'))
+  assert.ok(evidence.every(entry => Number.isSafeInteger(entry.atMs)))
+  assert.equal(JSON.stringify(evidence).includes('Bonjour'),false)
+  assert.equal(JSON.stringify(evidence).includes('Bon'),false)
+})
+
 test('refuse tools instead of silently dropping OpenCode tool contracts', async () => {
   const cos = new FakeCoS()
   await assert.rejects(runTurn(cos, { ...request, tools: [{ type: 'function', function: { name: 'bash' } }] },

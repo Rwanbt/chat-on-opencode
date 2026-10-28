@@ -75,7 +75,7 @@ export async function awaitProviderReady(control, {
 }
 
 export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal,
-  nativeTools = 'off', checkpoint, resumeAfterSeq = 0, previousInput, rememberInput, turnCustody, messageFingerprint, onTerminal } = {}) {
+  nativeTools = 'off', checkpoint, resumeAfterSeq = 0, previousInput, rememberInput, turnCustody, messageFingerprint, onTerminal, onEvidence } = {}) {
   traceStage('gateway_turn_received')
   if (!sessionKey || sessionKey.length > 256 || /[\r\n]/.test(sessionKey)) throw new BridgeError('opencode_session_id_required', 422)
   if (!messageKey || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
@@ -87,6 +87,12 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
   const result = readResultPrompt(request.messages)
   if (result && !readEnabled) throw new BridgeError('native_tool_result_without_consent', 403)
   const turnID = stableUUID('turn:' + sessionKey + ':' + messageKey + (result ? ':' + result.callId : ''))
+  // Optional in-process evidence sink. Never include prompt, tokens or response
+  // bytes; the callback cannot affect admission, streaming or cancellation.
+  const evidence = (stage, eventTurnId = null, seq = null) => {
+    try { onEvidence?.({ stage, sessionID, messageKey, turnId:eventTurnId, seq, atMs:Date.now() }) }
+    catch { /* observational only */ }
+  }
   const first = !(await abortableRead(control.hasSession(sessionID, { signal }), signal))
   if (result && first) throw new BridgeError('native_tool_result_without_session', 422)
   const firstRecord = !result && turnCustody?.read(sessionKey)
@@ -132,6 +138,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
     // changes the CoS durable outbox record and breaks idempotent enqueue.
     await abortableRead(control.send({ id: inputID, ...(first || originalFirst ? {} : { sessionId: sessionID }), text }), signal)
     traceStage('input_admitted')
+    evidence('input_admitted')
     if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
     // A native provider switch can close the HTTP socket while a remote SSE
     // iterator is blocked in next(). Relying only on the iterator to notice
@@ -157,6 +164,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
         if (activeTurnID && activeTurnID !== event.turnId) throw new BridgeError('cos_turn_superseded', 409)
         if (typeof event.inputId === 'string' && event.inputId !== inputID) throw new BridgeError('cos_input_superseded', 409)
         activeTurnID = event.turnId
+        evidence('turn_started', activeTurnID, event.seq)
       }
       // A follow-up's input receipt may precede stale history notifications.
       // Only a newly observed turn and its matching events can supply an answer.
@@ -167,7 +175,11 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
         const next = event.message.text
         if (!next.startsWith(textSoFar)) throw new BridgeError('cos_answer_revision_not_streamable', 502)
         const delta = next.slice(textSoFar.length)
-        if (delta) { textSoFar = next; if (!readEnabled) await emit(delta) }
+        if (delta) {
+          evidence('assistant_revision', activeTurnID, event.seq)
+          textSoFar = next
+          if (!readEnabled) { await emit(delta); evidence('native_delta_emitted', activeTurnID, event.seq) }
+        }
       }
       if (event.kind === 'turn_end') {
         // The CoS recorder has explicit terminal outcomes: interrupted,
@@ -178,6 +190,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
           throw new BridgeError('cos_turn_not_completed', 502)
         }
         complete = true
+        evidence('turn_completed', activeTurnID, event.seq)
         terminalSeq = Number.isSafeInteger(event.seq) && event.seq > 0 ? event.seq : null
         break
       }
@@ -228,7 +241,7 @@ export function cancellationReceiptStage(receipt) {
 }
 
 
-export function createGateway({ control, key, nativeTools = 'off', turnCustody }) {
+export function createGateway({ control, key, nativeTools = 'off', turnCustody, onEvidence }) {
   if (typeof key !== 'string' || key.length < 32) throw new Error('A strong local gateway bearer token is required')
   const active = new Set()
   // Volatile custody for a *generated* tool call. An authenticated caller may
@@ -347,7 +360,7 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody }
       let terminalSeq = null
       const result = await runTurn(control, body, { sessionKey, messageKey, nativeTools, signal: cancel.signal,
         checkpoint: priorAnchor?.anchor, resumeAfterSeq: priorAnchor?.seq ?? 0, previousInput: priorInput?.text ?? recoveredInput,
-        turnCustody, messageFingerprint, onTerminal: seq => { terminalSeq = seq },
+        turnCustody, messageFingerprint, onTerminal: seq => { terminalSeq = seq }, onEvidence,
         rememberInput: isToolResult ? undefined : text => rememberBounded(submittedInputs, inputKey,
           { text, messageFingerprint }), emit: async (delta) => {
         answer += delta
