@@ -135,6 +135,8 @@ jobs:
         run: node --test test/sse-framing.test.mjs
       - name: Qualify hidden service and explicit isolated sign-in against packaged Electron
         run: node scripts/verify-provider-packaged-sign-in.mjs
+      - name: Cold boot real packaged broker in a newly consented disposable profile (offline)
+        run: node scripts/verify-provider-cold-broker.mjs
       - name: Install official OpenCode 2.2.0 for fresh packaged Electron launch
         shell: pwsh
         run: |
