@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { candidateDigest } from '../src/official-upgrade.mjs'
-import { publishRestartOnlyPointer, inspectRestartOnlyPointer } from '../src/official-versioned-pointer.mjs'
+import { publishRestartOnlyPointer, inspectRestartOnlyPointer, probeWindowsProcessStart } from '../src/official-versioned-pointer.mjs'
 
 const sha = b => createHash('sha256').update(b).digest('hex')
 test('Windows disposable versioned pointer publishes at one config rename and rolls back by reverse CAS', { skip: process.platform !== 'win32' }, t => {
@@ -57,4 +57,23 @@ test('Windows disposable versioned pointer publishes at one config rename and ro
   assert.throws(() => publishRestartOnlyPointer(config, a, g, { ...opts, configSha: '0'.repeat(64) }), /cas_changed/)
   assert.throws(() => publishRestartOnlyPointer(config, a, g, { ...opts,
     probe: () => ({ status: 0, stdout: '1\r\n' }) }), /busy_or_unknown/)
+})
+
+
+test('Windows owner process start retries transient unreadability without trusting a PID alone', () => {
+  let calls = 0
+  const start = probeWindowsProcessStart(12345, () => {
+    calls++
+    return calls < 3 ? { status:1, stdout:'' } : { status:0, stdout:'638972343000000000\r\n' }
+  })
+  assert.equal(start, '638972343000000000')
+  assert.equal(calls, 3)
+  let rejected = 0
+  assert.throws(() => probeWindowsProcessStart(12345, () => {
+    rejected++
+    return { status:1, stdout:'MISSING' }
+  }), /versioned_pointer_lock_owner_unverifiable/)
+  assert.equal(rejected, 3)
+  assert.throws(() => probeWindowsProcessStart(-1, () => { throw Error('must_not_call') }),
+    /versioned_pointer_lock_owner_unverifiable/)
 })
