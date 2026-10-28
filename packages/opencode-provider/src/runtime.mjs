@@ -140,9 +140,25 @@ export class CoSRuntime {
                 : error instanceof BridgeError && error.code === 'cos_provider_runtime_incompatible'
                   ? 'control_protocol_mismatch' : 'control_other_unavailable'
           if (category !== lastFailure) { traceStage(category); lastFailure = category }
-          // Invalid identity may indicate an unrelated stale endpoint: never adopt it.
-          if (error instanceof BridgeError &&
-              ['runtime_endpoint_pid_mismatch', 'cos_provider_runtime_incompatible'].includes(error.code)) throw error
+          // A terminated previous child can leave an endpoint until the new
+          // child publishes its own. connect(expectedPid) rejects that endpoint
+          // BEFORE any network access. A live foreign owner still causes an
+          // immediate refusal (including a race after the preflight check).
+          if (error instanceof BridgeError && error.code === 'runtime_endpoint_pid_mismatch') {
+            let owner
+            try {
+              owner = JSON.parse(await readFile(path.join(folder,'control-api','endpoint.json'),'utf8')).pid
+            } catch { /* malformed/stale endpoint is not an authority */ }
+            if (Number.isSafeInteger(owner) && owner > 0 && owner !== child.pid) {
+              let live = false
+              try { process.kill(owner,0); live = true }
+              catch (checkError) { if (checkError?.code === 'EPERM') live = true }
+              if (live) throw new BridgeError('runtime_profile_endpoint_occupied',409)
+            }
+          }
+          // Otherwise wait only until the bounded startup deadline; never
+          // adopt or contact the stale endpoint.
+          if (error instanceof BridgeError && error.code === 'cos_provider_runtime_incompatible') throw error
         }
         if (Date.now() >= deadline) {
           traceStage('runtime_start_timeout')

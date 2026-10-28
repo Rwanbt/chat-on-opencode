@@ -698,3 +698,44 @@ test('live isolated endpoint refuses second runtime before a child is launched',
   assert.equal(launched,false)
   assert.equal(JSON.parse(await readFile(path.join(controlDir,'endpoint.json'),'utf8')).pid,process.pid)
 })
+
+test('dead previous endpoint is never contacted while new owned child publishes its endpoint', async t => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'cos-stale-cold-'))
+  t.after(() => rm(folder, {recursive:true,force:true}))
+  await writeFile(path.join(folder,'config.json'),JSON.stringify(validProviderConfig))
+  const controlDir = path.join(folder,'control-api')
+  await mkdir(controlDir)
+  const stalePid = 2147483000
+  const newPid = 2147483001
+  await writeFile(path.join(controlDir,'endpoint.json'),JSON.stringify({protocol:1,pid:stalePid,port:1}))
+  await writeFile(path.join(controlDir,'token'),'z'.repeat(43))
+  let healthReads = 0
+  const server = createServer((req,res) => {
+    healthReads++
+    res.setHeader('content-type','application/json')
+    res.end(JSON.stringify({protocol:1,ok:true,actions:{enabled:true,routes:[
+      'POST /v1/inputs','POST /v1/sessions/{id}/stop','POST /v1/inputs/{id}/cancel']},
+      routes:['/v1/provider/readiness','/v1/sessions/{id}/events/stream']}))
+  })
+  server.listen(0,'127.0.0.1')
+  await once(server,'listening')
+  t.after(() => server.close())
+  const child = new EventEmitter()
+  child.pid = newPid; child.exitCode = null; child.killed = false
+  child.stderr = new EventEmitter()
+  child.kill = () => { child.killed = true }
+  let cycles = 0
+  const runtime = new CoSRuntime({executable:process.execPath,profile:folder,startupTimeoutMs:1500}, {
+    launcher:() => child,
+    clock:async () => {
+      cycles++
+      await writeFile(path.join(controlDir,'endpoint.json'),JSON.stringify({
+        protocol:1,pid:newPid,port:server.address().port}))
+    },
+  })
+  const control = await runtime.start()
+  assert.equal(control.endpointPid,newPid)
+  assert.equal(cycles,1)
+  assert.equal(healthReads,1,'stale endpoint must never receive a request')
+  runtime.stop()
+})
