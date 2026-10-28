@@ -81,7 +81,8 @@ test('Windows actual no-FILE_SHARE_DELETE OS handle makes native publication fai
   })
   assert.throws(() => publishRestartOnlyPointer(f.config, f.a, f.b, {
     configSha: f.oldSha, fromSha: f.aSha, toSha: f.bSha, probe,
-  }), /versioned_pointer_native_publish_refused/)
+  }), /versioned_pointer_native_publish_refused_win32_(5|32)/,
+  'incompatible Windows handle must fail closed with a categorized native code')
   assert.deepEqual(readFileSync(f.config), f.original)
   assert.equal(existsSync(path.join(f.root, '.chat-on-opencode-versioned-pointer.lock')), false)
   holder.kill()
