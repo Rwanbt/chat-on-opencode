@@ -625,7 +625,7 @@ async function openOwnedFreshSession(priorGeneration, projectSelected = false) {
   // Official signed 2.1.4 exposes exactly one visible "New session" native
   // button. Click the real GUI; never create a session via SDK/direct HTTP.
   const newButton = '(()=>{const visible=[...document.querySelectorAll("button,[role=button]")].filter(e=>' +
-    'e.getClientRects().length && e.getAttribute("aria-label")==="New session");' +
+    'e.getClientRects().length && /^(New session|Nouvelle session)$/i.test(e.getAttribute("aria-label")||""));' +
     'const primary=visible.filter(e=>e.closest("main"));' +
     'return primary.length===1 ? primary : (visible.length===1 ? visible : [])})()'
   const limit = Date.now() + 15_000
@@ -857,9 +857,19 @@ try {
   const bSha = candidateDigest(b)
   assert.equal(configs.get('A').model, configs.get('B').model, 'different_model_ids')
   await startDesktop()
-  // The signed Desktop may cold-start on Home, where no composer exists.
-  // Open a real test-owned conversation through its own GUI before prompting.
-  await openOwnedFreshSession()
+  // A cold Desktop may show Home OR restore a ready conversation.
+  // Do not press New session if its composer is already present.
+  let bootComposer = 0, initialStable = 0
+  const bootDeadline = Date.now() + 12_000
+  while (Date.now() < bootDeadline) {
+    bootComposer = await cdp.eval('(() => [...document.querySelectorAll("textarea,[contenteditable=true],[role=textbox]")].filter(e=>e.getClientRects().length>0&&!e.disabled).length)()')
+    assert.ok(bootComposer===0 || bootComposer===1, 'ambiguous_initial_owned_composer')
+    initialStable = bootComposer===1 ? initialStable+1 : 0
+    if (initialStable>=3) break
+    await sleep(250)
+  }
+  if (initialStable<3) await openOwnedFreshSession()
+  process.stderr.write('OWNED_COLD_GUI_INITIAL_SURFACE=' + JSON.stringify({existingComposer:bootComposer===1}) + '\n')
   const coldA = await realGeneratedReader('Offline cold A actual reader marker', 'A')
   assert.ok(existsSync(path.join(dirs.receipts, 'A.import')), 'actual_plugin_A_never_imported')
   // Real Desktop same-conversation followup, NOT a fresh New session. The
