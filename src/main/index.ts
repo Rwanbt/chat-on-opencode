@@ -129,7 +129,7 @@ import { browserWindowIconPath } from './window-icon.js';
 import { approvedChatGptImageRequest, RENDERER_CONTENT_SECURITY_POLICY } from './renderer-csp.js';
 import { editContextMenuTemplate } from './edit-context-menu.js';
 import { connectionLossLine, showConnectionLossNotice } from './connection-loss-notice.js';
-import { bootstrapProviderBrowserTab, providerServiceProfile, providerServiceReady, providerServiceOwner, providerServiceOwnerAlive, PROVIDER_SERVICE_SWITCH, PROVIDER_SIGN_IN_SWITCH } from './provider-service.js';
+import { bootstrapProviderBrowserTab, providerNormalUserData, providerServiceProfile, providerServiceReady, providerServiceOwner, providerServiceOwnerAlive, PROVIDER_SERVICE_SWITCH, PROVIDER_SIGN_IN_SWITCH } from './provider-service.js';
 
 /** Durable state file holding the multi-agent run. Hashes only, never credentials. */
 const SWARM_STATE = 'swarm';
@@ -145,7 +145,10 @@ const providerService = process.argv.includes(PROVIDER_SERVICE_SWITCH) || provid
 const providerOwner = providerService && !providerSignIn ? providerServiceOwner(process.env.CHAT_ON_OPENCODE_OWNER_PID) : null;
 let providerUserData: string | null = null;
 try {
-  providerUserData = providerServiceProfile(process.argv, process.env.CHAT_ON_OPENCODE_USERDATA_DIR, app.getPath('userData'));
+  const normalUserData = providerService && process.platform === 'win32'
+    ? providerNormalUserData(process.env.APPDATA, app.getName()) ?? app.getPath('userData')
+    : app.getPath('userData');
+  providerUserData = providerServiceProfile(process.argv, process.env.CHAT_ON_OPENCODE_USERDATA_DIR, normalUserData);
   if (providerUserData) app.setPath('userData', providerUserData);
 } catch (error) {
   // No normal-mode fallback when an isolated provider profile is malformed.
