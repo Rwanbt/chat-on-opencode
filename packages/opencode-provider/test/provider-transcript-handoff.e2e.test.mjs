@@ -121,11 +121,18 @@ test('handoff rejects clipped/non-text/incomplete and excessive context without 
   ]), anchor)
   assert.match(complete, /foreign answer/)
   assert.doesNotMatch(complete, /CoS-1/)
-  assert.throws(() => continuationWithTranscript(plainMessages([
+  const consecutive = continuationWithTranscript(plainMessages([
     ...prefix, { role: 'user', content: 'orphan' }, user,
-  ]), anchor), /transcript_handoff_incomplete/)
-  assert.throws(() => continuationWithTranscript(plainMessages([
+  ]), anchor)
+  assert.match(consecutive, /"role":"user","content":"orphan"/)
+  assert.match(consecutive, /quoted context only/)
+  const largeBounded = continuationWithTranscript(plainMessages([
     ...prefix, { role: 'user', content: 'X'.repeat(17000) },
+      { role: 'assistant', content: 'reply' }, user,
+  ]), anchor)
+  assert.ok(largeBounded.includes('X'.repeat(17000)))
+  assert.throws(() => continuationWithTranscript(plainMessages([
+    ...prefix, { role: 'user', content: 'Y'.repeat(49000) },
       { role: 'assistant', content: 'reply' }, user,
   ]), anchor), /transcript_handoff_too_large/)
   assert.throws(() => plainMessages([...prefix, { role: 'assistant', content: [{ type: 'image_url', image_url: 'data' }] }, user]),
