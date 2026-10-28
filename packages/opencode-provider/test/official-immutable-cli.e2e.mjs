@@ -9,6 +9,9 @@ import { test } from 'node:test'
 import { createOpenCodeConfig } from '../src/config.mjs'
 import { installProvider } from '../src/official-install.mjs'
 import { stageUpgrade, publishVersionedCandidate, recoverStagedUpgrade } from '../src/official-upgrade.mjs'
+import { candidateDigest } from '../src/official-upgrade.mjs'
+import { publishRestartOnlyPointer, inspectRestartOnlyPointer } from '../src/official-versioned-pointer.mjs'
+import { createHash } from 'node:crypto'
 
 const official = process.env.CHAT_ON_OPENCODE_TEST_OFFICIAL_CLI
 const bundle = fileURLToPath(new URL('..', import.meta.url))
@@ -52,10 +55,18 @@ test('official OpenCode 2.1.4 CLI lists model from published immutable bundle in
     const result = publishVersionedCandidate(configFile)
     assert.equal(result.publishedSha256, stagedDigest)
     const published = path.join(root, 'config', '.chat-on-opencode-version-' + stagedDigest)
-    const generated = createOpenCodeConfig({ runtimeExecutable: runtime,
-      runtimeData: path.join(root, 'provider'), nodeExecutable: process.execPath, pluginDir: published })
-    env.OPENCODE_CONFIG_CONTENT = JSON.stringify(generated)
+    const managed = path.join(root, 'config', '.chat-on-opencode-managed')
     const before = await readFile(configFile)
+    const configSha = createHash('sha256').update(before).digest('hex')
+    const proof = { configSha, fromSha: candidateDigest(managed), toSha: candidateDigest(published),
+      probe: () => ({ status: 0, stdout: '0\r\n' }) }
+    assert.throws(() => publishRestartOnlyPointer(configFile, managed, published, {
+      ...proof, fault: step => { if (step === 'before_publish') throw Error('before_commit') },
+    }), /before_commit/)
+    assert.deepEqual(await readFile(configFile), before)
+    const switched = publishRestartOnlyPointer(configFile, managed, published, proof)
+    assert.equal(switched.activationAuthorized, false)
+    assert.equal(inspectRestartOnlyPointer(configFile, configSha, switched.publishedConfigSha256).state, 'NEW')
     const child = spawn(official, ['models', '--standalone'], {
       cwd: path.join(root, 'workspace'), env, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     let output = '', error = ''
@@ -78,6 +89,11 @@ test('official OpenCode 2.1.4 CLI lists model from published immutable bundle in
       child.once('close', code => { clearTimeout(timer); resolve(code) })
     })
     assert.equal(matched, true, 'official CLI did not list staged candidate model (exit ' + resultCode + ')')
+    assert.equal(inspectRestartOnlyPointer(configFile, configSha, switched.publishedConfigSha256).state, 'NEW')
+    const rollback = publishRestartOnlyPointer(configFile, published, managed, {
+      configSha: switched.publishedConfigSha256, fromSha: proof.toSha, toSha: proof.fromSha,
+      probe: proof.probe })
+    assert.equal(rollback.status, 'RESTART_REQUIRED_ONLY')
     assert.deepEqual(await readFile(configFile), before)
     assert.equal(recoverStagedUpgrade(configFile).originalInstallUnchanged, true)
   })
