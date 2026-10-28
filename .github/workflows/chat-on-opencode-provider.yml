@@ -131,6 +131,8 @@ jobs:
         run: npm run dist:provider:win:x64
       - name: RED gate - real packaged gateway under standalone CLI-like environment
         run: node test/provider-packaged-gateway-env.e2e.mjs
+      - name: Verify payload-free SSE counter under split TCP chunks
+        run: node --test test/sse-framing.test.mjs
       - name: Qualify hidden service and explicit isolated sign-in against packaged Electron
         run: node scripts/verify-provider-packaged-sign-in.mjs
       - name: Install official OpenCode 2.2.0 for fresh packaged Electron launch

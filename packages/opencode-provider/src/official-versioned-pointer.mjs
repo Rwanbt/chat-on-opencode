@@ -131,13 +131,19 @@ function replaced(found, nextPath) {
 }
 // A PID alone is not a lock identity: Windows can reuse it after the writer
 // crashes. Bind abandoned-lock recovery to the OS process creation timestamp.
-function processStart(pid) {
+// Retry only the *same* kernel creation-time query. Never infer process identity
+// from a PID, missing timestamp, or a different clock. All failures fail closed.
+export function probeWindowsProcessStart(pid, runner = spawnSync) {
+  if (!Number.isSafeInteger(pid) || pid < 1) refuse('lock_owner_unverifiable')
   const script = `$ErrorActionPreference='Stop'; $p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($null -eq $p) { 'MISSING' } else { $p.StartTime.ToUniversalTime().Ticks.ToString() }`
-  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
-    { encoding: 'utf8', shell: false, windowsHide: true, timeout: 7000 })
-  if (result.status !== 0 || !/^(?:MISSING|\d+)\s*$/.test(result.stdout ?? '')) refuse('lock_owner_unverifiable')
-  return result.stdout.trim()
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const result = runner('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+      { encoding: 'utf8', shell: false, windowsHide: true, timeout: 7000 })
+    if (result.status === 0 && /^(?:MISSING|\d+)\s*$/.test(result.stdout ?? '')) return result.stdout.trim()
+  }
+  refuse('lock_owner_unverifiable')
 }
+function processStart(pid) { return probeWindowsProcessStart(pid) }
 function lockOwner() {
   const start = processStart(process.pid)
   if (start === 'MISSING') refuse('lock_owner_unverifiable')
