@@ -37,6 +37,22 @@ export function requestText(messages, first) {
     ...history.map(p => `[${p.role}]\n${p.content}\n[/${p.role}]`)].join('\n\n')
 }
 
+// The session lookup and readiness checks are read-only. A provider switch may
+// abandon them before CoS responds; the obsolete attempt must release its
+// session lease without waiting for a stale read to finish.
+async function abortableRead(pending, signal) {
+  if (!signal) return pending
+  if (signal.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
+  const onAbort = () => rejectAbort(new BridgeError('opencode_turn_cancelled', 499))
+  let rejectAbort
+  const cancelled = new Promise((_, reject) => { rejectAbort = reject })
+  signal.addEventListener('abort', onAbort, { once: true })
+  try {
+    if (signal.aborted) onAbort()
+    return await Promise.race([pending, cancelled])
+  } finally { signal.removeEventListener('abort', onAbort) }
+}
+
 /**
  * The hidden Chromium extension starts asynchronously after Electron's control
  * socket opens. Wait for that local bootstrap BEFORE admitting an OpenCode turn.
@@ -48,16 +64,16 @@ export async function awaitProviderReady(control, {
 } = {}) {
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
   // Older synthetic control fixtures implement assertReady but not readiness.
-  if (typeof control.readiness !== 'function') return control.assertReady()
+  if (typeof control.readiness !== 'function') return abortableRead(control.assertReady({ signal }), signal)
   const deadline = clock() + maxWaitMs
   for (;;) {
     if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
-    const state = await control.readiness()
+    const state = await abortableRead(control.readiness({ signal }), signal)
     if (state.sessionCookie === 'present' && state.extension === 'connected' &&
-        state.paired && state.canAttempt) return control.assertReady()
+        state.paired && state.canAttempt) return abortableRead(control.assertReady({ signal }), signal)
     if (state.sessionCookie === 'absent' ||
         (state.sessionCookie === 'present' && state.extension === 'connected' && !state.paired) ||
-        clock() >= deadline) return control.assertReady()
+        clock() >= deadline) return abortableRead(control.assertReady({ signal }), signal)
     const ms = Math.max(1, Math.min(400, deadline - clock()))
     try { await sleep(ms, undefined, { signal }) }
     catch (error) {
@@ -79,7 +95,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
   const result = readResultPrompt(request.messages)
   if (result && !readEnabled) throw new BridgeError('native_tool_result_without_consent', 403)
   const turnID = stableUUID('turn:' + sessionKey + ':' + messageKey + (result ? ':' + result.callId : ''))
-  const first = !(await control.hasSession(sessionID))
+  const first = !(await abortableRead(control.hasSession(sessionID, { signal }), signal))
   if (result && first) throw new BridgeError('native_tool_result_without_session', 422)
   const text = result ? result.text : requestText(request.messages, first) +
     (readEnabled ? '\n\n' + READ_INSTRUCTIONS : '')
@@ -91,16 +107,22 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
   await awaitProviderReady(control, { signal })
   traceStage('control_ready')
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
-  await control.send({ id: inputID, ...(first ? {} : { sessionId: sessionID }), text })
-  traceStage('input_admitted')
-
   // A conversation is not considered delivered just because POST returned 202. Follow its
   // exact outbox input id in the durable event journal, including on idempotent retries.
   let seenInput = false
   let complete = false
   let textSoFar = ''
   let activeTurnID = null
+  let sendStarted = false
   try {
+    // Once POST /inputs begins, completion is no longer a read-only operation.
+    // Wait for its bounded response before releasing custody; if the native
+    // request was cancelled during admission, CoS must decide whether the exact
+    // outbox input can still be cancelled.
+    sendStarted = true
+    await control.send({ id: inputID, ...(first ? {} : { sessionId: sessionID }), text })
+    traceStage('input_admitted')
+    if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
     for await (const event of control.events(sessionID, { signal })) {
       if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
       if (event.kind === 'user_message' && (event.inputId === inputID || event.messageId === inputID)) {
@@ -140,7 +162,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
     }
     return textSoFar
   } finally {
-    if (signal?.aborted && !complete) {
+    if (signal?.aborted && !complete && sendStarted) {
       // Never stop a later or unproven turn. The CoS broker validates exact turn identity;
       // when Send is not proven, its outbox independently decides whether cancellation is safe.
       try {

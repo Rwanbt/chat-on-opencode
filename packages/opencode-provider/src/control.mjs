@@ -50,7 +50,7 @@ export class CoSControl {
       method, redirect: 'error', signal: signal ?? AbortSignal.timeout(stream ? 33 * 60_000 : 15000),
       headers: { Authorization: `Bearer ${this.token}`, ...(body ? { 'content-type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
-    }).catch(() => { throw new BridgeError('cos_transport_unavailable', 503) })
+    }).catch(() => { throw new BridgeError(signal?.aborted ? 'opencode_turn_cancelled' : 'cos_transport_unavailable', signal?.aborted ? 499 : 503) })
     if (!response.ok) {
       let code = 'cos_http_' + response.status
       try { const error = await response.json(); if (typeof error.error === 'string') code = error.error } catch { /* bounded upstream failure */ }
@@ -59,19 +59,19 @@ export class CoSControl {
     return response
   }
 
-  async json(method, route, body) {
-    const response = await this.request(method, route, body)
+  async json(method, route, body, options) {
+    const response = await this.request(method, route, body, options)
     return response.json()
   }
 
-  async hasSession(id) {
-    try { await this.json('GET', `/v1/sessions/${id}`); return true }
+  async hasSession(id, { signal } = {}) {
+    try { await this.json('GET', `/v1/sessions/${id}`, undefined, { signal }); return true }
     catch (error) { if (error instanceof BridgeError && error.status === 404) return false; throw error }
   }
 
   /** Categorical, private local readiness hint. ChatGPT may still reject a stale cookie. */
-  async readiness() {
-    const state = await this.json('GET', '/v1/provider/readiness')
+  async readiness({ signal } = {}) {
+    const state = await this.json('GET', '/v1/provider/readiness', undefined, { signal })
     if (!state || !['present', 'absent', 'unknown'].includes(state.sessionCookie) ||
         !['connected', 'disconnected'].includes(state.extension) ||
         typeof state.paired !== 'boolean' || typeof state.canAttempt !== 'boolean') {
@@ -80,8 +80,8 @@ export class CoSControl {
     return state
   }
 
-  async assertReady() {
-    const state = await this.readiness()
+  async assertReady({ signal } = {}) {
+    const state = await this.readiness({ signal })
     if (state.sessionCookie !== 'present') throw new BridgeError(
       state.sessionCookie === 'absent' ? 'chatgpt_sign_in_required' : 'chatgpt_session_unobserved', 503)
     if (!state.paired) throw new BridgeError('cos_companion_unpaired', 503)

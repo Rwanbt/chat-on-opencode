@@ -21,3 +21,24 @@ export class MessageIdentity {
 }
 
 export const validID = id => typeof id === 'string' && /^[A-Za-z0-9_.:-]{6,256}$/.test(id)
+
+/** Pin a primary request's message before the asynchronous gateway startup.
+ * A prompt in the same native session may switch to another provider meanwhile. */
+export function pinProviderMessage(event, identities) {
+  if (event.model?.providerID !== 'chat-on-opencode') return false
+  event.headers['x-opencode-session-id'] = event.sessionID
+  event.headers['x-opencode-message-id'] = identities.require(event.sessionID)
+  return true
+}
+
+export function bindProviderMessage(event, identities) {
+  if (event.model?.providerID !== 'chat-on-opencode') return false
+  const pinned = event.request.headers.get('x-opencode-message-id')
+  const pinnedSession = event.request.headers.get('x-opencode-session-id')
+  if ((pinned && !validID(pinned)) || (pinnedSession && pinnedSession !== event.sessionID)) {
+    throw new Error('opencode_request_identity_mismatch')
+  }
+  event.request.headers.set('x-opencode-session-id', event.sessionID)
+  event.request.headers.set('x-opencode-message-id', pinned || identities.require(event.sessionID))
+  return true
+}
