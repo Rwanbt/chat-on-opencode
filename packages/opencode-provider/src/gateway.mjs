@@ -388,14 +388,18 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody, 
         : memory
       let terminalSeq = null
       let observedTurnID = null
+      let observedRevisionSeq = null
       const recordGatewayEvidence = entry => {
         if (entry.turnId) observedTurnID = entry.turnId
+        if (entry.stage === 'assistant_revision') observedRevisionSeq = entry.seq
         try { onEvidence?.(entry) } catch { /* observational only */ }
       }
       const recordNativeSSE = stage => {
         if (!observedTurnID) return
         recordGatewayEvidence({ stage, sessionID:stableUUID('session:' + sessionKey),
-          messageKey, turnId:observedTurnID, seq:terminalSeq, atMs:Date.now() })
+          messageKey, turnId:observedTurnID,
+          seq:stage === 'native_sse_terminal_written' ? terminalSeq : observedRevisionSeq,
+          atMs:Date.now() })
       }
       const result = await runTurn(control, body, { sessionKey, messageKey, nativeTools, signal: cancel.signal,
         checkpoint: priorAnchor?.anchor, resumeAfterSeq: priorAnchor?.seq ?? 0, previousInput: priorInput?.text ?? recoveredInput,

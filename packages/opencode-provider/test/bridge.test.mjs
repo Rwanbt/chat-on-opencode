@@ -423,6 +423,9 @@ test('gateway authenticates, binds to local host and yields Chat Completions SSE
     'assistant_revision','native_sse_frame_written','native_delta_emitted','turn_completed',
     'native_sse_terminal_written',
   ])
+  assert.deepEqual(evidence.filter(entry => entry.stage === 'native_sse_frame_written').map(entry => entry.seq),
+    evidence.filter(entry => entry.stage === 'assistant_revision').map(entry => entry.seq),
+    'each native SSE frame must retain its exact source assistant revision sequence')
   assert.ok(evidence.every(entry => entry.sessionID === stableUUID('session:ses_test')))
   assert.ok(evidence.every(entry => entry.messageKey === 'msg_http_0001'))
   assert.ok(evidence.slice(1).every(entry => entry.turnId === 'fake-current-turn'))
