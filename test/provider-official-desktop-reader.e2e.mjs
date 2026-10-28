@@ -505,10 +505,49 @@ async function awaitRuntimeStopped(pid) {
   assert.equal(existsSync(ownedEndpoint),false,'owned_endpoint_cleanup_failed')
 }
 
+function drainOnlyRunnerOwnedOpenCode() {
+  // The publisher correctly counts ALL official OpenCode GUI/CLI/provider
+  // processes, including orphan renderer children with no listening port.
+  // On the disposable runner, stop only executables proven to reside inside
+  // RUNNER_TEMP. An unrelated personal process blocks the test without signal.
+  const q = value => "'" + value.replaceAll("'", "''") + "'"
+  const script = [
+    '$ErrorActionPreference="Stop"',
+    '$root=' + q(path.resolve(base)),
+    '$prefix=$root.TrimEnd([char]92)+[IO.Path]::DirectorySeparatorChar',
+    '$names=@("OpenCode","opencode","opencode-cli","Chat On OpenCode Provider")',
+    '$targets=@([Diagnostics.Process]::GetProcesses() | Where-Object { $_.ProcessName -in $names })',
+    '$verified=@()',
+    'foreach($proc in $targets) {',
+    '  $detail=Get-CimInstance Win32_Process -Filter ("ProcessId="+$proc.Id)',
+    '  if ($null -eq $detail) { continue }',
+    '  if ([string]::IsNullOrWhiteSpace($detail.ExecutablePath) -or ' +
+      '-not $detail.ExecutablePath.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) { ' +
+      'throw "EXTERNAL_OPEN_CODE_PROCESS_NO_SIGNAL" }',
+    '  $verified+=,$detail',
+    '}',
+    'foreach($prior in $verified) {',
+    '  $current=Get-CimInstance Win32_Process -Filter ("ProcessId="+$prior.ProcessId)',
+    '  if ($null -eq $current) { continue }',
+    '  if ($current.ExecutablePath -ne $prior.ExecutablePath -or ' +
+      '$current.CreationDate -ne $prior.CreationDate) { throw "OPEN_CODE_PID_REUSED_NO_SIGNAL" }',
+    '  Stop-Process -Id $prior.ProcessId -Force -ErrorAction Stop',
+    '}',
+    'Write-Output ("VERIFIED_RUNNER_OWNED_OPENCODE_STOPPED="+$verified.Count)',
+  ].join('; ')
+  const result = spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{
+    shell:false,windowsHide:true,encoding:'utf8',timeout:10_000,
+  })
+  assert.equal(result.status,0,'runner_owned_opencode_drain_unproven:' +
+    String(result.stderr).slice(0,250).replaceAll(base,'[runner-temp]'))
+  assert.match(result.stdout,/^VERIFIED_RUNNER_OWNED_OPENCODE_STOPPED=\d+\s*$/)
+  process.stderr.write('TEST_ONLY_OPEN_CODE_IDLE_DRAIN=' + result.stdout.trim() + '\n')
+}
 async function coldStopDesktop() {
   const runtimePid = await ownedRuntimePid()
   await stopDesktop()
   assert.match(stopOwnedManagedCli(), /ONLY_TEST_OWNED_SERVICE_STOPPED|OWNED_SERVICE_ALREADY_ABSENT/)
+  drainOnlyRunnerOwnedOpenCode()
   await awaitRuntimeStopped(runtimePid)
 }
 async function journalState() {
