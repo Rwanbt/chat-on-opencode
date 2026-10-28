@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs'
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs'
 import path from 'node:path'
 import { BridgeError } from './control.mjs'
 
@@ -109,6 +109,52 @@ export class TurnCustody {
     } catch (error) {
       if (error?.code === 'EEXIST') return this.verifyFollowup(this.readFollowup(sessionKey, messageKey), historyFingerprint, text)
       throw new BridgeError('turn_followup_custody_unavailable', 503)
+    }
+  }
+
+  anchorFile(sessionKey) { return path.join(this.directory, digest(sessionKey) + '.anchor.json') }
+
+  /** An anchor is evidence from a completed CoS turn, never a transcript copy.
+   * Sequence numbers belong to the durable CoS journal: an old message replay
+   * cannot replace a newer anchor after gateway restart. */
+  readAnchor(sessionKey) {
+    const file = this.anchorFile(sessionKey)
+    if (!existsSync(file)) return null
+    try {
+      const info = lstatSync(file)
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 512) throw Error('unsafe')
+      const record = JSON.parse(readFileSync(file, 'utf8'))
+      if (record.version !== 1 || !Number.isSafeInteger(record.seq) || record.seq < 1 ||
+          !/^[a-f0-9]{32}$/.test(record.salt) ||
+          !/^[a-f0-9]{64}$/.test(record.question) ||
+          !/^[a-f0-9]{64}$/.test(record.answer)) throw Error('invalid')
+      return record
+    } catch { throw new BridgeError('turn_anchor_corrupt', 409) }
+  }
+
+  rememberAnchor(sessionKey, anchor, seq) {
+    if (!Number.isSafeInteger(seq) || seq < 1 ||
+        !/^[a-f0-9]{64}$/.test(anchor?.questionSha256) ||
+        !/^[a-f0-9]{64}$/.test(anchor?.answerSha256)) return
+    const previous = this.readAnchor(sessionKey)
+    if (previous && previous.seq >= seq) return
+    const salt = randomBytes(16).toString('hex')
+    const record = { version: 1, seq, salt,
+      question: digest(salt + '\0' + anchor.questionSha256),
+      answer: digest(salt + '\0' + anchor.answerSha256) }
+    let temporary
+    try {
+      mkdirSync(this.directory, { recursive: true, mode: 0o700 })
+      const info = lstatSync(this.directory)
+      if (!info.isDirectory() || info.isSymbolicLink()) throw Error('unsafe_directory')
+      temporary = this.anchorFile(sessionKey) + '.' + randomBytes(8).toString('hex') + '.tmp'
+      const fd = openSync(temporary, 'wx', 0o600)
+      try { writeSync(fd, JSON.stringify(record) + '\n'); fsyncSync(fd) }
+      finally { closeSync(fd) }
+      renameSync(temporary, this.anchorFile(sessionKey))
+    } catch {
+      if (temporary) { try { unlinkSync(temporary) } catch { /* no owned temp remains */ } }
+      throw new BridgeError('turn_anchor_unavailable', 503)
     }
   }
 }
