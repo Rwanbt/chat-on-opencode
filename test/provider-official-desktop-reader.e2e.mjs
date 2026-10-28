@@ -197,6 +197,7 @@ const allowedProviderPorts = [...configs.values()].map(config =>
 const allowedPorts = new Set([ownedServicePort, ...allowedProviderPorts])
 let blockedExternal = 0
 let forwardedLocal = 0
+let transientProxyResets = 0
 // Chromium's forced proxy previously swallowed every localhost fetch.
 // Instead, the test owns a loopback-only proxy that forwards exclusively to
 // explicitly generated disposable service/provider ports. HTTPS CONNECT,
@@ -231,14 +232,39 @@ const ownedProxy = http.createServer((request, response) => {
     if (!response.headersSent) response.writeHead(502)
     response.end()
   })
+  // Renderer reload or a cold GUI shutdown may interrupt an in-flight
+  // proxy request. A client disconnect is not a test process crash.
+  request.on('error', error => {
+    if (error.code === 'ECONNRESET' || error.code === 'EPIPE') transientProxyResets++
+    else ownedNetwork.failures.push('proxy_request_' + String(error.code || 'unknown'))
+    upstream.destroy()
+  })
+  response.on('error', error => {
+    if (error.code === 'ECONNRESET' || error.code === 'EPIPE') transientProxyResets++
+    else ownedNetwork.failures.push('proxy_response_' + String(error.code || 'unknown'))
+    upstream.destroy()
+  })
   request.pipe(upstream)
+})
+ownedProxy.on('clientError', (error, socket) => {
+  if (error.code === 'ECONNRESET' || error.code === 'EPIPE') transientProxyResets++
+  else ownedNetwork.failures.push('proxy_client_' + String(error.code || 'unknown'))
+  socket.destroy()
 })
 ownedProxy.on('connect', (_request, socket) => {
   blockedExternal++
+  socket.on('error', error => {
+    if (error.code === 'ECONNRESET' || error.code === 'EPIPE') transientProxyResets++
+    else ownedNetwork.failures.push('proxy_connect_' + String(error.code || 'unknown'))
+  })
   socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
 })
 ownedProxy.on('upgrade', (_request, socket) => {
   blockedExternal++
+  socket.on('error', error => {
+    if (error.code === 'ECONNRESET' || error.code === 'EPIPE') transientProxyResets++
+    else ownedNetwork.failures.push('proxy_upgrade_' + String(error.code || 'unknown'))
+  })
   socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
 })
 await new Promise((resolve,reject) =>
@@ -647,6 +673,9 @@ async function realGeneratedReader(prompt, expected) {
     for (const generation of ['A', 'B']) {
       if (text.includes(exactReply(generation))) {
         if (expected) assert.equal(generation, expected, 'wrong_real_gui_generator')
+        process.stdout.write('OWNED_REAL_GUI_NONCE_RESPONSE=' + JSON.stringify({
+          generation, probe:prompt, match:true, modelId:'chat-on-opencode/chatgpt-default',
+        }) + '\n')
         return generation
       }
     }
@@ -791,7 +820,7 @@ try {
     await new Promise(resolve => ownedProxy.close(resolve))
     process.stderr.write('OWNED_PROXY_PROOF=' +
       JSON.stringify({forwardedLocal,blockedExternal,restrictedPorts:allowedPorts.size,
-        closed:true}) + '\n')
+        closed:true,transientProxyResets}) + '\n')
   }
   // CI runner owns cleanup of all disposable app storage and helper handles.
 }
