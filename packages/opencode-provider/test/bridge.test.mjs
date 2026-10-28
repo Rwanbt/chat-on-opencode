@@ -16,6 +16,8 @@ import { MessageIdentity } from '../plugin/message-identity.mjs'
 import { enforceTextOnlyContext } from '../plugin/text-only.mjs'
 import { parseReadCall, readResultPrompt, validateNativeTools } from '../src/native-read.mjs'
 
+const validProviderConfig = JSON.parse(await readFile(new URL('./fixtures/valid-provider-config.json', import.meta.url), 'utf8'))
+
 const request = { model: 'chatgpt-default', messages: [{ role: 'user', content: 'Bonjour' }] }
 
 test('opt-in startup stage trace records categorical markers only and ignores invalid destinations', async () => {
@@ -418,9 +420,7 @@ test('runtime launcher only accepts existing, isolated files and directories', a
   await mkdir(personal)
   await assert.rejects(validateRuntime({ executable: process.execPath, profile, personalProfile: personal }),
     /isolated_profile_not_initialized/)
-  await writeFile(path.join(profile, 'config.json'), JSON.stringify({
-    ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
-  }))
+  await writeFile(path.join(profile, 'config.json'), JSON.stringify(validProviderConfig))
   const ok = await validateRuntime({ executable: process.execPath, profile, personalProfile: personal })
   // Windows temp may be an 8.3 alias (RUNNER~1) while realpath expands it.
   assert.equal(ok.folder, await realpath(profile))
@@ -442,7 +442,9 @@ test('runtime refuses unconsented or damaged isolated CoS profile before any pro
   await assert.rejects(validateProfileConsent(profile), /isolated_profile_has_no_provider_consent/)
   await writeFile(config, JSON.stringify({ ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: false } }))
   await assert.rejects(validateProfileConsent(profile), /isolated_profile_has_no_provider_consent/)
-  await writeFile(config, JSON.stringify({ ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true } }))
+  await writeFile(config, JSON.stringify({ ui:{chatBrowser:'cos'}, controlApi:{enabled:true,allowActions:true} }))
+  await assert.rejects(validateProfileConsent(profile), /isolated_profile_config_incomplete/)
+  await writeFile(config, JSON.stringify(validProviderConfig))
   await validateProfileConsent(profile)
 })
 
@@ -458,9 +460,7 @@ test('service launcher uses the fork-only flag, owns exact endpoint PID and stop
   process.env.NODE_OPTIONS = '--inspect=0'
   const profile = await mkdtemp(path.join(os.tmpdir(), 'cos-owned-'))
   t.after(() => rm(profile, { recursive: true, force: true }))
-  await writeFile(path.join(profile, 'config.json'), JSON.stringify({
-    ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
-  }))
+  await writeFile(path.join(profile, 'config.json'), JSON.stringify(validProviderConfig))
   const token = 'z'.repeat(43)
   const server = createServer((req, res) => {
     assert.equal(req.headers.authorization, `Bearer ${token}`)
@@ -502,9 +502,7 @@ test('service launcher uses the fork-only flag, owns exact endpoint PID and stop
 test('early packaged Electron profile refusal is classified without propagating native stderr', async t => {
   const profile = await mkdtemp(path.join(os.tmpdir(), 'cos-profile-refusal-'))
   t.after(() => rm(profile, { recursive: true, force: true }))
-  await writeFile(path.join(profile, 'config.json'), JSON.stringify({
-    ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
-  }))
+  await writeFile(path.join(profile, 'config.json'), JSON.stringify(validProviderConfig))
   const stderr = new EventEmitter()
   const child = Object.assign(new EventEmitter(), { pid: 12345, stderr, exitCode: null, killed: false,
     kill() { this.killed = true },
@@ -530,9 +528,7 @@ test('early packaged Electron profile refusal is classified without propagating 
 test('service launcher immediately rejects an old advertised API without waiting for readiness timeout', async t => {
   const profile = await mkdtemp(path.join(os.tmpdir(), 'cos-incompatible-'))
   t.after(() => rm(profile, { recursive: true, force: true }))
-  await writeFile(path.join(profile, 'config.json'), JSON.stringify({
-    ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
-  }))
+  await writeFile(path.join(profile, 'config.json'), JSON.stringify(validProviderConfig))
   const server = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ ok: true, protocol: 1, routes: [], actions: { enabled: true, routes: [] } }))
@@ -690,9 +686,7 @@ test('foreign control endpoint is rejected before any network request or token e
 test('live isolated endpoint refuses second runtime before a child is launched', async t => {
   const folder = await mkdtemp(path.join(os.tmpdir(), 'cos-occupied-owner-'))
   t.after(() => rm(folder, {recursive:true, force:true}))
-  await writeFile(path.join(folder, 'config.json'), JSON.stringify({
-    ui:{chatBrowser:'cos'}, controlApi:{enabled:true,allowActions:true},
-  }))
+  await writeFile(path.join(folder, 'config.json'), JSON.stringify(validProviderConfig))
   const controlDir = path.join(folder,'control-api')
   await mkdir(controlDir)
   await writeFile(path.join(controlDir,'endpoint.json'), JSON.stringify({protocol:1,pid:process.pid,port:23001}))

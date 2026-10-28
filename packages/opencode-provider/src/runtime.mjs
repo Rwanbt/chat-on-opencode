@@ -22,6 +22,15 @@ export async function validateProfileConsent(folder) {
       config.controlApi?.allowActions !== true) {
     throw new BridgeError('isolated_profile_has_no_provider_consent', 403)
   }
+  // The desktop schema requires these core sections. A hand-written three-key
+  // consent file passes the permission gate but Electron quarantines it and
+  // exits before publishing a broker endpoint. Fail before spawning instead.
+  const sections = ['capabilities', 'tunnel', 'sessions', 'compaction', 'multiAgent', 'goal', 'mcp', 'controlApi', 'ui']
+  if (!config || !Array.isArray(config.roots) || typeof config.readOnly !== 'boolean' ||
+      sections.some(key => !config[key] || typeof config[key] !== 'object' || Array.isArray(config[key]))) {
+    throw new BridgeError('isolated_profile_config_incomplete', 503)
+  }
+
 }
 
 /** Only start an explicitly configured fork binary in an existing, separate profile. */
