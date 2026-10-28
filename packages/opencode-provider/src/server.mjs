@@ -20,7 +20,8 @@ function isolatedEvidenceSink(profile) {
         receipts !== path.join(actualRoot, 'receipts') || !statSync(receipts).isDirectory()) return undefined
   } catch { return undefined }
   const allowed = new Set(['input_admitted','turn_started','assistant_revision',
-    'native_delta_emitted','turn_completed'])
+    'native_delta_emitted','turn_completed','turn_stop_requested',
+    'input_cancel_requested','cancel_command_acknowledged','cancel_command_unconfirmed'])
   const digest = value => value == null ? null : createHash('sha256').update(salt + ':' + value).digest('hex')
   return entry => {
     if (!allowed.has(entry?.stage)) return

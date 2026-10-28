@@ -240,8 +240,9 @@ test('refuse clipped or rewritten CoS output, never invent a complete reply', as
 test('a cancelled OpenCode request stops only its exact observed CoS turn', async () => {
   const abort = new AbortController()
   const calls = []
+  const evidence = []
   const cos = new FakeCoS()
-  cos.stop = async (session, turn) => { calls.push({ session, turn }) }
+  cos.stop = async (session, turn) => { calls.push({ session, turn }); return { stopped:true } }
   cos.events = async function* () {
     yield { kind: 'user_message', inputId: this.sent.at(-1).id, seq: 1 }
     yield { kind: 'turn_start', turnId: 'proven-turn-42', seq: 2 }
@@ -249,8 +250,14 @@ test('a cancelled OpenCode request stops only its exact observed CoS turn', asyn
     yield { kind: 'turn_end', turnId: 'proven-turn-42', seq: 4, outcome: 'completed' }
   }
   await assert.rejects(runTurn(cos, request, { sessionKey: 'ses_cancel', messageKey: 'msg_cancel_0001', signal: abort.signal,
-    emit: () => { abort.abort() } }), /opencode_turn_cancelled/)
+    emit: () => { abort.abort() }, onEvidence:row => evidence.push(row) }), /opencode_turn_cancelled/)
+  await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(calls, [{ session: stableUUID('session:ses_cancel'), turn: 'proven-turn-42' }])
+  assert.deepEqual(evidence.filter(row => /^(turn_stop_requested|cancel_command_acknowledged)$/.test(row.stage))
+    .map(row => [row.stage,row.turnId]), [
+    ['turn_stop_requested','proven-turn-42'],
+    ['cancel_command_acknowledged','proven-turn-42'],
+  ])
 })
 
 test('abort before admission never sends a prompt; abort before turn proof only attempts outbox cancel', async () => {

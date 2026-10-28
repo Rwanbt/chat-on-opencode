@@ -225,10 +225,19 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
         // Never block a cancelled stream or leak another session's lease.
         // Track only categorical, non-sensitive acknowledgement; a stop failure
         // remains UNCONFIRMED, not an invented cancellation success.
-        traceStage(seenInput && activeTurnID ? 'turn_stop_requested' : 'input_cancel_requested')
+        const requested = seenInput && activeTurnID ? 'turn_stop_requested' : 'input_cancel_requested'
+        traceStage(requested)
+        evidence(requested, activeTurnID)
         void Promise.resolve(cleanup).then(
-          receipt => traceStage(cancellationReceiptStage(receipt)),
-          () => traceStage('cancel_command_unconfirmed'),
+          receipt => {
+            const stage = cancellationReceiptStage(receipt)
+            traceStage(stage)
+            evidence(stage, activeTurnID)
+          },
+          () => {
+            traceStage('cancel_command_unconfirmed')
+            evidence('cancel_command_unconfirmed', activeTurnID)
+          },
         )
       } catch { /* an unconfirmed stop must never be reported as successful */ }
     }
