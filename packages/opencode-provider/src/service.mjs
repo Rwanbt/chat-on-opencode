@@ -6,7 +6,7 @@ import { realpathSync } from 'node:fs'
 
 /** One process owns both the gateway listener and its isolated CoS runtime. */
 export async function startService({ runtime, key, port, owner = process, owned = false,
-  nativeTools = 'off',
+  nativeTools = 'off', onEvidence,
   gatewayFactory = createGateway, exit = code => owner.exit(code) }) {
   // Direct process fixtures keep working without the plugin's ownership lease.
   // A plugin-owned process must never fall back to an unowned listener.
@@ -44,7 +44,7 @@ export async function startService({ runtime, key, port, owner = process, owned 
     const turnCustody = runtime.options?.profile
       ? new TurnCustody(path.join(realpathSync(runtime.options.profile), '.chat-on-opencode-turn-custody'))
       : undefined
-    server = gatewayFactory({ control, key, nativeTools, turnCustody })
+    server = gatewayFactory({ control, key, nativeTools, turnCustody, onEvidence })
     server.once('error', () => {
       console.error('Chat On OpenCode gateway refused to listen on its private port')
       shutdown(1)

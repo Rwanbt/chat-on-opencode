@@ -185,6 +185,8 @@ for (const generation of ['A', 'B']) {
 const configFor = generation => writeFile(configFile, JSON.stringify(configs.get(generation), null, 2))
 const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
   /^(SystemRoot|WINDIR|PATH|PATHEXT|COMSPEC|TEMP|TMP|PROCESSOR_ARCHITECTURE|NUMBER_OF_PROCESSORS)$/i.test(name)))
+const evidenceSalt = randomBytes(32).toString('hex')
+const evidenceHash = value => createHash('sha256').update(evidenceSalt + ':' + value).digest('hex')
 Object.assign(env, {
   HOME: dirs.home, USERPROFILE: dirs.home,
   APPDATA: dirs.appdata, LOCALAPPDATA: dirs.localappdata,
@@ -197,6 +199,8 @@ Object.assign(env, {
   // request method/path into the disposable runtime, and redact session IDs
   // when reporting a failure.
   CHAT_ON_OPENCODE_TEST_TRACE_DIR: root,
+  CHAT_ON_OPENCODE_TEST_EVIDENCE_ENABLED: '1',
+  CHAT_ON_OPENCODE_TEST_EVIDENCE_SALT: evidenceSalt,
   OPENCODE_CONFIG_PROJECT_DISABLE: '1', OPENCODE_DISABLE_DEFAULT_PLUGINS: '1',
   OPENCODE_DISABLE_AUTOUPDATE: '1', OPENCODE_DISABLE_MODELS_FETCH: '1',
   HTTP_PROXY: 'http://127.0.0.1:9', HTTPS_PROXY: 'http://127.0.0.1:9',
@@ -774,7 +778,7 @@ async function realGeneratedReader(prompt, expected) {
   // Test-owned renderer only: watch *lengths* and monotonic timings, never response text.
   // A completed synthetic reply does not itself prove progressive rendering.
   const ownedExpectedReply = expected ? exactReply(expected) : ''
-  const ownedDomObserverScript = "(() => {const root=document.body;const state={mutations:0,distinctLengths:0,firstAt:null,lastAt:null,lastLength:root?.innerText?.length??0,partialBeforeFull:false,partialAt:null,fullAt:null};window.__cooOwnedDomStream=state;const observer=new MutationObserver(()=>{const t=performance.now();state.mutations++;const text=root?.innerText??\"\";if(state.partialAt===null&&text.includes(partial)&&!text.includes(full)){state.partialBeforeFull=true;state.partialAt=t}if(state.fullAt===null&&text.includes(full))state.fullAt=t;const length=text.length;if(length!==state.lastLength){state.distinctLengths++;state.lastLength=length;if(state.firstAt===null)state.firstAt=t;state.lastAt=t}});observer.observe(root,{subtree:true,childList:true,characterData:true});window.__cooOwnedDomStreamStop=()=>observer.disconnect()})()".replace('const root=', 'const partial=' + JSON.stringify(ownedExpectedReply.slice(0, -5)) + ';const full=' + JSON.stringify(ownedExpectedReply) + ';const root=')
+  const ownedDomObserverScript = "(() => {const root=document.body;const state={mutations:0,distinctLengths:0,firstAt:null,lastAt:null,lastLength:root?.innerText?.length??0,partialBeforeFull:false,partialAt:null,fullAt:null,partialWallAt:null};window.__cooOwnedDomStream=state;const observer=new MutationObserver(()=>{const t=performance.now();state.mutations++;const text=root?.innerText??\"\";if(state.partialAt===null&&text.includes(partial)&&!text.includes(full)){state.partialBeforeFull=true;state.partialAt=t;state.partialWallAt=Date.now()}if(state.fullAt===null&&text.includes(full))state.fullAt=t;const length=text.length;if(length!==state.lastLength){state.distinctLengths++;state.lastLength=length;if(state.firstAt===null)state.firstAt=t;state.lastAt=t}});observer.observe(root,{subtree:true,childList:true,characterData:true});window.__cooOwnedDomStreamStop=()=>observer.disconnect()})()".replace('const root=', 'const partial=' + JSON.stringify(ownedExpectedReply.slice(0, -5)) + ';const full=' + JSON.stringify(ownedExpectedReply) + ';const root=')
   await cdp.eval(ownedDomObserverScript)
   const proxiedSseAtStart = { frames:ownedSse.frames, responses:ownedSse.responses, lastAt:ownedSse.lastAt }
   await cdp.eval('(() => {const items=' + visible + ';items[0].focus()})()')
@@ -803,15 +807,44 @@ async function realGeneratedReader(prompt, expected) {
     for (const generation of ['A', 'B']) {
       if (text.includes(exactReply(generation))) {
         if (expected) assert.equal(generation, expected, 'wrong_real_gui_generator')
-        const domStream = await cdp.eval("(() => {const s=window.__cooOwnedDomStream;window.__cooOwnedDomStreamStop?.();return s?{mutations:s.mutations,distinctLengths:s.distinctLengths,elapsedMs:s.firstAt===null?0:Math.round(s.lastAt-s.firstAt),partialBeforeFull:s.partialBeforeFull,partialLeadMs:s.partialAt===null||s.fullAt===null?null:Math.round(s.fullAt-s.partialAt)}:null})()")
+        const domStream = await cdp.eval("(() => {const s=window.__cooOwnedDomStream;window.__cooOwnedDomStreamStop?.();return s?{mutations:s.mutations,distinctLengths:s.distinctLengths,elapsedMs:s.firstAt===null?0:Math.round(s.lastAt-s.firstAt),partialBeforeFull:s.partialBeforeFull,partialLeadMs:s.partialAt===null||s.fullAt===null?null:Math.round(s.fullAt-s.partialAt),partialWallAt:s.partialWallAt}:null})()")
+        const publicDomStream = domStream ? { ...domStream } : null
+        if (publicDomStream) delete publicDomStream.partialWallAt
         process.stdout.write('OFFICIAL_GUI_DOM_STREAM_CATEGORICAL=' + JSON.stringify({
-          synthetic:true, observed:domStream, progressiveProven:domStream?.partialBeforeFull===true && domStream?.partialLeadMs>0,
+          synthetic:true, observed:publicDomStream, progressiveProven:domStream?.partialBeforeFull===true && domStream?.partialLeadMs>0,
           loopbackResponses:ownedNetwork.responses.length,
           // Temporal traffic only: a persistent SSE connection can carry other turns.
           proxiedSseTemporalUncorrelated:temporalSseWindow(proxiedSseAtStart, ownedSse),
         }) + '\n')
         assert.ok(domStream?.partialBeforeFull && domStream?.partialLeadMs > 0,
           'official_gui_synthetic_partial_not_rendered_before_final')
+        // Unlike the Chromium proxy's global SSE deltas, this private gateway
+        // trace follows the admitted native message and CoS turn. Join only
+        // ephemeral salted hashes; never print the journal or event contents.
+        const journal = JSON.parse(await readFile(path.join(dirs.provider,'offline-synthetic-journal.json'),'utf8'))
+        const matched = (journal.events ?? []).flatMap(([session, events]) =>
+          events.filter(event => event.kind === 'assistant_message' &&
+            event.message?.text?.includes(nonce)).map(event => [session, event.turnId]))
+        const pairs = [...new Set(matched.map(pair => JSON.stringify(pair)))]
+        assert.equal(pairs.length, 1, 'synthetic_gui_nonce_turn_not_unique')
+        const [session, turn] = JSON.parse(pairs[0])
+        const traceFile = path.join(dirs.receipts, 'gateway-evidence.jsonl')
+        assert.ok(existsSync(traceFile), 'owned_gateway_turn_evidence_missing')
+        const evidence = (await readFile(traceFile, 'utf8')).trim().split(/\r?\n/)
+          .filter(Boolean).map(line => JSON.parse(line))
+          .filter(entry => entry.session === evidenceHash(session) && entry.turn === evidenceHash(turn))
+        const revisions = evidence.filter(entry => entry.stage === 'assistant_revision')
+        const emitted = evidence.filter(entry => entry.stage === 'native_delta_emitted')
+        assert.ok(revisions.length >= 2 && emitted.length >= 2,
+          'owned_gateway_turn_revisions_unconfirmed')
+        const firstRevisionMs = revisions[0].atMs
+        const firstVisibleLatencyMs = domStream.partialWallAt - firstRevisionMs
+        assert.ok(Number.isFinite(firstVisibleLatencyMs) && firstVisibleLatencyMs >= 0 && firstVisibleLatencyMs < 30000,
+          'gateway_to_renderer_latency_unverifiable')
+        process.stdout.write('OFFICIAL_GUI_SYNTHETIC_CORRELATED_GATEWAY_TO_RENDERER=' + JSON.stringify({
+          correlated:true, revisions:revisions.length, emitted:emitted.length,
+          gatewayToFirstVisibleMs:firstVisibleLatencyMs,
+        }) + '\n')
         process.stdout.write('OWNED_REAL_GUI_NONCE_RESPONSE=' + JSON.stringify({
           generation, probe:prompt, match:true, modelId:'chat-on-opencode/chatgpt-default',
         }) + '\n')
