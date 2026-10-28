@@ -470,6 +470,22 @@ test('gateway authenticates, binds to local host and yields Chat Completions SSE
   assert.equal(JSON.stringify(evidence).includes('Bonjour'), false)
 })
 
+test('non-streaming completion cannot masquerade as a finished native SSE transport', async t => {
+  const evidence=[]
+  const server=createGateway({control:new FakeCoS(),key:'q'.repeat(40),onEvidence:e=>evidence.push(e)})
+  server.listen(0,'127.0.0.1')
+  await once(server,'listening')
+  t.after(()=>server.close())
+  const response=await fetch(`http://127.0.0.1:${server.address().port}/v1/chat/completions`,{
+    method:'POST',headers:{authorization:`Bearer ${'q'.repeat(40)}`,
+      'x-opencode-session-id':'ses_nonstream','x-opencode-message-id':'msg_nonstream_001',
+      'content-type':'application/json'},body:JSON.stringify(request),
+  })
+  assert.equal(response.status,200)
+  await response.text()
+  assert.equal(evidence.some(e=>e.stage==='native_http_response_finished'),false)
+})
+
 test('gateway preserves split UTF-8 and rejects malformed or oversized byte bodies before dispatch', async t => {
   const control = new FakeCoS()
   const server = createGateway({ control, key: 'z'.repeat(40) })

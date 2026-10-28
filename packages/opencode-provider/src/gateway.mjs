@@ -389,6 +389,7 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody, 
       let terminalSeq = null
       let observedTurnID = null
       let observedRevisionSeq = null
+      let nativeSSETerminated = false
       const recordGatewayEvidence = entry => {
         if (entry.turnId) observedTurnID = entry.turnId
         if (entry.stage === 'assistant_revision') observedRevisionSeq = entry.seq
@@ -404,7 +405,9 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody, 
       }
       // finish signals the local ServerResponse handed off its final bytes;
       // it is not SDK reception, a visible renderer revision, or a supplier ack.
-      res.once('finish', () => recordNativeSSE('native_http_response_finished'))
+      res.once('finish', () => {
+        if (nativeSSETerminated) recordNativeSSE('native_http_response_finished')
+      })
       const result = await runTurn(control, body, { sessionKey, messageKey, nativeTools, signal: cancel.signal,
         checkpoint: priorAnchor?.anchor, resumeAfterSeq: priorAnchor?.seq ?? 0, previousInput: priorInput?.text ?? recoveredInput,
         turnCustody, messageFingerprint, onTerminal: seq => { terminalSeq = seq }, onEvidence:recordGatewayEvidence,
@@ -451,6 +454,7 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody, 
       if (isToolResult) issuedReads.delete(sessionKey)
       if (stream) {
         if (!res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
+        nativeSSETerminated = true
         res.end('data: ' + JSON.stringify(chunk({}, 'stop')) + '\n\ndata: [DONE]\n\n')
         recordNativeSSE('native_sse_terminal_written')
       } else sendJSON(200, { id, object: 'chat.completion', created: Math.floor(Date.now() / 1000), model: body.model,
