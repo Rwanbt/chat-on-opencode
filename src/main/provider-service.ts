@@ -6,6 +6,13 @@ export const PROVIDER_SERVICE_SWITCH = '--chat-on-opencode-provider-service';
 /** Explicit one-time user action: the same isolated profile, with a visible ChatGPT sign-in. */
 export const PROVIDER_SIGN_IN_SWITCH = '--chat-on-opencode-provider-sign-in';
 
+/** Determine the normal Windows profile before Electron's app.getPath is usable.
+ * Only a provider helper uses this value; profile overlap checks remain mandatory. */
+export function providerNormalUserData(appData: string | undefined, appName: string): string | null {
+  return appData && path.isAbsolute(appData) && appName && !/[\\/]/.test(appName)
+    ? path.join(appData, appName) : null;
+}
+
 /** Chromium tabs remain offscreen in provider mode; no CoS GUI may be revealed. */
 export function providerBrowserUiAllowed(argv: readonly string[]): boolean {
   return !argv.includes(PROVIDER_SERVICE_SWITCH) || argv.includes(PROVIDER_SIGN_IN_SWITCH);

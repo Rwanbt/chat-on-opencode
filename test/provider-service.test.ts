@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { providerServiceProfile, providerServiceReady, providerReadinessStatus, PROVIDER_SERVICE_SWITCH, PROVIDER_SIGN_IN_SWITCH } from '../src/main/provider-service.js';
+import { providerNormalUserData, providerServiceProfile, providerServiceReady, providerReadinessStatus, PROVIDER_SERVICE_SWITCH, PROVIDER_SIGN_IN_SWITCH } from '../src/main/provider-service.js';
 
 const dirs: string[] = [];
 function fixture() {
@@ -17,6 +17,16 @@ function fixture() {
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe('Chat On OpenCode provider-mode preflight', () => {
+  it('derives a disjoint normal Windows profile without Electron getPath at bootstrap', () => {
+    const { root, isolated } = fixture();
+    const normal = providerNormalUserData(root, 'Chat On Steroids');
+    expect(normal).toBe(path.join(root, 'Chat On Steroids'));
+    expect(providerServiceProfile(['app', PROVIDER_SERVICE_SWITCH], isolated, normal!)).toBe(realpathSync(isolated));
+    expect(providerNormalUserData(undefined, 'Chat On Steroids')).toBeNull();
+    expect(providerNormalUserData(root, '../isolated')).toBeNull();
+    expect(providerNormalUserData('relative', 'Chat On Steroids')).toBeNull();
+    expect(() => providerServiceProfile(['app', PROVIDER_SERVICE_SWITCH], isolated, root)).toThrow(/overlaps/);
+  });
   it('does not alter normal launches', () => {
     const { personal, isolated } = fixture();
     expect(providerServiceProfile(['app'], isolated, personal)).toBeNull();
