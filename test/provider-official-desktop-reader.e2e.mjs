@@ -227,13 +227,13 @@ const ownedProxy = http.createServer((request, response) => {
     method:request.method,headers,
     agent:false,
   }, reply => {
-    if (/\\btext\\/event-stream\\b/i.test(String(reply.headers['content-type'] ?? ''))) {
+    if (/\btext\/event-stream\b/i.test(String(reply.headers['content-type'] ?? ''))) {
       ownedSse.responses++
       let suffix = ''
       reply.on('data', chunk => {
         // The suffix only joins split framing delimiters; it is never logged.
         const text = suffix + chunk.toString('utf8')
-        const count = [...text.matchAll(/\\r?\\ndata:\\s/g)].length
+        const count = [...text.matchAll(/\r?\ndata:\s/g)].length
         if (count) {
           const now = Date.now()
           if (ownedSse.firstAt === null) ownedSse.firstAt = now
