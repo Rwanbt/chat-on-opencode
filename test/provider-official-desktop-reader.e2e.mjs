@@ -89,6 +89,8 @@ for (const generation of ['A', 'B']) {
   assert.ok(original.includes('const sessions = new Set<string>()'))
   assert.ok(original.includes('const events = new Map<string, Array<Record<string, unknown>>>()'))
   assert.ok(original.includes('    events.set(id, list)'))
+  assert.ok(original.includes("list.push({ seq: seq + 2, kind: 'assistant_message'"))
+  assert.ok(original.includes("list.push({ seq: seq + 3, kind: 'turn_end'"))
   const durableMock = "import { readFileSync as readOfflineJournal } from 'node:fs'\n" +
     original
       .replace('const sessions = new Set<string>()',
@@ -100,6 +102,16 @@ for (const generation of ['A', 'B']) {
       .replace('    events.set(id, list)',
         '    events.set(id, list)\n' +
         '    await writeFile(journalFile, JSON.stringify({ sessions: [...sessions], events: [...events] }))')
+      // Only the disposable synthetic runtime emits two temporally separated
+      // assistant revisions. Their final answer and nonce are unchanged.
+      .replace("    list.push({ seq: seq + 2, kind: 'assistant_message', turnId, message: { text: assistantText, truncated: false } })",
+        "    list.push({ seq: seq + 2, kind: 'assistant_message', turnId, message: { text: assistantText.slice(0, -5), truncated: false } })\\n" +
+        "    list.push({ seq: seq + 3, kind: 'assistant_message', turnId, message: { text: assistantText, truncated: false } })")
+      .replace("    list.push({ seq: seq + 3, kind: 'turn_end'",
+        "    list.push({ seq: seq + 4, kind: 'turn_end'")
+      .replace("    for (const event of list) if ((event.seq as number) >= Number(stream[2])) {",
+        "    for (const event of list) if ((event.seq as number) >= Number(stream[2])) {\\n" +
+        "      if (event.kind === 'assistant_message') await new Promise(resolve => setTimeout(resolve, 400))")
       .replace("'OFFLINE_FORK_OK'", syntheticText)
   await writeFile(fixture, durableMock)
   // The compiler must not inherit ChatGPT/browser/account tokens or unrelated
