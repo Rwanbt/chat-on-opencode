@@ -229,18 +229,31 @@ try {
   let journal = ''
   try { journal = await readFile(path.join(paths.data, 'opencode', 'log', 'opencode.log'), 'utf8') } catch {}
   const eventCounts = {}
+  const errorCategories = {}
   for (const line of stdout.split(/\r?\n/)) {
     try {
       const event = JSON.parse(line)
       const type = typeof event.type === 'string' ? event.type : 'unknown'
       eventCounts[type] = (eventCounts[type] ?? 0) + 1
+      if (type === 'error') {
+        // Only a fixed, non-sensitive category: no error message, prompt,
+        // stack, path, account or provider response leaves the fixture.
+        const code = String(event.error?.data?.code ?? event.error?.name ?? '')
+        const category = /AbortError/i.test(code) ? 'aborted'
+          : /ModelNotFound/i.test(code) ? 'model_not_found'
+          : /ProviderNotFound/i.test(code) ? 'provider_not_found'
+          : /Authentication/i.test(code) ? 'authentication'
+          : /UnknownAgent/i.test(code) ? 'agent_unavailable'
+          : /APIError/i.test(code) ? 'api_error' : 'other'
+        errorCategories[category] = (errorCategories[category] ?? 0) + 1
+      }
     } catch {}
   }
   const has = expression => expression.test(journal)
   process.stdout.write('OFFICIAL_CLI_CATEGORICAL_DIAG=' + JSON.stringify({
     gatewayReached, refusalObserved, exited: child.exitCode !== null,
     stdoutNonempty: !!stdout.length, stderrNonempty: !!stderr.length,
-    events: eventCounts, logModelRequest: has(/model\.request/),
+    events: eventCounts, errorCategories, logModelRequest: has(/model\.request/),
     logHttpRequest: has(/http\.request/), logCompaction: has(/compaction/),
     logError: has(/\b(ERROR|WARN)\b/i), logRefusal: has(/chatgpt_sign_in_required|cos_companion_unpaired/)
   }) + '\n')
