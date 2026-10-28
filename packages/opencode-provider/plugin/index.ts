@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { GatewayLifecycle } from '../src/lifecycle.mjs'
 import { traceStage } from '../src/stage-trace.mjs'
-import { MessageIdentity } from './message-identity.mjs'
+import { MessageIdentity, pinProviderMessage, bindProviderMessage } from './message-identity.mjs'
 import { enforceTextOnlyContext } from './text-only.mjs'
 import { provideLocalTitle, requirePrimaryKind } from './auxiliary.mjs'
 import { provideExtractiveCompaction } from './compaction.mjs'
@@ -64,7 +64,7 @@ export default Plugin.define({
       traceStage('model_request')
       if (nativeText) return // Native V3 Responses, never CoS gateway
       requirePrimaryKind(event.kind)
-      identities.require(event.sessionID)
+      pinProviderMessage(event, identities)
       await service.ensure()
       event.baseURL = `http://127.0.0.1:${port}/v1`
       event.headers.Authorization = `Bearer ${key}`
@@ -73,8 +73,7 @@ export default Plugin.define({
       if (event.model.providerID !== 'chat-on-opencode') return
       if (nativeText) return
       requirePrimaryKind(event.kind)
-      event.request.headers.set('x-opencode-session-id', event.sessionID)
-      event.request.headers.set('x-opencode-message-id', identities.require(event.sessionID))
+      bindProviderMessage(event, identities)
       event.request.headers.set('Authorization', `Bearer ${key}`)
     }, { providerID: 'chat-on-opencode' })
     return () => service.stop()
