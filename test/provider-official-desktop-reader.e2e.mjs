@@ -692,14 +692,29 @@ async function realGeneratedReader(prompt, expected) {
   const exactReply = generation => mark(generation) + ':' + nonce
   const fields = '[...document.querySelectorAll("textarea,[contenteditable=true],[role=textbox]")]'
   const visible = fields + '.filter(e=>e.getClientRects().length>0 && !e.disabled)'
-  const until = Date.now() + 20_000
-  let available = false
+  // A visible textarea alone is not a hydrated composer: on cold Electron
+  // launches, the renderer can briefly display one while conversation/service
+  // initialization is still pending. Require three consecutive hydrated frames.
+  // Keep this test bounded and fail closed with a categorical receipt; never
+  // submit while composer ownership is ambiguous.
+  const until = Date.now() + 45_000
+  let available = false, stableFrames = 0, observedCounts = new Set()
+  let observerTicks = 0
   while (Date.now() < until) {
-    available = await cdp.eval('(() => { const items=' + visible +
-      ';return items.length===1 })()')
+    const snapshot = await cdp.eval('(() => {const items=' + visible +
+      ';const active=items.filter(e=>e.isConnected && e.getAttribute("aria-busy")!=="true");' +
+      'return {count:items.length,active:active.length,ready:document.readyState}})()')
+    observedCounts.add(snapshot.count)
+    observerTicks++
+    stableFrames = snapshot.count===1 && snapshot.active===1 && snapshot.ready==="complete"
+      ? stableFrames+1 : 0
+    available = stableFrames>=3
     if (available) break
     await sleep(250)
   }
+  process.stderr.write('OFFICIAL_214_COMPOSER_READINESS=' + JSON.stringify({
+    ready:available,stableFrames,observerTicks,observedCounts:[...observedCounts].sort(),
+  }) + '\\n')
   if (!available) {
     const diagnostic = await cdp.eval('(() => ({title:document.title,' +
       'origin:location.origin,visibleControls:[...document.querySelectorAll("button,input,textarea,[role=textbox],[contenteditable]")]' +
