@@ -133,6 +133,21 @@ jobs:
         run: node test/provider-packaged-gateway-env.e2e.mjs
       - name: Qualify hidden service and explicit isolated sign-in against packaged Electron
         run: node scripts/verify-provider-packaged-sign-in.mjs
+      - name: Install official OpenCode 2.2.0 for fresh packaged Electron launch
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:RUNNER_TEMP 'chat-on-opencode-cli-220'
+          npm install --prefix $prefix --no-save --no-audit --no-fund '@opencode/cli@2.2.0'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Official OpenCode 2.2.0 launches the Electron artifact built in this job
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:RUNNER_TEMP 'chat-on-opencode-cli-220'
+          $env:COO_OFFLINE_OFFICIAL_CLI = Join-Path $prefix 'node_modules/@opencode/cli/bin/opencode.exe'
+          $env:COO_OFFLINE_PROVIDER_EXE = (Resolve-Path -LiteralPath 'release/provider/win-unpacked/Chat On OpenCode Provider.exe').Path
+          if (-not (Test-Path -LiteralPath $env:COO_OFFLINE_OFFICIAL_CLI)) { throw 'Official CLI 2.2.0 missing' }
+          node --test packages/opencode-provider/test/official-cli-220-packaged-electron.offline.e2e.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install official OpenCode 2.1.4 in runner temp only
         shell: pwsh
         run: |

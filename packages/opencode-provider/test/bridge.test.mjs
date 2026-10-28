@@ -494,8 +494,37 @@ test('service launcher uses the fork-only flag, owns exact endpoint PID and stop
   for (const name of inherited) assert.equal(launch.opts.env[name], undefined, `${name} leaked to Electron helper`)
   assert.equal(launch.opts.windowsHide, true)
   assert.equal(launch.opts.shell, false)
+  assert.deepEqual(launch.opts.stdio, ['ignore', 'ignore', 'pipe'])
   runtime.stop()
   assert.equal(child.killed, true)
+})
+
+test('early packaged Electron profile refusal is classified without propagating native stderr', async t => {
+  const profile = await mkdtemp(path.join(os.tmpdir(), 'cos-profile-refusal-'))
+  t.after(() => rm(profile, { recursive: true, force: true }))
+  await writeFile(path.join(profile, 'config.json'), JSON.stringify({
+    ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
+  }))
+  const stderr = new EventEmitter()
+  const child = Object.assign(new EventEmitter(), { pid: 12345, stderr, exitCode: null, killed: false,
+    kill() { this.killed = true },
+  })
+  const runtime = new CoSRuntime({ executable: process.execPath, profile }, {
+    launcher: () => {
+      queueMicrotask(() => {
+        stderr.emit('data', Buffer.from('Provider service refused: invalid isolated pro'))
+        stderr.emit('data', Buffer.from('file\nSECRET_MUST_NOT_LEAK'))
+        child.exitCode = 1
+        child.emit('exit', 1)
+      })
+      return child
+    },
+  })
+  await assert.rejects(runtime.start(), error => {
+    assert.equal(error.code, 'runtime_profile_refused')
+    assert.ok(!JSON.stringify(error).includes('SECRET_MUST_NOT_LEAK'))
+    return true
+  })
 })
 
 test('service launcher immediately rejects an old advertised API without waiting for readiness timeout', async t => {
