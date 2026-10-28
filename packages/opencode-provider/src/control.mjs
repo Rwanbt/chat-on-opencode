@@ -95,8 +95,8 @@ export class CoSControl {
     }
   }
 
-  async send(body) {
-    const result = await this.json('POST', '/v1/inputs', body)
+  async send(body, { signal } = {}) {
+    const result = await this.json('POST', '/v1/inputs', body, { signal })
     if (!result?.input || !['sent', 'pending'].includes(result.input.delivery)) {
       throw new BridgeError('cos_delivery_unconfirmed', 409)
     }

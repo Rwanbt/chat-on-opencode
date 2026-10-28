@@ -48,6 +48,40 @@ class FakeCoS {
   }
 }
 
+test('durable input POST inherits native cancellation without changing its idempotent input id', async () => {
+  const abort = new AbortController()
+  const cos = new FakeCoS()
+  let sentSignal
+  let sentID
+  cos.send = (payload, options) => {
+    sentID = payload.id
+    sentSignal = options?.signal
+    abort.abort()
+    return new Promise(() => {})
+  }
+  await assert.rejects(runTurn(cos, request, {
+    sessionKey:'ses_send_abort', messageKey:'msg_send_abort_001',
+    signal:abort.signal, emit:()=>{}, stopReceiptTimeoutMs:10,
+  }), /opencode_turn_cancelled/)
+  assert.equal(sentID, stableUUID('session:ses_send_abort'))
+  assert.equal(sentSignal, abort.signal)
+  assert.equal(sentSignal.aborted, true)
+})
+
+test('control durable input POST passes AbortSignal through its HTTP transport', async () => {
+  let observed
+  const control = new CoSControl({ directory:path.join(os.tmpdir(), 'cos-transport-test'),
+    fetcher:async (_url, init) => {
+      observed = init.signal
+      return new Response(JSON.stringify({ input:{ delivery:'pending' } }), { status:202 })
+    } })
+  control.base='http://127.0.0.1:1'
+  control.token='test-only'
+  const abort = new AbortController()
+  await control.send({ id:'immutable-id', text:'test-only' }, { signal:abort.signal })
+  assert.equal(observed, abort.signal)
+})
+
 test('follow-up ignores replayed assistant and old terminal after its input receipt', async () => {
   const cos = new FakeCoS()
   cos.exists = true
