@@ -486,6 +486,35 @@ async function journalState() {
     custodyFiles:existsSync(path.join(dirs.provider, '.chat-on-opencode-turn-custody'))
       ? (await readdir(path.join(dirs.provider, '.chat-on-opencode-turn-custody'))).length : 0 }
 }
+async function openOwnedFreshSession(priorGeneration) {
+  // Official signed 2.1.4 exposes exactly one visible "New session" native
+  // button. Click the real GUI; never create a session via SDK/direct HTTP.
+  const newButton = '[...document.querySelectorAll("button,[role=button]")].filter(e=>' +
+    'e.getClientRects().length && e.getAttribute("aria-label")==="New session")'
+  const limit = Date.now() + 15_000
+  let count = 0
+  while (Date.now() < limit) {
+    count = await cdp.eval('(() => ' + newButton + '.length)()')
+    if (count === 1) break
+    if (count > 1) throw Error('ambiguous_native_new_session_buttons')
+    await sleep(250)
+  }
+  assert.equal(count, 1, 'native_new_session_button_not_found')
+  assert.equal(await cdp.eval('(() => {const buttons=' + newButton +
+    ';if(buttons.length!==1)return false;buttons[0].click();return true})()'),
+    true, 'native_new_session_click_failed')
+  const old = priorGeneration ? mark(priorGeneration) : ''
+  const deadline = Date.now() + 16_000
+  while (Date.now() < deadline) {
+    const status = await cdp.eval('(() => ({ oldAnswerPresent:' +
+      '(document.body?.innerText??"").includes(' + JSON.stringify(old) + '),' +
+      'composers:[...document.querySelectorAll("textarea,[contenteditable=true],[role=textbox]")]' +
+      '.filter(e=>e.getClientRects().length>0&&!e.disabled).length }))()')
+    if (status.composers === 1 && !status.oldAnswerPresent) return
+    await sleep(250)
+  }
+  throw Error('native_new_session_did_not_display_fresh_composer')
+}
 async function realGeneratedReader(prompt, expected) {
   // An actual on-screen composer must accept user input. Do not send a model
   // request via CLI/HTTP bypassing the GUI, or count a plugin-import receipt.
@@ -605,6 +634,7 @@ try {
       /versioned_pointer_busy_or_unknown/, 'live_gui_must_block_pointer')
     assert.deepEqual(await readFile(configFile), initialConfig, 'busy_attempt_modified_config')
     await reloadOwnedRenderer()
+    await openOwnedFreshSession('A')
     const hotA = await realGeneratedReader('Offline hot A same active reader', 'A')
     await coldStopDesktop()
     // Closing the HWND alone is insufficient: the vendor's managed CLI keeps
@@ -630,9 +660,11 @@ try {
     assert.equal(candidateDigest(a), aSha, 'immutable_A_changed')
     assert.equal(candidateDigest(b), bSha, 'immutable_B_changed')
     await startDesktop()
+    await openOwnedFreshSession('A')
     const coldB = await realGeneratedReader('Offline cold B through published pointer', 'B')
     assert.ok(existsSync(path.join(dirs.receipts, 'B.import')), 'actual_plugin_B_never_imported')
     await reloadOwnedRenderer()
+    await openOwnedFreshSession('B')
     const hotB = await realGeneratedReader('Offline hot B same active reader', 'B')
     await coldStopDesktop()
     const reverted = publishRestartOnlyPointer(configFile, b, a, {
@@ -641,6 +673,7 @@ try {
     assert.equal(reverted.status, 'RESTART_REQUIRED_ONLY')
     assert.deepEqual(await readFile(configFile), initialConfig, 'rollback_not_byte_exact')
     await startDesktop()
+    await openOwnedFreshSession('B')
     const rollbackColdA = await realGeneratedReader('Offline cold A restored pointer', 'A')
     await coldStopDesktop()
     process.stdout.write(JSON.stringify({
@@ -654,10 +687,12 @@ try {
     await coldStopDesktop()
     await configFor('B')
     await startDesktop()
+    await openOwnedFreshSession('A')
     const coldB = await realGeneratedReader('Offline cold B actual reader marker', 'B')
     assert.ok(existsSync(path.join(dirs.receipts, 'B.import')), 'actual_plugin_B_never_imported')
     await configFor('A')
     await reloadOwnedRenderer()
+    await openOwnedFreshSession('B')
     const hotB = await realGeneratedReader('Offline hot B actual reader marker', 'B')
     await coldStopDesktop()
     process.stdout.write(JSON.stringify({ verified:'ACTUAL_OFFICIAL_GUI_GENERATED_RENDER',
