@@ -723,6 +723,12 @@ try {
   await startDesktop()
   const coldA = await realGeneratedReader('Offline cold A actual reader marker', 'A')
   assert.ok(existsSync(path.join(dirs.receipts, 'A.import')), 'actual_plugin_A_never_imported')
+  // Real Desktop same-conversation followup, NOT a fresh New session. The
+  // provider must handle native user→assistant→user→user transcript history.
+  // Unique reply nonce confirms generation A actually answered a second turn.
+  const sameSessionA = await realGeneratedReader('Offline same native session multiturn followup', 'A')
+  assert.equal(sameSessionA, 'A')
+  process.stdout.write('ACTUAL_OFFICIAL_GUI_SAME_SESSION_MULTITURN_SYNTHETIC=PASS\n')
   const persistedA = await journalState()
   assert.ok(persistedA.exists && persistedA.sessionCount > 0 &&
     persistedA.userReceipts > 0 && persistedA.completedTurns > 0,
