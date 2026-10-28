@@ -534,7 +534,7 @@ function drainOnlyRunnerOwnedOpenCode() {
     '  Stop-Process -Id $prior.ProcessId -Force -ErrorAction Stop',
     '}',
     'Write-Output ("VERIFIED_RUNNER_OWNED_OPENCODE_STOPPED="+$verified.Count)',
-  ].join('; ')
+  ].join('\n')
   const result = spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{
     shell:false,windowsHide:true,encoding:'utf8',timeout:10_000,
   })
