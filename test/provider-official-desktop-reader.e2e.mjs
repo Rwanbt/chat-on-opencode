@@ -703,6 +703,25 @@ async function openOwnedFreshSession(priorGeneration, projectSelected = false) {
       return openOwnedFreshSession(priorGeneration, true)
     }
   }
+  if (projectSelected && ci) {
+    // Hosted official Desktop 2.1.4 may have no previously opened projects.
+    // The signed renderer understands the app's workspace URL route. Navigate
+    // only to THIS disposable workspace; actual inference still must be sent
+    // by typing into the real renderer composer. Never use an SDK or REST
+    // session-create shortcut, and never navigate any personal installation.
+    const projectRoute = 'oc://renderer/' + Buffer.from(dirs.workspace).toString('base64url')
+    await cdp.call('Page.navigate', { url: projectRoute })
+    const deepLinkDeadline = Date.now() + 20_000
+    while (Date.now() < deepLinkDeadline) {
+      const status = await cdp.eval('(() => ({composerCount:[...document.querySelectorAll("textarea,[contenteditable=true],[role=textbox]")].filter(e=>e.getClientRects().length>0&&!e.disabled).length,ready:document.readyState}))()').catch(()=>null)
+      if (status?.composerCount === 1 && status?.ready === 'complete') {
+        process.stderr.write('OWNED_GUI_DISPOSABLE_WORKSPACE_ROUTE=' + JSON.stringify({composerReady:true}) + '\n')
+        return
+      }
+      await sleep(250)
+    }
+    process.stderr.write('OWNED_GUI_DISPOSABLE_WORKSPACE_ROUTE=' + JSON.stringify({composerReady:false}) + '\n')
+  }
   throw Error('native_new_session_did_not_display_fresh_composer')
 }
 async function realGeneratedReader(prompt, expected) {
