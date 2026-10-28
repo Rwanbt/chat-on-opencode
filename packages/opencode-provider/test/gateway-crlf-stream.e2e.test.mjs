@@ -37,7 +37,7 @@ test('real local HTTP gateway streams progressive CoS CRLF journal frames withou
         { seq: 2, kind: 'turn_start', turnId: 'turn-exact-1' },
         { seq: 3, kind: 'assistant_message', turnId: 'turn-exact-1', message: { text: revisions[0] } },
         { seq: 4, kind: 'assistant_message', turnId: 'turn-exact-1', message: { text: revisions[1] } },
-        { seq: 5, kind: 'turn_end', turnId: 'turn-exact-1', outcome: 'complete' },
+        { seq: 5, kind: 'turn_end', turnId: 'turn-exact-1', outcome: 'completed' },
       ].map(item => 'event: ' + item.kind + '\r\ndata: ' + JSON.stringify(item) + '\r\n\r\n').join('')
       const bytes = new TextEncoder().encode(frames)
       return new Response(new ReadableStream({

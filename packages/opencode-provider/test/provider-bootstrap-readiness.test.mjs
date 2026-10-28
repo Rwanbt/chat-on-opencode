@@ -18,7 +18,7 @@ test('hidden Chromium readiness transitions unknown -> paired before first admis
       yield { kind: 'user_message', inputId: id }
       yield { kind: 'turn_start', turnId: 'test-turn' }
       yield { kind: 'assistant_message', turnId: 'test-turn', message: { text: 'REAL_TRANSPORT_FAKE_ONLY' } }
-      yield { kind: 'turn_end', turnId: 'test-turn', outcome: 'complete' }
+      yield { kind: 'turn_end', turnId: 'test-turn', outcome: 'completed' }
     },
   }
   const deltas = []

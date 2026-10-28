@@ -164,7 +164,11 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
         if (delta) { textSoFar = next; if (!readEnabled) await emit(delta) }
       }
       if (event.kind === 'turn_end') {
-        if (event.outcome && /error|fail|stop|abort|cancel|incomplete/.test(event.outcome)) {
+        // The CoS recorder has explicit terminal outcomes: interrupted,
+        // stalled and unknown can carry partial assistant text. Only its
+        // positive completed verdict authorizes final HTTP success, [DONE]
+        // and the persisted native transcript checkpoint.
+        if (event.outcome !== 'completed') {
           throw new BridgeError('cos_turn_not_completed', 502)
         }
         complete = true
