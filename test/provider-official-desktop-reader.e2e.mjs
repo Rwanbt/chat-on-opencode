@@ -105,12 +105,12 @@ for (const generation of ['A', 'B']) {
       // Only the disposable synthetic runtime emits two temporally separated
       // assistant revisions. Their final answer and nonce are unchanged.
       .replace("    list.push({ seq: seq + 2, kind: 'assistant_message', turnId, message: { text: assistantText, truncated: false } })",
-        "    list.push({ seq: seq + 2, kind: 'assistant_message', turnId, message: { text: assistantText.slice(0, -5), truncated: false } })\\n" +
+        "    list.push({ seq: seq + 2, kind: 'assistant_message', turnId, message: { text: assistantText.slice(0, -5), truncated: false } })\n" +
         "    list.push({ seq: seq + 3, kind: 'assistant_message', turnId, message: { text: assistantText, truncated: false } })")
       .replace("    list.push({ seq: seq + 3, kind: 'turn_end'",
         "    list.push({ seq: seq + 4, kind: 'turn_end'")
       .replace("    for (const event of list) if ((event.seq as number) >= Number(stream[2])) {",
-        "    for (const event of list) if ((event.seq as number) >= Number(stream[2])) {\\n" +
+        "    for (const event of list) if ((event.seq as number) >= Number(stream[2])) {\n" +
         "      if (event.kind === 'assistant_message') await new Promise(resolve => setTimeout(resolve, 400))")
       .replace("'OFFLINE_FORK_OK'", syntheticText)
   await writeFile(fixture, durableMock)
