@@ -75,7 +75,7 @@ export async function awaitProviderReady(control, {
 }
 
 export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal,
-  nativeTools = 'off', checkpoint, previousInput, rememberInput, turnCustody, messageFingerprint, onTerminal } = {}) {
+  nativeTools = 'off', checkpoint, resumeAfterSeq = 0, previousInput, rememberInput, turnCustody, messageFingerprint, onTerminal } = {}) {
   traceStage('gateway_turn_received')
   if (!sessionKey || sessionKey.length > 256 || /[\r\n]/.test(sessionKey)) throw new BridgeError('opencode_session_id_required', 422)
   if (!messageKey || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
@@ -138,7 +138,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
     // AbortSignal leaves this session leased indefinitely, preventing retry.
     // Race each next() with native cancellation, without abandoning exact
     // outbox/turn custody or waiting for an unresponsive iterator.return().
-    const iterator = control.events(sessionID, { signal })[Symbol.asyncIterator]()
+    const iterator = control.events(sessionID, { signal, from: !first && !originalFirst && resumeAfterSeq > 0 ? resumeAfterSeq + 1 : 0 })[Symbol.asyncIterator]()
     try {
     for (;;) {
       const next = await abortableRead(iterator.next(), signal)
@@ -334,7 +334,7 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody }
         : memory
       let terminalSeq = null
       const result = await runTurn(control, body, { sessionKey, messageKey, nativeTools, signal: cancel.signal,
-        checkpoint: priorAnchor?.anchor, previousInput: priorInput?.text ?? recoveredInput,
+        checkpoint: priorAnchor?.anchor, resumeAfterSeq: priorAnchor?.seq ?? 0, previousInput: priorInput?.text ?? recoveredInput,
         turnCustody, messageFingerprint, onTerminal: seq => { terminalSeq = seq },
         rememberInput: isToolResult ? undefined : text => rememberBounded(submittedInputs, inputKey,
           { text, messageFingerprint }), emit: async (delta) => {

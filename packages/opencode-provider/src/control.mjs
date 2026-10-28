@@ -212,7 +212,15 @@ export class CoSControl {
             // when a later turn_end arrives. Refuse unverifiable history:
             // the native caller can safely retry its exact durable input.
             if (event.seq !== Math.max(1, cursor)) {
-              throw new BridgeError('cos_event_sequence_gap', 502)
+              // CoS canonical events are revisions: the durable journal can
+              // omit superseded seq values. Read-only backfill establishes
+              // whether the SSE stream skipped a still-visible event; never
+              // replay POST /inputs or silently accept a real stream hole.
+              const page = await this.json('GET', `/v1/sessions/${sessionID}/events?from=${cursor}&limit=100`, undefined, { signal })
+              if (!Array.isArray(page?.events) || page.events.length === 0 ||
+                  Math.min(...page.events.map(row => row.seq)) !== event.seq) {
+                throw new BridgeError('cos_event_sequence_gap', 502)
+              }
             }
             cursor = event.seq + 1
             consecutivePrematureEOF = 0
