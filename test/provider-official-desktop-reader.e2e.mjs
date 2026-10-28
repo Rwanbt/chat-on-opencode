@@ -566,8 +566,9 @@ async function awaitRuntimeStopped(pid) {
 function drainOnlyRunnerOwnedOpenCode() {
   // The publisher correctly counts ALL official OpenCode GUI/CLI/provider
   // processes, including orphan renderer children with no listening port.
-  // On the disposable runner, stop only executables proven to reside inside
-  // RUNNER_TEMP. An unrelated personal process blocks the test without signal.
+  // Stop only executables proven to reside inside this test's disposable root.
+  // An unrelated process must never be signalled, even when it has the same
+  // executable name. The later publisher may independently refuse a busy host.
   const q = value => "'" + value.replaceAll("'", "''") + "'"
   const script = [
     '$ErrorActionPreference="Stop"',
@@ -576,12 +577,13 @@ function drainOnlyRunnerOwnedOpenCode() {
     '$names=@("OpenCode","opencode","opencode-cli","Chat On OpenCode Provider")',
     '$targets=@([Diagnostics.Process]::GetProcesses() | Where-Object { $_.ProcessName -in $names })',
     '$verified=@()',
+    '$external=0',
     'foreach($proc in $targets) {',
     '  $detail=Get-CimInstance Win32_Process -Filter ("ProcessId="+$proc.Id)',
     '  if ($null -eq $detail) { continue }',
     '  if ([string]::IsNullOrWhiteSpace($detail.ExecutablePath) -or ' +
       '-not $detail.ExecutablePath.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) { ' +
-      'throw "EXTERNAL_OPEN_CODE_PROCESS_NO_SIGNAL" }',
+      '$external++; continue }',
     '  $verified+=,$detail',
     '}',
     'foreach($prior in $verified) {',
@@ -591,14 +593,14 @@ function drainOnlyRunnerOwnedOpenCode() {
       '$current.CreationDate -ne $prior.CreationDate) { throw "OPEN_CODE_PID_REUSED_NO_SIGNAL" }',
     '  Stop-Process -Id $prior.ProcessId -Force -ErrorAction Stop',
     '}',
-    'Write-Output ("VERIFIED_RUNNER_OWNED_OPENCODE_STOPPED="+$verified.Count)',
+    'Write-Output ("VERIFIED_RUNNER_OWNED_OPENCODE_STOPPED="+$verified.Count+" EXTERNAL_UNTOUCHED="+$external)',
   ].join('\n')
   const result = spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{
     shell:false,windowsHide:true,encoding:'utf8',timeout:10_000,
   })
   assert.equal(result.status,0,'runner_owned_opencode_drain_unproven:' +
     String(result.stderr).slice(0,250).replaceAll(base,'[runner-temp]'))
-  assert.match(result.stdout,/^VERIFIED_RUNNER_OWNED_OPENCODE_STOPPED=\d+\s*$/)
+  assert.match(result.stdout,/^VERIFIED_RUNNER_OWNED_OPENCODE_STOPPED=\d+ EXTERNAL_UNTOUCHED=\d+\s*$/)
   process.stderr.write('TEST_ONLY_OPEN_CODE_IDLE_DRAIN=' + result.stdout.trim() + '\n')
 }
 async function coldStopDesktop() {
