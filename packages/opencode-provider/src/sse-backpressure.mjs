@@ -9,13 +9,19 @@ export async function writeSSE(response, frame, signal) {
   }
   if (response.write(frame)) return
   await new Promise((resolve, reject) => {
+    let finished = false
     const clean = () => {
       response.off('drain', drained)
       response.off('error', failed)
       response.off('close', closed)
       signal?.removeEventListener('abort', aborted)
     }
-    const finish = (error) => { clean(); error ? reject(error) : resolve() }
+    const finish = (error) => {
+      if (finished) return
+      finished = true
+      clean()
+      error ? reject(error) : resolve()
+    }
     const drained = () => finish()
     const failed = () => finish(new BridgeError('native_sse_write_failed', 502))
     const closed = () => finish(new BridgeError('opencode_turn_cancelled', 499))
@@ -25,5 +31,6 @@ export async function writeSSE(response, frame, signal) {
     response.once('close', closed)
     signal?.addEventListener('abort', aborted, { once: true })
     if (signal?.aborted || response.destroyed || response.writableEnded) aborted()
+    else if (!response.writableNeedDrain) drained()
   })
 }
