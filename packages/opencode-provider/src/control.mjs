@@ -126,6 +126,11 @@ export class CoSControl {
       }
       if (!response.body) throw new BridgeError('cos_stream_missing', 502)
       const reader = response.body.getReader()
+      // AbortSignal attached to fetch does not guarantee that a custom/bridged
+      // ReadableStream will interrupt an already pending reader.read().
+      const onAbort = () => { void reader.cancel('turn_cancelled').catch(() => undefined) }
+      signal?.addEventListener('abort', onAbort, { once: true })
+      if (signal?.aborted) onAbort()
       const decoder = new TextDecoder()
       let buffer = ''
       let afterCR = false
@@ -133,6 +138,7 @@ export class CoSControl {
       try {
         readStream: for (;;) {
           const { done, value } = await reader.read()
+          if (signal?.aborted) throw new BridgeError('cos_stream_aborted', 499)
           if (done) throw new BridgeError('cos_stream_ended_without_terminal', 502)
           // SSE accepts LF, CRLF and bare CR. Normalize incrementally: a CRLF
           // split across network chunks must become ONE line break, not two.
@@ -165,7 +171,10 @@ export class CoSControl {
             yield event
           }
         }
-      } finally { await reader.cancel().catch(() => undefined) }
+      } finally {
+        signal?.removeEventListener('abort', onAbort)
+        await reader.cancel().catch(() => undefined)
+      }
       if (!rotated) throw new BridgeError('cos_stream_ended_without_terminal', 502)
     }
     throw new BridgeError('cos_stream_renewal_limit', 503)
