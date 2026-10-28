@@ -282,6 +282,34 @@ test('synchronous Stop transport failure is recorded as unconfirmed for the exac
   ])
 })
 
+test('asynchronous Stop transport rejection is unconfirmed for the owned turn only', async () => {
+  const abort = new AbortController()
+  const evidence = []
+  const cos = new FakeCoS()
+  const stops = []
+  cos.stop = async (session, turn, { signal } = {}) => {
+    stops.push([session, turn, signal instanceof AbortSignal])
+    throw Error('test_async_transport_refusal')
+  }
+  cos.events = async function* () {
+    yield { kind:'user_message', inputId:this.sent.at(-1).id, seq:1 }
+    yield { kind:'turn_start', turnId:'owned-turn-async-fail', seq:2 }
+    yield { kind:'assistant_message', turnId:'owned-turn-async-fail', seq:3,
+      message:{ text:'partial', truncated:false } }
+  }
+  await assert.rejects(runTurn(cos, request, {
+    sessionKey:'ses_async_stop', messageKey:'msg_async_stop_001', signal:abort.signal,
+    emit:() => abort.abort(), onEvidence:row => evidence.push(row),
+  }), /opencode_turn_cancelled/)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(stops, [[stableUUID('session:ses_async_stop'),'owned-turn-async-fail',true]])
+  assert.deepEqual(evidence.filter(row => /^(turn_stop_requested|cancel_command_unconfirmed|cancel_command_acknowledged)$/.test(row.stage))
+    .map(row => [row.stage,row.turnId]), [
+    ['turn_stop_requested','owned-turn-async-fail'],
+    ['cancel_command_unconfirmed','owned-turn-async-fail'],
+  ])
+})
+
 test('unresponsive Stop receipt becomes unconfirmed without retaining the native turn lease', async () => {
   const abort = new AbortController()
   const evidence = []
