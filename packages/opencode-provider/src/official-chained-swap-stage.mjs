@@ -1,6 +1,6 @@
-import { closeSync, cpSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, cpSync, existsSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { planChainedManagedSwap } from './official-chained-swap-plan.mjs'
 import { candidateDigest } from './official-upgrade.mjs'
@@ -12,18 +12,104 @@ const JOURNAL = '.chat-on-opencode-chain-prepare.json'
 const ACTIVE = '.chat-on-opencode-managed'
 const PARKED = '.chat-on-opencode-chain-active-previous'
 const LOCK = '.chat-on-opencode-chain-transition.lock'
-function locked(root, work) {
-  const file = path.join(root, LOCK)
-  const fd = openSync(file, 'wx', 0o600)
+const RECOVERY = LOCK + '.recover'
+// A PID by itself is not ownership proof on Windows: it can be reused after
+// the publishing process exits. Creation ticks distinguish the incarnations.
+function processStart(pid) {
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    `$ErrorActionPreference='Stop'; $p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($null -eq $p) { 'MISSING' } else { $p.StartTime.ToUniversalTime().Ticks.ToString() }`],
+  { encoding: 'utf8', windowsHide: true, shell: false, timeout: 7000 })
+  if (result.status !== 0 || !/^(?:MISSING|\d+)\s*$/.test(result.stdout ?? '')) {
+    throw Error('chained_swap_lock_owner_unverifiable')
+  }
+  return result.stdout.trim()
+}
+function ownerRecord(extra = {}) {
+  const start = processStart(process.pid)
+  if (start === 'MISSING') throw Error('chained_swap_lock_owner_unverifiable')
+  return { version: 1, pid: process.pid, start, nonce: randomUUID(), ...extra }
+}
+// Publish the *complete* owner record before the lock becomes visible. A
+// process crash between O_EXCL and write used to strand an unverifiable empty
+// lock forever. A same-volume hard link is a create-if-absent publication.
+function createLock(file, record) {
+  const tmp = file + '.' + randomUUID() + '.tmp'
+  let fd
   try {
-    const journal = path.join(root, '.chat-on-opencode-directory-switch.json')
-    writeFileSync(fd, JSON.stringify({ pid: process.pid, journalSha256: sha(readFileSync(journal)) }))
+    fd = openSync(tmp, 'wx', 0o600)
+    writeFileSync(fd, JSON.stringify(record))
     fsyncSync(fd)
+    closeSync(fd); fd = undefined
+    linkSync(tmp, file)
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+    if (existsSync(tmp)) rmSync(tmp)
+  }
+}
+function safelyReadOwner(file) {
+  if (!existsSync(file) || !lstatSync(file).isFile() || lstatSync(file).isSymbolicLink()) {
+    throw Error('chained_swap_lock_unsafe')
+  }
+  const bytes = readFileSync(file)
+  let record
+  try { record = JSON.parse(bytes.toString('utf8')) } catch { throw Error('chained_swap_lock_invalid') }
+  if (!record || record.version !== 1 || !Number.isSafeInteger(record.pid) || record.pid <= 0 ||
+      !/^\d+$/.test(record.start ?? '') ||
+      typeof record.nonce !== 'string' || !/^[0-9a-f-]{36}$/.test(record.nonce)) {
+    throw Error('chained_swap_lock_invalid')
+  }
+  return { bytes, record }
+}
+function releaseOwned(file, bytes) {
+  // A later process may have taken the same path after this one stopped.
+  if (existsSync(file) && readFileSync(file).equals(bytes)) rmSync(file)
+}
+function recoverAbandonedLock(config, digest, probe) {
+  const root = path.dirname(path.resolve(config))
+  const file = path.join(root, LOCK), marker = path.join(root, RECOVERY)
+  if (existsSync(marker)) throw Error('chained_swap_lock_recovery_active_or_abandoned')
+  const markerRecord = ownerRecord()
+  createLock(marker, markerRecord)
+  const markerBytes = Buffer.from(JSON.stringify(markerRecord))
+  try {
+    offline(probe)
+    const { bytes, record } = safelyReadOwner(file)
+    if (!/^[a-f0-9]{64}$/.test(record.journalSha256 ?? '')) throw Error('chained_swap_lock_invalid')
+    if (processStart(record.pid) === record.start) throw Error('chained_swap_lock_owner_active')
+    // Inspect every persisted generation and the original immutable backup;
+    // an orphaned lock alone never grants authority to unlink it.
+    proveDeadChainedLock(config, digest)
+    offline(probe)
+    if (!readFileSync(file).equals(bytes) ||
+        sha(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json'))) !== record.journalSha256) {
+      throw Error('chained_swap_lock_cas_changed')
+    }
+    rmSync(file)
+    syncDirectory(root)
+  } finally {
+    releaseOwned(marker, markerBytes)
+  }
+}
+function locked(config, digest, probe, work) {
+  const root = path.dirname(path.resolve(config))
+  const file = path.join(root, LOCK)
+  if (existsSync(path.join(root, RECOVERY))) throw Error('chained_swap_lock_recovery_active_or_abandoned')
+  const journal = path.join(root, '.chat-on-opencode-directory-switch.json')
+  const record = ownerRecord({ journalSha256: sha(readFileSync(journal)) })
+  try { createLock(file, record) }
+  catch (error) {
+    if (error.code !== 'EEXIST') throw error
+    recoverAbandonedLock(config, digest, probe)
+    createLock(file, record)
+  }
+  const bytes = Buffer.from(JSON.stringify(record))
+  try {
+    if (existsSync(path.join(root, RECOVERY))) throw Error('chained_swap_lock_recovery_active_or_abandoned')
     return work()
   }
-  finally { closeSync(fd); rmSync(file) }
+  finally { releaseOwned(file, bytes) }
 }
-/** Stale locks are intentionally never stolen by another process. This proof is read-only. */
+/** Read-only inspection; old PID-only locks stay manual and are never auto-recovered. */
 export function inspectChainedTransitionLock(config, { ownerAlive = pid => {
   try { process.kill(pid, 0); return true } catch (error) { return error.code !== 'ESRCH' }
 } } = {}) {
@@ -34,7 +120,10 @@ export function inspectChainedTransitionLock(config, { ownerAlive = pid => {
   try { record = JSON.parse(readFileSync(file, 'utf8')) } catch { throw Error('chained_swap_lock_invalid') }
   if (!Number.isSafeInteger(record.pid) || record.pid <= 0 ||
       !/^[a-f0-9]{64}$/.test(record.journalSha256 ?? '')) throw Error('chained_swap_lock_invalid')
-  if (ownerAlive(record.pid)) return { locked: true, recoverable: false, reason: 'owner_alive_or_unknown' }
+  if (record.start && (processStart(record.pid) === record.start)) {
+    return { locked: true, recoverable: false, reason: 'owner_alive_or_unknown' }
+  }
+  if (!record.start && ownerAlive(record.pid)) return { locked: true, recoverable: false, reason: 'owner_alive_or_unknown' }
   if (sha(readFileSync(path.join(root, '.chat-on-opencode-directory-switch.json'))) !== record.journalSha256) {
     throw Error('chained_swap_lock_cas_changed')
   }
@@ -81,7 +170,7 @@ function syncDirectory(root) {
 function offline(probe = spawnSync) {
   if (process.platform !== 'win32') throw Error('chained_swap_windows_only')
   const result = probe('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-    '@([Diagnostics.Process]::GetProcesses() | Where-Object { $_.ProcessName -in @("OpenCode","opencode-cli") }).Count'],
+    '@([Diagnostics.Process]::GetProcesses() | Where-Object { $_.ProcessName -in @("OpenCode","opencode","opencode-cli","Chat On OpenCode Provider") }).Count'],
   { encoding: 'utf8', windowsHide: true, shell: false, timeout: 7000 })
   if (result.status !== 0 || !/^0\s*$/.test(result.stdout ?? '')) throw Error('chained_swap_processes_active_or_unknown')
 }
@@ -164,7 +253,7 @@ export function recoverPreparedChainedGeneration(config, candidate, expectedDige
 export function transitionChainedGeneration(config, candidate, digest, { fault, probe } = {}) {
   offline(probe)
   const root = path.dirname(path.resolve(config))
-  return locked(root, () => {
+  return locked(config, digest, probe, () => {
   const stage = path.join(root, STAGED), parked = path.join(root, PARKED)
   const active = path.join(root, ACTIVE)
   const evidence = recoverPreparedChainedGeneration(config, candidate, digest)
@@ -218,13 +307,13 @@ function recoverChainedTransitionLocked(config, candidate, digest, { fault } = {
 }
 export function recoverChainedTransition(config, candidate, digest, { probe, fault } = {}) {
   offline(probe)
-  return locked(path.dirname(path.resolve(config)), () => recoverChainedTransitionLocked(config, candidate, digest, { fault }))
+  return locked(config, digest, probe, () => recoverChainedTransitionLocked(config, candidate, digest, { fault }))
 }
 
 export function rollbackChainedTransition(config, candidate, digest, options = {}) {
   offline(options.probe)
   const root = path.dirname(path.resolve(config))
-  return locked(root, () => {
+  return locked(config, digest, options.probe, () => {
   const active = path.join(root, ACTIVE), parked = path.join(root, PARKED), stage = path.join(root, STAGED)
   // Rollback interrupted after C was parked: finish restoring B.
   if (!existsSync(active) && existsSync(stage) && existsSync(parked)) {
