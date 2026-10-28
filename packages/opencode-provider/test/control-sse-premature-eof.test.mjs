@@ -50,3 +50,40 @@ test('repeated premature SSE EOF without progress fails closed', async () => {
   }, /cos_stream_ended_without_terminal/)
   assert.equal(reads, 3)
 })
+
+test('transient SSE GET connection failures retry same cursor without POST', async () => {
+  let attempts = 0
+  const client = new CoSControl({ directory: path.resolve('isolated-test'), fetcher: async (_, options) => {
+    assert.equal(options.method, 'GET')
+    attempts++
+    if (attempts < 3) throw Error('connection reset before headers')
+    return { ok: true, body: stream([
+      { seq: 1, kind: 'user_message', inputId: 'input-1' },
+      { seq: 2, kind: 'turn_end', turnId: 'turn-1', outcome: 'completed' },
+    ].map(frame).join('')) }
+  } })
+  client.base = 'http://127.0.0.1:50001'
+  client.token = 'test-only'
+  const received = []
+  for await (const event of client.events('session-1')) {
+    received.push(event.seq)
+    if (event.kind === 'turn_end') break
+  }
+  assert.deepEqual(received, [1, 2])
+  assert.equal(attempts, 3)
+})
+
+test('transient SSE GET failures stop after bounded retries', async () => {
+  let attempts = 0
+  const client = new CoSControl({ directory: path.resolve('isolated-test'), fetcher: async (_, options) => {
+    assert.equal(options.method, 'GET')
+    attempts++
+    throw Error('unavailable')
+  } })
+  client.base = 'http://127.0.0.1:50001'
+  client.token = 'test-only'
+  await assert.rejects(async () => {
+    for await (const _ of client.events('session-1')) {}
+  }, /cos_transport_unavailable/)
+  assert.equal(attempts, 3)
+})
