@@ -604,6 +604,30 @@ async function openOwnedFreshSession(priorGeneration) {
     await sleep(250)
   }
   const previousLocation = await cdp.eval('location.pathname + location.search + location.hash')
+  if (count !== 1) {
+    // Failure-only, privacy-safe DOM diagnostics from the owned test renderer.
+    // Never log innerText, form values, cookies, URLs or account identifiers.
+    const diagnostic = await cdp.eval(`(() => ({
+      readyState: document.readyState,
+      mainPresent: !!document.querySelector('main'),
+      buttonCount: document.querySelectorAll('button,[role=button]').length,
+      newSessionAriaCount: [...document.querySelectorAll('button,[role=button]')]
+        .filter(e => e.getAttribute('aria-label') === 'New session').length,
+      newSessionVisibleCount: [...document.querySelectorAll('button,[role=button]')]
+        .filter(e => e.getAttribute('aria-label') === 'New session' && e.getClientRects().length).length,
+      visibleComposerCount: [...document.querySelectorAll('textarea,[contenteditable=true],[role=textbox]')]
+        .filter(e => e.getClientRects().length && !e.disabled).length,
+      navigationKind: location.pathname === '/' ? 'root' : 'non_root'
+    }))()`)
+    process.stderr.write('OWNED_NEW_SESSION_READINESS_RED=' + JSON.stringify({
+      ...diagnostic, localRequests: ownedNetwork.requests,
+      localStatusCount: Object.fromEntries([...new Set(ownedNetwork.responses)]
+        .map(status => [status, ownedNetwork.responses.filter(x => x === status).length])),
+      localFailures: ownedNetwork.failures.slice(-10),
+      unknownFailures: ownedNetwork.unknownFailures,
+      transientProxyResets,
+    }) + '\n')
+  }
   assert.equal(count, 1, 'native_new_session_button_not_found')
   assert.equal(await cdp.eval('(() => {const buttons=' + newButton +
     ';if(buttons.length!==1)return false;buttons[0].click();return true})()'),
