@@ -6,7 +6,7 @@ const base = [
   { role:'user', content:'Opening question' },
   { role:'assistant', content:'Verified complete answer' },
 ]
-const anchor = completedTranscriptAnchor(base, 'Verified complete answer')
+const anchor = completedTranscriptAnchor([base[0]], 'Verified complete answer')
 
 test('real native user-assistant-user-user transcript keeps every unpaired user item quoted without fabricating assistant replies', () => {
   const messages = [...base,
