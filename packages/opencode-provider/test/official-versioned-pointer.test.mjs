@@ -26,6 +26,15 @@ test('Windows disposable versioned pointer publishes at one config rename and ro
     if (stage === 'before_publish') throw Error('RED_before_publication')
   } }), /RED_before_publication/)
   assert.deepEqual(readFileSync(config), initial)
+  // An official reader can launch after the first idle checks while the temp
+  // config is being fsynced. A final probe must refuse without changing bytes.
+  let appeared = false
+  const changingProbe = () => ({ status: 0, stdout: appeared ? '1\\r\\n' : '0\\r\\n' })
+  assert.throws(() => publishRestartOnlyPointer(config, a, g, {
+    ...opts, probe: changingProbe,
+    fault: stage => { if (stage === 'before_publish') appeared = true },
+  }), /versioned_pointer_busy_or_unknown/)
+  assert.deepEqual(readFileSync(config), initial)
   const result = publishRestartOnlyPointer(config, a, g, opts)
   assert.equal(result.status, 'RESTART_REQUIRED_ONLY')
   assert.equal(result.activationAuthorized, false)
