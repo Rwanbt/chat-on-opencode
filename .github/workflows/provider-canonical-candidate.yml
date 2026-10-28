@@ -1,9 +1,9 @@
-name: Provider canonical immutable candidate Q (NO-GO activation)
+name: Provider canonical immutable candidate R (NO-GO activation)
 on:
   pull_request:
     types: [opened, synchronize, reopened]
 jobs:
-  candidate-q:
+  candidate-r:
     if: github.event.pull_request.number == 65
     runs-on: windows-2025
     timeout-minutes: 30
@@ -30,7 +30,7 @@ jobs:
           SOURCE_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $folder = Join-Path $env:RUNNER_TEMP 'coo-ci-candidate-Q'
+          $folder = Join-Path $env:RUNNER_TEMP 'coo-ci-candidate-R'
           if (Test-Path -LiteralPath $folder) { throw 'candidate_runner_folder_already_exists' }
           New-Item -ItemType Directory -Path $folder | Out-Null
           $bundle = Join-Path $folder 'bundle'
@@ -40,7 +40,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
-          name: coo-immutable-candidate-Q-${{ github.event.pull_request.head.sha }}
-          path: ${{ runner.temp }}/coo-ci-candidate-Q/
+          name: coo-immutable-candidate-R-${{ github.event.pull_request.head.sha }}
+          path: ${{ runner.temp }}/coo-ci-candidate-R/
           retention-days: 7
           if-no-files-found: error
