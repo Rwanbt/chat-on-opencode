@@ -15,6 +15,7 @@ import { createServer } from 'node:net'
 import http from 'node:http'
 import path from 'node:path'
 import { createHash, randomBytes } from 'node:crypto'
+import { createSseDataFieldCounter } from './helpers/sse-framing.mjs'
 import { createOpenCodeConfig } from '../packages/opencode-provider/src/config.mjs'
 import { candidateDigest } from '../packages/opencode-provider/src/official-upgrade.mjs'
 import { inspectRestartOnlyPointer, publishRestartOnlyPointer } from '../packages/opencode-provider/src/official-versioned-pointer.mjs'
@@ -229,18 +230,17 @@ const ownedProxy = http.createServer((request, response) => {
   }, reply => {
     if (/\btext\/event-stream\b/i.test(String(reply.headers['content-type'] ?? ''))) {
       ownedSse.responses++
-      let suffix = ''
+      const counter = createSseDataFieldCounter()
       reply.on('data', chunk => {
-        // The suffix only joins split framing delimiters; it is never logged.
-        const text = suffix + chunk.toString('utf8')
-        const count = [...text.matchAll(/\r?\ndata:\s/g)].length
-        if (count) {
+        const before = counter.snapshot().fields
+        counter.push(chunk)
+        const added = counter.snapshot().fields - before
+        if (added > 0) {
           const now = Date.now()
           if (ownedSse.firstAt === null) ownedSse.firstAt = now
           ownedSse.lastAt = now
-          ownedSse.frames += count
+          ownedSse.frames += added
         }
-        suffix = text.slice(-7)
       })
     }
     response.writeHead(reply.statusCode, reply.headers)
