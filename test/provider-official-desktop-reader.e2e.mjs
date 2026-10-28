@@ -131,6 +131,20 @@ for (const generation of ['A', 'B']) {
     'gateway_error_contract_changed')
   await writeFile(gatewayFile, gatewaySource.replace('diagnostics.lastFailure = code',
     'diagnostics.lastFailure = code\n      traceStage(code)'))
+  // A live Desktop may add native text-only bookkeeping around the prior answer.
+  // Instrument only synthetic request role/length structure, never content.
+  const transcriptFile = path.join(pluginDir, 'src', 'transcript-handoff.mjs')
+  const transcriptSource = await readFile(transcriptFile, 'utf8')
+  const gapSource = 'const gap = dialogue.slice(matching[0] + 1, -1)'
+  assert.ok(transcriptSource.includes(gapSource), 'transcript_handoff_contract_changed')
+  const shapeReceipt = path.join(dirs.receipts, generation + '.transcript-shape.jsonl')
+  const syntheticTrace = 'try { logSyntheticShape(' + JSON.stringify(shapeReceipt) +
+    ', JSON.stringify({ roles:dialogue.map(item=>item.role),' +
+    ' gap:gap.map(item=>({role:item.role,chars:item.content.length})), matches:matching.length })' +
+    ' + "\\n") } catch {}'
+  await writeFile(transcriptFile,
+    "import { appendFileSync as logSyntheticShape } from 'node:fs'\n" +
+    transcriptSource.replace(gapSource, gapSource + '\n' + syntheticTrace))
   const importReceipt = path.join(dirs.receipts, generation + '.import')
   const providerPort = await port()
   // A pointer changes only plugins[0].package. The unchanged JSONC retains
@@ -539,6 +553,12 @@ async function realGeneratedReader(prompt, expected) {
     pluginAImported:existsSync(path.join(dirs.receipts,'A.import')),
     pluginBImported:existsSync(path.join(dirs.receipts,'B.import')),
     syntheticJournal:await journalState(),
+    transcriptRoles:await Promise.all(['A','B'].map(async generation => {
+      const file = path.join(dirs.receipts, generation + '.transcript-shape.jsonl')
+      if (!existsSync(file)) return { generation, exists:false }
+      const lines = (await readFile(file,'utf8')).trim().split(/\r?\n/).filter(Boolean)
+      return { generation, shapes:lines.slice(-5).map(line => JSON.parse(line)) }
+    })),
     failureKinds:['turn_first_message_pending','turn_first_message_conflict',
       'cos_replay_input_unavailable','cos_transport_unavailable','cos_stream_ended_without_terminal']
       .filter(kind => body.includes(kind)),
@@ -572,6 +592,11 @@ try {
     persistedA.userReceipts > 0 && persistedA.completedTurns > 0,
   'synthetic_CoS_journal_not_durable_after_first_reply')
   process.stderr.write('SYNTHETIC_FIRST_TURN_PERSISTENCE=' + JSON.stringify(persistedA) + '\n')
+  const uiNav = await cdp.eval('(() => [...document.querySelectorAll("button,[role=button]")]' +
+    '.filter(e=>e.getClientRects().length)' +
+    '.map(e=>({label:(e.getAttribute("aria-label")||e.getAttribute("title")||"").slice(0,80)}))' +
+    '.filter(e=>/new|nouve|chat|session|conversation/i.test(e.label)).slice(0,20))()')
+  process.stderr.write('SYNTHETIC_OFFICIAL_GUI_NAV=' + JSON.stringify(uiNav) + '\n')
   if (ci) {
     // The publisher MUST reject a live official GUI. This is the required
     // RED case: do not bypass its real Windows process scan with a fake probe.
