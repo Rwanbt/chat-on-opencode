@@ -679,6 +679,26 @@ async function realGeneratedReader(prompt, expected) {
     process.stderr.write('OFFICIAL_214_ISOLATED_GUI_CONTROLS=' + JSON.stringify(diagnostic) + '\n')
   }
   assert.equal(available, true, 'desktop_composer_not_uniquely_visible')
+  // Test-owned renderer only: watch *lengths* and monotonic timings, never response text.
+  // A completed synthetic reply does not itself prove progressive rendering.
+  await cdp.eval('(() => {
+    const root = document.querySelector("main") || document.body
+    const state = { mutations:0, distinctLengths:0, firstAt:null, lastAt:null, lastLength:root?.innerText?.length??0 }
+    window.__cooOwnedDomStream = state
+    const observer = new MutationObserver(() => {
+      const t = performance.now()
+      state.mutations++
+      const length = root?.innerText?.length ?? 0
+      if (length !== state.lastLength) {
+        state.distinctLengths++
+        state.lastLength = length
+        if (state.firstAt === null) state.firstAt = t
+        state.lastAt = t
+      }
+    })
+    observer.observe(root, { subtree:true, childList:true, characterData:true })
+    window.__cooOwnedDomStreamStop = () => observer.disconnect()
+  })()')
   await cdp.eval('(() => {const items=' + visible + ';items[0].focus()})()')
   await cdp.call('Input.insertText', { text: prompt + ' ' + nonce })
   await cdp.call('Input.dispatchKeyEvent', { type:'keyDown', key:'Enter', code:'Enter', windowsVirtualKeyCode:13 })
@@ -705,6 +725,16 @@ async function realGeneratedReader(prompt, expected) {
     for (const generation of ['A', 'B']) {
       if (text.includes(exactReply(generation))) {
         if (expected) assert.equal(generation, expected, 'wrong_real_gui_generator')
+        const domStream = await cdp.eval('(() => {
+          const s = window.__cooOwnedDomStream
+          window.__cooOwnedDomStreamStop?.()
+          return s ? { mutations:s.mutations, distinctLengths:s.distinctLengths,
+            elapsedMs:s.firstAt===null ? 0 : Math.round(s.lastAt-s.firstAt) } : null
+        })()')
+        process.stdout.write('OFFICIAL_GUI_DOM_STREAM_CATEGORICAL=' + JSON.stringify({
+          synthetic:true, observed:domStream, progressiveProven:false,
+          loopbackResponses:ownedNetwork.responses.length,
+        }) + '\\n')
         process.stdout.write('OWNED_REAL_GUI_NONCE_RESPONSE=' + JSON.stringify({
           generation, probe:prompt, match:true, modelId:'chat-on-opencode/chatgpt-default',
         }) + '\n')
