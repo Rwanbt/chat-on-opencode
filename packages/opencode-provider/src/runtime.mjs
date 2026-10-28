@@ -59,6 +59,22 @@ export class CoSRuntime {
     traceStage('runtime_start')
     if (this.child) throw new BridgeError('runtime_already_started', 409)
     const { binary, folder } = await validateRuntime(this.options)
+    // A live provider control endpoint is already owned. Refuse before spawning
+    // a second Electron runtime; never connect to, overwrite or terminate it.
+    // PID reuse can yield a conservative refusal, never unsafe adoption.
+    try {
+      const info = JSON.parse(await readFile(path.join(folder, 'control-api', 'endpoint.json'), 'utf8'))
+      if (Number.isSafeInteger(info?.pid) && info.pid > 0) {
+        let live = false
+        try { process.kill(info.pid, 0); live = true }
+        catch (error) { if (error?.code === 'EPERM') live = true }
+        if (live) throw new BridgeError('runtime_profile_endpoint_occupied', 409)
+      }
+    } catch (error) {
+      if (error instanceof BridgeError && error.code === 'runtime_profile_endpoint_occupied') throw error
+      // Missing or malformed prior endpoint is not proof of ownership. The
+      // exact child-PID check after spawn remains mandatory and fail-closed.
+    }
     // The official OpenCode CLI may be an Electron/Bun host. Its process-only
     // runtime switches must not turn our packaged Electron helper into Node.
     const { CHAT_ON_OPENCODE_GATEWAY_KEY: _gatewaySecret,

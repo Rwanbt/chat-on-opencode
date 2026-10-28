@@ -686,3 +686,21 @@ test('foreign control endpoint is rejected before any network request or token e
   assert.equal(control.base,undefined)
   assert.equal(control.token,undefined)
 })
+
+test('live isolated endpoint refuses second runtime before a child is launched', async t => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'cos-occupied-owner-'))
+  t.after(() => rm(folder, {recursive:true, force:true}))
+  await writeFile(path.join(folder, 'config.json'), JSON.stringify({
+    ui:{chatBrowser:'cos'}, controlApi:{enabled:true,allowActions:true},
+  }))
+  const controlDir = path.join(folder,'control-api')
+  await mkdir(controlDir)
+  await writeFile(path.join(controlDir,'endpoint.json'), JSON.stringify({protocol:1,pid:process.pid,port:23001}))
+  let launched = false
+  const runtime = new CoSRuntime({executable:process.execPath,profile:folder}, {
+    launcher:() => { launched = true; throw Error('must_not_spawn') },
+  })
+  await assert.rejects(runtime.start(), /runtime_profile_endpoint_occupied/)
+  assert.equal(launched,false)
+  assert.equal(JSON.parse(await readFile(path.join(controlDir,'endpoint.json'),'utf8')).pid,process.pid)
+})
