@@ -673,3 +673,16 @@ test('selected-provider lifecycle refuses incomplete runtime configuration befor
   await assert.rejects(noNode.ensure(), /provider_runtime_not_configured/)
   assert.equal(launches, 0)
 })
+
+test('foreign control endpoint is rejected before any network request or token exposure', async t => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'cos-foreign-owner-'))
+  t.after(() => rm(folder, { recursive:true, force:true }))
+  await writeFile(path.join(folder, 'endpoint.json'), JSON.stringify({ protocol:1, port:54321, pid:7444 }))
+  await writeFile(path.join(folder, 'token'), 'z'.repeat(43))
+  let networkCalls = 0
+  const control = new CoSControl({ directory:folder, fetcher:async () => { networkCalls++; throw Error('foreign network forbidden') } })
+  await assert.rejects(control.connect({expectedPid:12345}), /runtime_endpoint_pid_mismatch/)
+  assert.equal(networkCalls,0)
+  assert.equal(control.base,undefined)
+  assert.equal(control.token,undefined)
+})

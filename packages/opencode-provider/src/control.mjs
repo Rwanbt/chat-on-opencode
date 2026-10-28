@@ -19,7 +19,7 @@ export class CoSControl {
     this.fetcher = fetcher
   }
 
-  async connect() {
+  async connect({ expectedPid } = {}) {
     const [raw, token] = await Promise.all([
       readFile(path.join(this.directory, 'endpoint.json'), 'utf8'),
       readFile(path.join(this.directory, 'token'), 'utf8'),
@@ -28,6 +28,11 @@ export class CoSControl {
     try { endpoint = JSON.parse(raw) } catch { throw new BridgeError('invalid_cos_endpoint', 503) }
     if (endpoint.protocol !== 1 || !Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65535 ||
       !/^[A-Za-z0-9_-]{30,}$/.test(token.trim())) throw new BridgeError('invalid_cos_endpoint', 503)
+    // Validate endpoint ownership BEFORE sending its token or reaching its port.
+    // A stale/foreign endpoint in an otherwise approved profile is never a broker.
+    if (expectedPid !== undefined && (!Number.isSafeInteger(expectedPid) || expectedPid < 1 || endpoint.pid !== expectedPid)) {
+      throw new BridgeError('runtime_endpoint_pid_mismatch', 503)
+    }
     this.endpointPid = endpoint.pid
     this.base = `http://127.0.0.1:${endpoint.port}`
     this.token = token.trim()

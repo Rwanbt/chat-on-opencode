@@ -101,7 +101,7 @@ export class CoSRuntime {
       for (;;) {
         if (signal.signal.aborted || child.exitCode !== null) throw exited()
         try {
-          await control.connect()
+          await control.connect({ expectedPid: child.pid })
           if (control.endpointPid !== child.pid) throw new BridgeError('runtime_endpoint_pid_mismatch', 503)
           traceStage('control_connected')
           return control
