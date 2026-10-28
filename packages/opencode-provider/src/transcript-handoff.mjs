@@ -42,7 +42,18 @@ export function continuationWithTranscript(plain, anchor) {
         anchored(question) === anchor.questionSha256 &&
         anchored(answer) === anchor.answerSha256) matching.push(index)
   }
-  if (!matching.length) return recent.content
+  // A compacted native history can legitimately omit an old CoS anchor. But
+  // when the native history still contains that exact initiating user question,
+  // a missing verified assistant reply is an incomplete/modified transcript,
+  // not permission to silently proceed with latest-only semantics.
+  if (!matching.length) {
+    const anchored = digest => anchor.salt ? hash(anchor.salt + '\0' + digest) : digest
+    if (dialogue.slice(0, -1).some(item => item.role === 'user' &&
+        anchored(hash(item.content)) === anchor.questionSha256)) {
+      throw new BridgeError('transcript_anchor_incomplete', 422)
+    }
+    return recent.content
+  }
   if (matching.length !== 1) throw new BridgeError('transcript_anchor_ambiguous', 422)
   const gap = dialogue.slice(matching[0] + 1, -1)
   if (!gap.length) return recent.content
