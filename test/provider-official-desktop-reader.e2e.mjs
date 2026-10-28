@@ -893,7 +893,7 @@ try {
       }
       await sleep(200)
     }
-    process.stdout.write('OFFICIAL_GUI_STOP_CLICK=' + JSON.stringify({synthetic:true,partialObserved:stopPartObserved,clicked:stopClicked,visibleCandidates:stopCandidateCount}) + '\\n')
+    process.stdout.write('OFFICIAL_GUI_STOP_CLICK=' + JSON.stringify({synthetic:true,partialObserved:stopPartObserved,clicked:stopClicked,visibleCandidates:stopCandidateCount}) + '\n')
     assert.ok(stopPartObserved && stopClicked, 'official_gui_stop_button_not_clickable')
     let stopReceipt = false
     for (let i=0;i<30;i++) {
@@ -905,7 +905,7 @@ try {
     await sleep(800)
     assert.equal(await cdp.eval('document.body.innerText.includes(' + JSON.stringify(completeStop) + ')'),false,
       'cancelled_turn_must_not_render_final_answer')
-    process.stdout.write('OFFICIAL_GUI_SYNTHETIC_EXACT_STOP=PASS\\n')
+    process.stdout.write('OFFICIAL_GUI_SYNTHETIC_EXACT_STOP=PASS\n')
     await coldStopDesktop()
     process.stdout.write(JSON.stringify({
       verified:'ACTUAL_OFFICIAL_GUI_VERSIONED_POINTER_RESTART_ONLY',
