@@ -387,15 +387,26 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody, 
           questionSha256: persisted.question, answerSha256: persisted.answer } }
         : memory
       let terminalSeq = null
+      let observedTurnID = null
+      const recordGatewayEvidence = entry => {
+        if (entry.turnId) observedTurnID = entry.turnId
+        try { onEvidence?.(entry) } catch { /* observational only */ }
+      }
+      const recordNativeSSE = stage => {
+        if (!observedTurnID) return
+        recordGatewayEvidence({ stage, sessionID:stableUUID('session:' + sessionKey),
+          messageKey, turnId:observedTurnID, seq:terminalSeq, atMs:Date.now() })
+      }
       const result = await runTurn(control, body, { sessionKey, messageKey, nativeTools, signal: cancel.signal,
         checkpoint: priorAnchor?.anchor, resumeAfterSeq: priorAnchor?.seq ?? 0, previousInput: priorInput?.text ?? recoveredInput,
-        turnCustody, messageFingerprint, onTerminal: seq => { terminalSeq = seq }, onEvidence,
+        turnCustody, messageFingerprint, onTerminal: seq => { terminalSeq = seq }, onEvidence:recordGatewayEvidence,
         rememberInput: isToolResult ? undefined : text => rememberBounded(submittedInputs, inputKey,
           { text, messageFingerprint }), emit: async (delta) => {
         answer += delta
         if (stream) {
           if (!res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'close' })
           await writeSSE(res, 'data: ' + JSON.stringify(chunk({ content: delta })) + '\n\n', cancel.signal)
+          recordNativeSSE('native_sse_frame_written')
         }
       } })
       if (!isToolResult && typeof result === 'string' && !cancel.signal.aborted) {
@@ -433,6 +444,7 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody, 
       if (stream) {
         if (!res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
         res.end('data: ' + JSON.stringify(chunk({}, 'stop')) + '\n\ndata: [DONE]\n\n')
+        recordNativeSSE('native_sse_terminal_written')
       } else sendJSON(200, { id, object: 'chat.completion', created: Math.floor(Date.now() / 1000), model: body.model,
         choices: [{ index: 0, message: { role: 'assistant', content: result }, finish_reason: 'stop' }] })
     } catch (error) {

@@ -419,8 +419,9 @@ test('gateway authenticates, binds to local host and yields Chat Completions SSE
   assert.match(body, /"content":"jour"/)
   assert.match(body, /data: \[DONE\]/)
   assert.deepEqual(evidence.map(entry => entry.stage), [
-    'input_admitted','turn_started','assistant_revision','native_delta_emitted',
-    'assistant_revision','native_delta_emitted','turn_completed',
+    'input_admitted','turn_started','assistant_revision','native_sse_frame_written','native_delta_emitted',
+    'assistant_revision','native_sse_frame_written','native_delta_emitted','turn_completed',
+    'native_sse_terminal_written',
   ])
   assert.ok(evidence.every(entry => entry.sessionID === stableUUID('session:ses_test')))
   assert.ok(evidence.every(entry => entry.messageKey === 'msg_http_0001'))
