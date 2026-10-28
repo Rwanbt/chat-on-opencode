@@ -64,7 +64,7 @@ test('Windows owner process start retries transient unreadability without trusti
   let calls = 0
   const start = probeWindowsProcessStart(12345, () => {
     calls++
-    return calls < 3 ? { status:1, stdout:'' } : { status:0, stdout:'638972343000000000\\r\\n' }
+    return calls < 3 ? { status:1, stdout:'' } : { status:0, stdout:'638972343000000000\r\n' }
   })
   assert.equal(start, '638972343000000000')
   assert.equal(calls, 3)
