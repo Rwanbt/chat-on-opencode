@@ -32,6 +32,15 @@ test('Windows disposable versioned pointer publishes at one config rename and ro
   assert.equal(inspectRestartOnlyPointer(config, oldSha, result.publishedConfigSha256).state, 'NEW')
   assert.equal(JSON.parse(readFileSync(config)).keepForeign, true)
   assert.equal(candidateDigest(a), opts.fromSha)
+  // Failure injected after the single commit point leaves COMPLETE new bytes,
+  // not an absent or partially renamed active directory.
+  assert.throws(() => publishRestartOnlyPointer(config, g, a, {
+    configSha: result.publishedConfigSha256, fromSha: opts.toSha, toSha: opts.fromSha,
+    probe: opts.probe, fault: stage => { if (stage === 'after_publish') throw Error('after_commit') },
+  }), /after_commit/)
+  assert.equal(inspectRestartOnlyPointer(config, oldSha, result.publishedConfigSha256).state, 'OLD')
+  // Re-publish new before checking an ordinary reverse-CAS rollback.
+  publishRestartOnlyPointer(config, a, g, opts)
   const revert = publishRestartOnlyPointer(config, g, a, { configSha: result.publishedConfigSha256,
     fromSha: opts.toSha, toSha: opts.fromSha, probe: opts.probe })
   assert.equal(revert.status, 'RESTART_REQUIRED_ONLY')
