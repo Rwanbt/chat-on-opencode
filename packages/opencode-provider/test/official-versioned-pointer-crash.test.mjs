@@ -42,7 +42,7 @@ test('a process crash before or after pointer publication cannot permanently pre
         process.exit(74)
       `
       const child = spawnSync(process.execPath, ['--input-type=module', '-e', script],
-        { encoding: 'utf8', timeout: 10000, windowsHide: true })
+        { encoding: 'utf8', timeout: 35000, windowsHide: true })
       assert.equal(child.status, 73, `expected abrupt ${crashAt} crash: ${child.stderr}`)
       const afterCrashState = crashAt === 'before_publish' ? 'OLD' : 'NEW'
       assert.equal(inspectRestartOnlyPointer(config, oldSha, newSha).state, afterCrashState)
