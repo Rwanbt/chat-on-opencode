@@ -5,7 +5,7 @@ canonical active work state**; this file is the index that says which objective 
 issue, which ADR records the decision behind it, and what a future session must not silently
 reverse.
 
-Last updated: 2026-10-29. Branch of record: `integration/pr62-pr63-pr64-worker2` (PR #65, Draft).
+Last updated: 2026-10-30. Branch of record: `integration/pr62-pr63-pr64-worker2` (PR #65, Draft).
 
 ## Mission
 
@@ -44,6 +44,7 @@ reference product uses, and it is the acceptance criterion (ADR-0001).
 | O-6 | Native Responses function calling | [#115](https://github.com/Rwanbt/chat-on-opencode/issues/115) | Deferred | needs O-4 to qualify the route |
 | O-7 | Persist the Desktop acceptance proof where it can be re-inspected | [#116](https://github.com/Rwanbt/chat-on-opencode/issues/116) | Open | — |
 | O-8 | Document the coding capability, its protocol and its limits | [#117](https://github.com/Rwanbt/chat-on-opencode/issues/117) | Done (documented) | — |
+| O-9 | Reproduce and fix the Desktop `desktop_composer_not_uniquely_visible` flake | [#118](https://github.com/Rwanbt/chat-on-opencode/issues/118) | Open | the cause is unconfirmed; one failure in four observed hosted runs |
 
 ## Where the objectives stand
 
@@ -99,14 +100,30 @@ These are not preferences. They are the conditions under which the work stays va
    the decisions that must not be silently reversed.
 2. Read `packages/opencode-provider/ACTIVATION_DECISION.md` for the activation dossier and its
    four locks.
-3. Check the open issues: #110 to #117 carry the acceptance criteria and the evidence each one
+3. Check the open issues: #110 to #118 carry the acceptance criteria and the evidence each one
    requires.
 4. Verify the current state before acting: `git log --oneline -5`, `npm test --prefix
    packages/opencode-provider`, and the CI runs for the head commit.
 
-## Known open caveat
+## Known open caveats
 
-The Desktop acceptance step passed twice at `57e073b`, but the root normalisation added in that
-commit never fired in either run (no `OWNED_RENDERER_ROOT_NORMALISED` marker), so the cause of
-the intermittent `native_new_session_button_not_found` failure is still **unconfirmed**. Two green
-runs of a ~50 % flake are not evidence of a fix. This is tracked by #112.
+**The `native_new_session_button_not_found` flake (#112).** The Desktop acceptance step passed
+twice at `57e073b`, but the root normalisation added in that commit never fired in either run (no
+`OWNED_RENDERER_ROOT_NORMALISED` marker), so the cause of the intermittent failure is still
+**unconfirmed**. Two green runs of a ~50 % flake are not evidence of a fix.
+
+**The `desktop_composer_not_uniquely_visible` flake (#118).** On run `40965507394` (head `438dd4f`),
+the same Desktop job failed on a *different* assertion. Its third composer-readiness check never
+became ready (`observerTicks: 178`, `observedCounts: [0,1]` across its 45 s window), and the
+control census taken at that moment showed a live renderer with **no** composer element — no
+`textarea`, no `[contenteditable]`, no `[role=textbox]` — while three `New session` controls were
+visible. The symptom is the inverse of #112's, where the composer was visible and the New session
+control was missing, so the two are tracked separately and **neither cause is claimed**.
+
+The facts that are established: one failure in four observed executions of that job (`89d7c7f`,
+`045d1a5` and `a9285a0` green; `438dd4f` red); the acceptance test file
+`test/provider-official-desktop-reader.e2e.mjs` is unchanged since the green run `89d7c7f`; the
+provider source, plugin and tests are byte-identical from `a270c95` to `438dd4f`; the official
+Desktop 2.1.4 binary is unmodified. The difference between a green and a red run is therefore not
+in the provider source, the acceptance test or the binary — and the cause itself remains
+**unconfirmed** (ADR-0004).
