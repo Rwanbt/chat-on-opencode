@@ -28,22 +28,33 @@ public static class ChatOnOpenCodePointerWin32 {
   [return: MarshalAs(UnmanagedType.Bool)]
   public static extern bool Move(string source, string destination, uint flags);
   public static int Publish(string source, string destination, string expectedSha) {
-    try {
-      // FileShare deliberately omits WRITE: no new uncooperative writer can
-      // open the destination while we hash its exact handle. Windows
-      // MoveFileExW cannot replace this file while even this own handle is
-      // open (ERROR_ACCESS_DENIED), so release it IMMEDIATELY before rename.
-      // An uncooperative process can still race that final small interval.
-      using (var locked = new FileStream(destination, FileMode.Open, FileAccess.Read,
-                                        FileShare.Read | FileShare.Delete)) {
-        using (var sha = SHA256.Create()) {
-          var actual = BitConverter.ToString(sha.ComputeHash(locked)).Replace("-", "").ToLowerInvariant();
-          if (!String.Equals(actual, expectedSha, StringComparison.Ordinal)) return 42;
+    int last = 0;
+    for (int attempt = 0; attempt < 12; attempt++) {
+      try {
+        // FileShare deliberately omits WRITE: no new uncooperative writer can
+        // open the destination while we hash its exact handle. Windows
+        // MoveFileExW cannot replace this file while even this own handle is
+        // open (ERROR_ACCESS_DENIED), so release it IMMEDIATELY before rename.
+        using (var locked = new FileStream(destination, FileMode.Open, FileAccess.Read,
+                                          FileShare.Read | FileShare.Delete)) {
+          using (var sha = SHA256.Create()) {
+            var actual = BitConverter.ToString(sha.ComputeHash(locked)).Replace("-", "").ToLowerInvariant();
+            if (!String.Equals(actual, expectedSha, StringComparison.Ordinal)) return 42;
+          }
         }
-      }
-      if (!Move(source, destination, 9)) return 1000 + Marshal.GetLastWin32Error();
-      return 0;
-    } catch { return 44; }
+        if (Move(source, destination, 9)) return 0;
+        last = Marshal.GetLastWin32Error();
+        // A failed MoveFileExW moves nothing: both paths still hold their
+        // previous complete bytes, so retrying the same single rename cannot
+        // produce an intermediate state. A Windows CRT reader, antivirus scan
+        // or search indexer holds the destination without FILE_SHARE_DELETE for
+        // a very short window; that is a transient sharing violation, not a
+        // refusal. Every other native error is reported immediately.
+        if (last != 5 && last != 32) return 1000 + last;
+      } catch { last = 32; }
+      System.Threading.Thread.Sleep(400);
+    }
+    return 1000 + last;
   }
 }
 '@
