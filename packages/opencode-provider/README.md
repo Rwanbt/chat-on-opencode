@@ -77,7 +77,10 @@ and streams a native answer without `CHAT_ON_OPENCODE_GATEWAY_KEY` in the launch
 environment. The plugin generates a fresh 256-bit bearer in memory on setup and passes
 it only to its owned gateway process and the provider-scoped native request hooks.
 The generator deliberately stores neither an `env` credential dependency nor an `apiKey`
-or bearer token in OpenCode configuration. Desktop GUI selection has not yet been tested.
+or bearer token in OpenCode configuration. Desktop GUI selection has been exercised on official
+OpenCode Desktop 2.1.4 against an isolated synthetic profile (no ChatGPT account): first turn,
+same-session follow-up, cold and hot restart, and gateway-to-renderer correlation all passed.
+Authentic ChatGPT credentials have **not** been exercised through the Desktop GUI.
 Any existing personal CoS profile can be explicitly guarded with `--personal-cos-data` pointing
 to its existing directory. The provider service rechecks isolation when launched.
 
