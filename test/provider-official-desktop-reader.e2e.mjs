@@ -475,6 +475,26 @@ async function reloadOwnedRenderer() {
   })
   await Promise.all([client.call('Page.reload', { ignoreCache:true }), loaded])
 }
+/** Navigate the owned renderer to a URL in its own app. Never an SDK/HTTP call. */
+async function navigateOwnedRenderer(url) {
+  const client = cdp
+  const loaded = new Promise((resolve, reject) => {
+    const complete = event => {
+      let payload
+      try { payload = JSON.parse(event.data) } catch { return }
+      if (payload.method !== 'Page.loadEventFired') return
+      clearTimeout(timer)
+      client.socket.removeEventListener('message', complete)
+      resolve()
+    }
+    const timer = setTimeout(() => {
+      client.socket.removeEventListener('message', complete)
+      reject(Error('owned_renderer_navigation_timeout'))
+    }, 15_000)
+    client.socket.addEventListener('message', complete)
+  })
+  await Promise.all([client.call('Page.navigate', { url }), loaded])
+}
 function stopOwnedManagedCli() {
   // Desktop may leave its child service alive after the owned HWND exits.
   // Resolve ONLY the disposable port that this runner chose and verify the
@@ -636,6 +656,19 @@ async function openOwnedFreshSession(priorGeneration, projectSelected = false) {
     'e.getClientRects().length && /^(New session|Nouvelle session)$/i.test(e.getAttribute("aria-label")||""));' +
     'const primary=visible.filter(e=>e.closest("main"));' +
     'return primary.length===1 ? primary : (visible.length===1 ? visible : [])})()'
+  // A cold start restores the last route, and the native "New session" control
+  // exists only on the root surface. Normalise the owned renderer to its own
+  // root through the signed app itself before requiring the button. This is a
+  // renderer navigation, never session creation via SDK or direct HTTP, and it
+  // only applies when the app is served over local HTTP (origin is never null).
+  const surface = await cdp.eval('(() => ({ pathname: location.pathname, origin: location.origin }))()')
+  if (surface.pathname !== '/' && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(surface.origin)) {
+    process.stderr.write('OWNED_RENDERER_ROOT_NORMALISED=' + JSON.stringify({
+      routeShape: surface.pathname.split('/')
+        .map(segment => /^[0-9a-zA-Z_-]{6,}$/.test(segment) ? '#id' : segment).join('/'),
+    }) + '\n')
+    await navigateOwnedRenderer(surface.origin + '/')
+  }
   const limit = Date.now() + 15_000
   let count = 0
   while (Date.now() < limit) {
@@ -658,7 +691,16 @@ async function openOwnedFreshSession(priorGeneration, projectSelected = false) {
         .filter(e => e.getAttribute('aria-label') === 'New session' && e.getClientRects().length).length,
       visibleComposerCount: [...document.querySelectorAll('textarea,[contenteditable=true],[role=textbox]')]
         .filter(e => e.getClientRects().length && !e.disabled).length,
-      navigationKind: location.pathname === '/' ? 'root' : 'non_root'
+      navigationKind: location.pathname === '/' ? 'root' : 'non_root',
+      // UI chrome only: accessibility labels, never user content, form values
+      // or account identifiers. Route segments that look like ids are masked so
+      // the surface can be identified without recording a session identifier.
+      buttonLabels: [...document.querySelectorAll('button,[role=button]')]
+        .filter(e => e.getClientRects().length)
+        .map(e => (e.getAttribute('aria-label') || e.textContent || '').trim().slice(0, 40))
+        .filter(Boolean).slice(0, 8),
+      routeShape: location.pathname.split('/')
+        .map(segment => /^[0-9a-zA-Z_-]{6,}$/.test(segment) ? '#id' : segment).join('/')
     }))()`)
     process.stderr.write('OWNED_NEW_SESSION_READINESS_RED=' + JSON.stringify({
       ...diagnostic, localRequests: ownedNetwork.requests,
