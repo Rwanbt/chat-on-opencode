@@ -54,6 +54,27 @@ test('a legacy unowned service still only closes its listener when the runtime e
   assert.deepEqual(activity, ['listen', 'server_closed'])
 })
 
+test('a deliberate stop still exits once when the broker dies as a consequence', async () => {
+  // Parent shutdown kills the broker, and that broker exit now also reaches the
+  // runtime-exit handler. It must not turn a clean stop into a second exit(1).
+  const owner = ownedOwner()
+  const activity = []
+  const child = new EventEmitter()
+  const server = Object.assign(new EventEmitter(), {
+    listen: () => activity.push('listen'),
+    closeAllConnections: () => activity.push('connections_closed'),
+    close: () => activity.push('server_closed'),
+  })
+  await startService({
+    runtime: { child, start: async () => ({}), stop: () => activity.push('runtime_stopped') },
+    owner, owned: true, key: 's'.repeat(40), port: 45861,
+    gatewayFactory: () => server, exit: code => activity.push('exit_' + code),
+  })
+  owner.emit('SIGTERM')
+  child.emit('exit', 1)
+  assert.deepEqual(activity, ['listen', 'connections_closed', 'server_closed', 'runtime_stopped', 'exit_0'])
+})
+
 test('after an owned gateway exits, the next ensure launches a fresh process instead of reusing it', async () => {
   const children = []
   const lifecycle = new GatewayLifecycle({
