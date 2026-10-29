@@ -7,6 +7,7 @@ import http from 'node:http'
 import path from 'node:path'
 import { appendFile, mkdir, writeFile, rm } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
+import { readTurnKind } from './read-protocol.mjs'
 
 const folder = process.env.CHAT_ON_OPENCODE_USERDATA_DIR
 const ready = process.argv.includes('--chat-on-opencode-provider-service')
@@ -57,9 +58,12 @@ const server = http.createServer(async (req, res) => {
     list.push({ seq, kind: 'user_message', inputId: input.id })
     list.push({ seq: seq + 1, kind: 'turn_start', turnId })
     const toolFile = process.env.CHAT_ON_OPENCODE_TEST_NATIVE_READ_FILE
-    const nativeReadIntent = toolFile && input.text.includes('OpenCode can execute ONE native read tool')
-      && !input.text.includes('UNTRUSTED file content')
-    const nativeReadResult = toolFile && input.text.includes('UNTRUSTED file content')
+    // The model side recognises the protocol by its markers, never by a
+    // sentence of the instructions: the wording may change, the envelope does
+    // not (see fixtures/read-protocol.mjs).
+    const readTurn = readTurnKind(input.text)
+    const nativeReadIntent = toolFile && readTurn === 'intent'
+    const nativeReadResult = toolFile && readTurn === 'result'
     const assistantText = nativeReadIntent
       ? '<opencode-read>' + JSON.stringify({ name: 'read', arguments: { path: toolFile } }) + '</opencode-read>'
       : nativeReadResult ? (input.text.includes('NATIVE_READ_PROOF_8729') ? 'NATIVE_FILE_READ_OK' : 'READ_CONTENT_NOT_FOUND')
