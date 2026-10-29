@@ -43,7 +43,7 @@ reference product uses, and it is the acceptance criterion (ADR-0001).
 | O-5 | Live promotion contract and activation-capable attestation | [#114](https://github.com/Rwanbt/chat-on-opencode/issues/114) | Open | needs a human decision to commission the contract |
 | O-6 | Native Responses function calling | [#115](https://github.com/Rwanbt/chat-on-opencode/issues/115) | Deferred | needs O-4 to qualify the route |
 | O-7 | Persist the Desktop acceptance proof where it can be re-inspected | [#116](https://github.com/Rwanbt/chat-on-opencode/issues/116) | Open | — |
-| O-8 | Document the coding capability, its protocol and its limits | [#117](https://github.com/Rwanbt/chat-on-opencode/issues/117) | In progress | — |
+| O-8 | Document the coding capability, its protocol and its limits | [#117](https://github.com/Rwanbt/chat-on-opencode/issues/117) | Done (documented) | — |
 
 ## Where the objectives stand
 
@@ -57,7 +57,7 @@ independently of the model (`all assertions passed`, exit 0). The reproducible h
 fixture in a known RED state, records the RED exit code, lists the tool calls the native turn
 actually executed, re-runs the test afterwards, and only then reports `SMOKE=PASS`.
 
-Reaching that state required four cause-level fixes, each recorded in an ADR:
+Reaching that state required five cause-level fixes, each recorded in an ADR:
 
 | Symptom | Cause | ADR |
 | --- | --- | --- |
@@ -73,8 +73,10 @@ OpenCode, over a multi-turn session on a real fixture. What is not yet recorded 
 standalone qualification record: a real *text* turn, with the account's model answering, outside
 the coding loop.
 
-**O-8 is in progress.** `packages/opencode-provider/README.md` documents the capability, the
-protocol, the ownership boundary and the limits; the harness has its own README.
+**O-8 is documented.** `packages/opencode-provider/README.md` states the three native tool levels,
+the envelope protocol, the ownership boundary, the bounds and how they fail, and the explicit
+synthetic-vs-authentic boundary; it names the still-unconfirmed Desktop flake instead of omitting
+it. The harness has its own README, and ADR-0006 to ADR-0010 carry the reasoning.
 
 ## Standing constraints
 
