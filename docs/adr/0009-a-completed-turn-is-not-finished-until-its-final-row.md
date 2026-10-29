@@ -43,8 +43,10 @@ The bridge was reading that stream as if `turn_end` closed the answer. It does n
 **A completed turn with no answer yet is not finished.** When the gateway observes a `turn_end`
 whose outcome is `completed` and it holds **no assistant text at all**, it keeps reading the event
 stream for a **bounded** grace window (3 s) instead of concluding the turn with an empty answer.
-The first assistant row of that turn — final or not — ends the wait; a final row
-(`final === true` or `state === 'final'`) closes the turn immediately.
+A **final** assistant row (`final === true` or `state === 'final'`) closes the turn immediately. A
+**non-final** row fills the answer but does **not** end the wait: the grace continues until the
+final row arrives or the grace expires, and the turn then ends with the text that is proven. The
+wait is therefore bounded in both cases — it never depends on a row that may never come.
 
 **A turn that already holds an answer closes on `turn_end`, as before.** The grace exists for the
 one state that was broken (a completed turn with nothing in hand). It is not a general wait, it
