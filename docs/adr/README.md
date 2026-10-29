@@ -6,10 +6,15 @@ boundary exists so a later session does not re-litigate it from memory or silent
 | ADR | Title | Status |
 | --- | --- | --- |
 | [0001](0001-real-project-coding-is-the-acceptance-criterion.md) | Real-project coding is the acceptance criterion | Accepted |
-| [0002](0002-opencode-executed-text-tool-bridge.md) | Carry effects through an OpenCode-executed text→tool-call bridge | Accepted, verification pending |
+| [0002](0002-opencode-executed-text-tool-bridge.md) | Carry effects through an OpenCode-executed text→tool-call bridge | Accepted, amended by 0006, 0008, 0009 and 0010 |
 | [0003](0003-personal-activation-remains-no-go.md) | Personal activation remains NO-GO | Accepted |
 | [0004](0004-evidence-scope-and-persistence.md) | Evidence scope: synthetic vs authentic, and what is committed | Accepted |
 | [0005](0005-native-responses-function-calling-deferred.md) | Native Responses function calling is deferred, not abandoned | Deferred |
+| [0006](0006-bridge-turn-carries-its-own-context.md) | A bridge turn carries the bridge's own context, not OpenCode's native preface | Accepted |
+| [0007](0007-control-api-port-decides-owner-liveness.md) | The control API's port, not its pid, decides whether a CoS owner is alive | Accepted |
+| [0008](0008-bridge-speaks-first-and-the-chain-stays-open.md) | The bridge speaks first, and every turn may carry the next tool call | Accepted |
+| [0009](0009-a-completed-turn-is-not-finished-until-its-final-row.md) | A completed turn is not finished until its final assistant row has been read | Accepted |
+| [0010](0010-chatgpt-citation-directive-is-product-metadata.md) | ChatGPT's citation directive is product metadata, not an answer | Accepted |
 
 Open work that follows from these decisions is tracked in
 [`docs/OPEN-OBJECTIVES.md`](../OPEN-OBJECTIVES.md), because this repository currently has GitHub

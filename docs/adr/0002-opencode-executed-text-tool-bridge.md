@@ -1,6 +1,6 @@
 # ADR-0002: Carry effects through an OpenCode-executed text→tool-call bridge
 
-- **Status:** Accepted, verification pending
+- **Status:** Accepted, amended by ADR-0006 (composition) and ADR-0008 (protocol and chain)
 - **Date:** 2026-10-29
 - **Deciders:** provider maintainer
 - **Relates to:** ADR-0001 (why), ADR-0005 (the deferred alternative)
