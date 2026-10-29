@@ -3,6 +3,7 @@ import { lstat, readFile, realpath, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { CoSControl, BridgeError } from './control.mjs'
+import { endpointHasLiveOwner, probeLoopbackPort } from './endpoint-liveness.mjs'
 
 const SERVICE_SWITCH = '--chat-on-opencode-provider-service'
 
@@ -57,10 +58,11 @@ export async function validateRuntime({ executable, profile, personalProfile }) 
 }
 
 export class CoSRuntime {
-  constructor(options, { launcher = spawn, clock = delay } = {}) {
+  constructor(options, { launcher = spawn, clock = delay, probe = probeLoopbackPort } = {}) {
     this.options = options
     this.launcher = launcher
     this.clock = clock
+    this.probe = probe
     this.child = null
   }
 
@@ -70,14 +72,15 @@ export class CoSRuntime {
     const { binary, folder } = await validateRuntime(this.options)
     // A live provider control endpoint is already owned. Refuse before spawning
     // a second Electron runtime; never connect to, overwrite or terminate it.
-    // PID reuse can yield a conservative refusal, never unsafe adoption.
+    // Liveness is decided by the control API's own port: a terminated helper
+    // leaves its endpoint file behind and its pid is later reused by an
+    // unrelated process, so a pid-only test would refuse a free profile.
     try {
       const info = JSON.parse(await readFile(path.join(folder, 'control-api', 'endpoint.json'), 'utf8'))
       if (Number.isSafeInteger(info?.pid) && info.pid > 0) {
-        let live = false
-        try { process.kill(info.pid, 0); live = true }
-        catch (error) { if (error?.code === 'EPERM') live = true }
-        if (live) throw new BridgeError('runtime_profile_endpoint_occupied', 409)
+        if (await endpointHasLiveOwner(info, { probe: this.probe })) {
+          throw new BridgeError('runtime_profile_endpoint_occupied', 409)
+        }
       }
     } catch (error) {
       if (error instanceof BridgeError && error.code === 'runtime_profile_endpoint_occupied') throw error
@@ -147,13 +150,15 @@ export class CoSRuntime {
           if (error instanceof BridgeError && error.code === 'runtime_endpoint_pid_mismatch') {
             let owner
             try {
-              owner = JSON.parse(await readFile(path.join(folder,'control-api','endpoint.json'),'utf8')).pid
+              owner = JSON.parse(await readFile(path.join(folder,'control-api','endpoint.json'),'utf8'))
             } catch { /* malformed/stale endpoint is not an authority */ }
-            if (Number.isSafeInteger(owner) && owner > 0 && owner !== child.pid) {
-              let live = false
-              try { process.kill(owner,0); live = true }
-              catch (checkError) { if (checkError?.code === 'EPERM') live = true }
-              if (live) throw new BridgeError('runtime_profile_endpoint_occupied',409)
+            if (Number.isSafeInteger(owner?.pid) && owner.pid > 0 && owner.pid !== child.pid) {
+              // The same rule as before the spawn: only a live control API on
+              // the recorded port is an authority. A leftover file must not
+              // make the new child wait for a pid it can never publish.
+              if (await endpointHasLiveOwner(owner, { probe: this.probe })) {
+                throw new BridgeError('runtime_profile_endpoint_occupied',409)
+              }
             }
           }
           // Otherwise wait only until the bounded startup deadline; never

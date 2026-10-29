@@ -2,6 +2,7 @@ import { Plugin } from '@opencode/plugin'
 import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { GatewayLifecycle } from '../src/lifecycle.mjs'
+import { normalizeLocation } from '../src/bridge-context.mjs'
 import { traceStage } from '../src/stage-trace.mjs'
 import { MessageIdentity, pinProviderMessage, bindProviderMessage } from './message-identity.mjs'
 import { enforceTextOnlyContext } from './text-only.mjs'
@@ -25,6 +26,15 @@ export default Plugin.define({
     if (nativeText) await registerNativeHTTPText(ctx)
     const identities = new MessageIdentity()
     const option = (key: string) => typeof ctx.options[key] === 'string' ? ctx.options[key] as string : undefined
+    // The bridge cannot reconstruct where OpenCode runs: relative tool
+    // arguments resolve against the project directory. The plugin is the
+    // OpenCode-side owner of that fact, so it carries it explicitly.
+    const projectDirectory = (): string | undefined => {
+      const scoped = ctx as unknown as {
+        location?: { directory?: string }, worktree?: { directory?: string },
+      }
+      return normalizeLocation(scoped.location?.directory ?? scoped.worktree?.directory) ?? undefined
+    }
     // One unpredictable bearer per plugin instance. Neither Desktop startup nor
     // OpenCode's persisted provider configuration needs an external credential.
     const key = randomBytes(32).toString('hex')
@@ -71,6 +81,8 @@ export default Plugin.define({
       await service.ensure()
       event.baseURL = `http://127.0.0.1:${port}/v1`
       event.headers.Authorization = `Bearer ${key}`
+      const directory = projectDirectory()
+      if (directory) event.headers['x-opencode-location'] = directory
     }, { providerID: 'chat-on-opencode' })
     await ctx.session.hook('http.request', event => {
       if (event.model.providerID !== 'chat-on-opencode') return
@@ -78,6 +90,8 @@ export default Plugin.define({
       requirePrimaryKind(event.kind)
       bindProviderMessage(event, identities)
       event.request.headers.set('Authorization', `Bearer ${key}`)
+      const directory = projectDirectory()
+      if (directory) event.request.headers.set('x-opencode-location', directory)
     }, { providerID: 'chat-on-opencode' })
     return () => service.stop()
   },

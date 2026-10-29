@@ -3,6 +3,7 @@ import { createServer, request as httpRequest } from 'node:http'
 import { EventEmitter } from 'node:events'
 import { once } from 'node:events'
 import { mkdtemp, writeFile, readFile, rm, mkdir, realpath } from 'node:fs/promises'
+import { writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -47,6 +48,31 @@ class FakeCoS {
     yield { seq: this.outputs.length + 3, kind: 'turn_end', turnId: 'fake-current-turn', outcome: 'completed' }
   }
 }
+
+// The CoS recorder closes a generation synchronously, but its final refresh
+// crosses an async hop: `turn_end` can reach one `/events` batch and the
+// matching final assistant row the next one. The gateway must keep reading
+// for that row instead of answering with an empty turn.
+class LateFinalCoS extends FakeCoS {
+  async *events(id) {
+    yield { seq: 1, kind: 'user_message', inputId: this.sent.at(-1).id }
+    yield { seq: 2, kind: 'turn_start', turnId: 'fake-late-turn' }
+    yield { seq: 3, kind: 'turn_end', turnId: 'fake-late-turn', outcome: 'completed' }
+    yield { seq: 4, kind: 'assistant_message', turnId: 'fake-late-turn', final: true, state: 'final',
+      message: { text: 'La réponse complète.', truncated: false } }
+  }
+}
+
+test('a completed turn whose final answer arrives after turn_end is still answered', async () => {
+  const cos = new LateFinalCoS()
+  const emitted = []
+  const text = await runTurn(cos, request, {
+    sessionKey: 'ses_late_final', messageKey: 'msg_late_final_001',
+    emit: (chunk) => { emitted.push(chunk) },
+  })
+  assert.equal(text, 'La réponse complète.')
+  assert.deepEqual(emitted, ['La réponse complète.'])
+})
 
 test('native Stop at terminal handoff must not publish a late successful answer', async () => {
   const abort = new AbortController()
@@ -724,13 +750,16 @@ test('service launcher uses the fork-only flag, owns exact endpoint PID and stop
   t.after(() => server.close())
   const directory = path.join(profile, 'control-api')
   await mkdir(directory)
-  await writeFile(path.join(directory, 'endpoint.json'), JSON.stringify({ protocol: 1, port: server.address().port, pid: 12345 }))
   await writeFile(path.join(directory, 'token'), token)
   const child = Object.assign(new EventEmitter(), { pid: 12345, exitCode: null, killed: false,
     kill(signal) { assert.equal(signal, 'SIGTERM'); this.killed = true; this.emit('exit', 0) } })
   let launch
   const runtime = new CoSRuntime({ executable: process.execPath, profile }, { launcher: (exe, args, opts) => {
     launch = { exe, args, opts }
+    // The helper publishes its endpoint once it runs. Before that there is no
+    // endpoint file, so the pre-spawn ownership check has nothing to refuse.
+    writeFileSync(path.join(directory, 'endpoint.json'),
+      JSON.stringify({ protocol: 1, port: server.address().port, pid: child.pid }))
     return child
   } })
   const control = await runtime.start()
@@ -786,12 +815,16 @@ test('service launcher immediately rejects an old advertised API without waiting
   t.after(() => server.close())
   const directory = path.join(profile, 'control-api')
   await mkdir(directory)
-  await writeFile(path.join(directory, 'endpoint.json'), JSON.stringify({ protocol: 1, port: server.address().port, pid: 12346 }))
   await writeFile(path.join(directory, 'token'), 'z'.repeat(43))
   const child = Object.assign(new EventEmitter(), { pid: 12346, exitCode: null, killed: false,
     kill() { this.killed = true; this.emit('exit', 0) } })
   const runtime = new CoSRuntime({ executable: process.execPath, profile, startupTimeoutMs: 1000 }, {
-    launcher: () => child,
+    launcher: () => {
+      // The helper publishes its endpoint once it runs.
+      writeFileSync(path.join(directory, 'endpoint.json'),
+        JSON.stringify({ protocol: 1, port: server.address().port, pid: child.pid }))
+      return child
+    },
   })
   await assert.rejects(runtime.start(), /cos_provider_runtime_incompatible/)
   assert.equal(child.killed, true)
@@ -937,7 +970,13 @@ test('live isolated endpoint refuses second runtime before a child is launched',
   await writeFile(path.join(folder, 'config.json'), JSON.stringify(validProviderConfig))
   const controlDir = path.join(folder,'control-api')
   await mkdir(controlDir)
-  await writeFile(path.join(controlDir,'endpoint.json'), JSON.stringify({protocol:1,pid:process.pid,port:23001}))
+  // A live owner is a control API that answers on its recorded port. The
+  // recorded pid alone cannot prove it: Windows reuses pid numbers.
+  const server = createServer((req, res) => res.end('{}'))
+  server.listen(0,'127.0.0.1')
+  await once(server,'listening')
+  t.after(() => server.close())
+  await writeFile(path.join(controlDir,'endpoint.json'), JSON.stringify({protocol:1,pid:process.pid,port:server.address().port}))
   let launched = false
   const runtime = new CoSRuntime({executable:process.execPath,profile:folder}, {
     launcher:() => { launched = true; throw Error('must_not_spawn') },

@@ -1,5 +1,6 @@
 import { CoSRuntime } from './runtime.mjs'
 import { startService } from './service.mjs'
+import { reportOwnedFailure } from './owned-failure.mjs'
 import { createHash } from 'node:crypto'
 import { appendFileSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
@@ -53,8 +54,16 @@ if (owned && (!process.channel || process.connected !== true)) {
       nativeTools: process.env.CHAT_ON_OPENCODE_NATIVE_TOOLS === 'coding' ? 'coding'
         : process.env.CHAT_ON_OPENCODE_NATIVE_TOOLS === 'read' ? 'read' : 'off' })
   } catch (error) {
-    console.error('Chat On OpenCode cannot connect to its CoS runtime:', error.code ?? 'invalid_configuration')
+    const code = error.code ?? 'invalid_configuration'
+    console.error('Chat On OpenCode cannot connect to its CoS runtime:', code)
     runtime.stop()
     process.exitCode = 1
+    // The parent must learn this cause instead of waiting out its health
+    // timeout on a process that is alive but will never listen.
+    reportOwnedFailure(code, {
+      owned,
+      send: typeof process.send === 'function' ? process.send.bind(process) : undefined,
+      exit: status => process.exit(status),
+    })
   }
 }
