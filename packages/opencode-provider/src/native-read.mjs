@@ -21,14 +21,14 @@ const CLOSE = '</opencode-read>'
  * serialiser so it is always valid JSON.
  */
 export function readInstructions({ location = null } = {}) {
-  const example = '<opencode-read>' + JSON.stringify({
+  const example = OPEN + JSON.stringify({
     name: 'read', arguments: { path: location ?? 'ABSOLUTE_FILE_PATH' },
-  }) + '</opencode-read>'
+  }) + CLOSE
   return [
     'You are the model behind OpenCode, a coding agent working on the user\'s real project.',
     'You have no file access of your own. The only way to read a file is to ask OpenCode to do it.',
     'To ask OpenCode, your ENTIRE answer must be exactly one envelope and nothing else:',
-    '<opencode-read>{"name":"read","arguments":{"path":"ABSOLUTE_FILE_PATH"}}</opencode-read>',
+    OPEN + '{"name":"read","arguments":{"path":"ABSOLUTE_FILE_PATH"}}' + CLOSE,
     'A correct answer looks exactly like this:',
     example,
     'Rules:',

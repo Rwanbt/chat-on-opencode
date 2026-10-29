@@ -7,7 +7,28 @@ import http from 'node:http'
 import path from 'node:path'
 import { appendFile, mkdir, writeFile, rm } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
-import { readTurnKind } from './read-protocol.mjs'
+
+// The read protocol's markers.
+//
+// The product owns them (packages/opencode-provider/src/native-read.mjs exports
+// the same two constants). This fixture is compiled as a STANDALONE program,
+// and the official Desktop acceptance test RELOCATES it into a directory of
+// its own before compiling it - so a fixture that imports a sibling module
+// builds everywhere except there, and fails there with
+// `mock_runtime_build_failed`. It therefore holds its own copy, and
+// test/read-protocol.test.mjs is the guard that keeps the copy equal to the
+// product's.
+const READ_PROTOCOL_MARKER = '<opencode-read>'
+const READ_RESULT_MARKER = '<untrusted-read-result>'
+
+// Which read turn a text is: 'intent' (the bridge asks for the envelope),
+// 'result' (the bridge carries the native tool's output back), or 'none'.
+function readTurnKind(text: string): 'intent' | 'result' | 'none' {
+  if (typeof text !== 'string') return 'none'
+  if (text.includes(READ_RESULT_MARKER)) return 'result'
+  if (text.includes(READ_PROTOCOL_MARKER)) return 'intent'
+  return 'none'
+}
 
 const folder = process.env.CHAT_ON_OPENCODE_USERDATA_DIR
 const ready = process.argv.includes('--chat-on-opencode-provider-service')
@@ -60,12 +81,12 @@ const server = http.createServer(async (req, res) => {
     const toolFile = process.env.CHAT_ON_OPENCODE_TEST_NATIVE_READ_FILE
     // The model side recognises the protocol by its markers, never by a
     // sentence of the instructions: the wording may change, the envelope does
-    // not (see fixtures/read-protocol.mjs).
+    // not.
     const readTurn = readTurnKind(input.text)
     const nativeReadIntent = toolFile && readTurn === 'intent'
     const nativeReadResult = toolFile && readTurn === 'result'
     const assistantText = nativeReadIntent
-      ? '<opencode-read>' + JSON.stringify({ name: 'read', arguments: { path: toolFile } }) + '</opencode-read>'
+      ? READ_PROTOCOL_MARKER + JSON.stringify({ name: 'read', arguments: { path: toolFile } }) + '</opencode-read>'
       : nativeReadResult ? (input.text.includes('NATIVE_READ_PROOF_8729') ? 'NATIVE_FILE_READ_OK' : 'READ_CONTENT_NOT_FOUND')
       : 'OFFLINE_FORK_OK'
     list.push({ seq: seq + 2, kind: 'assistant_message', turnId, message: { text: assistantText, truncated: false } })
