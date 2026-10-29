@@ -50,7 +50,11 @@ export async function startService({ runtime, key, port, owner = process, owned 
       shutdown(1)
     })
     server.listen(port, '127.0.0.1')
-    runtime.child?.once('exit', () => server.close())
+    // A dead broker cannot serve any further turn. Keeping this process alive
+    // would hide the failure from GatewayLifecycle, which treats a live child
+    // as ready, so every later turn would target a closed port until OpenCode
+    // restarts. An owned service must terminate so its parent can respawn both.
+    runtime.child?.once('exit', () => { if (owned) shutdown(1); else server.close() })
   } catch (error) {
     runtime.stop()
     if (!stopped) throw error
