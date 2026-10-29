@@ -41,7 +41,7 @@ export function createOpenCodeConfig({ runtimeExecutable, runtimeData, nodeExecu
   if (config?.ui?.chatBrowser !== 'cos' || config?.controlApi?.enabled !== true ||
       config?.controlApi?.allowActions !== true) throw new Error('isolated_profile_service_opt_in_required')
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('provider_port_invalid')
-  if (!['off', 'read'].includes(nativeTools)) throw new Error('native_tools_mode_invalid')
+  if (!['off', 'read', 'coding'].includes(nativeTools)) throw new Error('native_tools_mode_invalid')
   if (!['off','text'].includes(nativeInference) || (nativeInference === 'text' &&
     (nativeTools !== 'off' || typeof nativeModelID !== 'string' ||
       !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(nativeModelID))) ||
@@ -51,6 +51,9 @@ export function createOpenCodeConfig({ runtimeExecutable, runtimeData, nodeExecu
 
   return {
     ...(nativeTools === 'read' ? { permissions: [{ action: 'read', resource: '*', effect: 'ask' }] } : {}),
+    // Native coding keeps every effect behind an explicit per-call approval.
+    // The model can only propose a call; OpenCode decides whether it runs.
+    ...(nativeTools === 'coding' ? { permissions: [{ action: '*', resource: '*', effect: 'ask' }] } : {}),
     // An explicit text-only agent avoids injecting unrelated native tool policies
     // into the 64k-character CoS action envelope. Never change the default agent.
     ...(nativeTools === 'off' && nativeInference === 'off' ? { agents: {
@@ -71,8 +74,10 @@ export function createOpenCodeConfig({ runtimeExecutable, runtimeData, nodeExecu
       package: nativeInference === 'text' ? '@opencode/ai/providers/openai' : '@opencode/ai/providers/openai-compatible',
       settings: { baseURL: nativeInference === 'text' ? 'https://api.openai.com/v1' : 'http://127.0.0.1:' + port + '/v1' },
       models: { [nativeInference === 'text' ? nativeModelID : 'chatgpt-default']: {
-        name: nativeTools === 'read' ? 'ChatGPT via Chat On OpenCode (native read preview)' : 'ChatGPT via Chat On OpenCode (text only)',
-        capabilities: { tools: nativeTools === 'read', input: ['text'], output: ['text'] },
+        name: nativeTools === 'read' ? 'ChatGPT via Chat On OpenCode (native read preview)'
+          : nativeTools === 'coding' ? 'ChatGPT via Chat On OpenCode (native coding preview)'
+          : 'ChatGPT via Chat On OpenCode (text only)',
+        capabilities: { tools: nativeTools !== 'off', input: ['text'], output: ['text'] },
         // OpenCode 2.1.4 reserves roughly 16k tokens for compaction; a 16k
         // context forces an auxiliary request before the first primary turn.
         limit: { context: 65536, output: 2048 },

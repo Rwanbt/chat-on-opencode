@@ -5,6 +5,7 @@ import { traceStage } from './stage-trace.mjs'
 import { BridgeError } from './control.mjs'
 import { writeSSE } from './sse-backpressure.mjs'
 import { READ_INSTRUCTIONS, validateNativeTools, readResultPrompt, parseReadCall } from './native-read.mjs'
+import { validateCodingTools, codingInstructions, codingResultPrompt, parseCodingCall } from './native-tools.mjs'
 import { plainMessages, completedTranscriptAnchor, continuationWithTranscript } from './transcript-handoff.mjs'
 
 // Deterministic names survive restart; never infer session identity from prompt text.
@@ -79,13 +80,18 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
   traceStage('gateway_turn_received')
   if (!sessionKey || sessionKey.length > 256 || /[\r\n]/.test(sessionKey)) throw new BridgeError('opencode_session_id_required', 422)
   if (!messageKey || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
-  const readEnabled = validateNativeTools(request, nativeTools === 'read')
+  const coding = nativeTools === 'coding' ? validateCodingTools(request) : null
+  const readEnabled = coding ? false : validateNativeTools(request, nativeTools === 'read')
+  const toolEnabled = readEnabled || Boolean(coding?.enabled)
   if (request.model !== 'chatgpt-default') throw new BridgeError('model_not_configured', 422)
   if (kind !== 'primary') throw new BridgeError('auxiliary_calls_not_yet_supported', 501)
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
   const sessionID = stableUUID('session:' + sessionKey)
-  const result = readResultPrompt(request.messages)
-  if (result && !readEnabled) throw new BridgeError('native_tool_result_without_consent', 403)
+  if (!toolEnabled && request.messages?.at(-1)?.role === 'tool') {
+    throw new BridgeError('native_tool_result_without_consent', 403)
+  }
+  const result = !toolEnabled ? null
+    : coding ? codingResultPrompt(request.messages, coding.names) : readResultPrompt(request.messages)
   const turnID = stableUUID('turn:' + sessionKey + ':' + messageKey + (result ? ':' + result.callId : ''))
   // Optional in-process evidence sink. Never include prompt, tokens or response
   // bytes; the callback cannot affect admission, streaming or cancellation.
@@ -98,11 +104,16 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
   const firstRecord = !result && turnCustody?.read(sessionKey)
   const originalFirst = !result && turnCustody?.isOriginal(firstRecord, messageKey)
   if (first && firstRecord && !originalFirst) throw new BridgeError('turn_first_message_pending', 409)
-  const text = previousInput ?? (result ? result.text : (first || readEnabled
+  const forcedTool = request.tool_choice === 'required' ? 'required'
+    : (request.tool_choice && typeof request.tool_choice === 'object'
+      ? request.tool_choice.function?.name ?? null : null)
+  const toolInstructions = !toolEnabled ? ''
+    : coding ? '\n\n' + codingInstructions(coding.tools, forcedTool)
+    : '\n\n' + READ_INSTRUCTIONS
+  const text = previousInput ?? (result ? result.text : (first || toolEnabled
     ? requestText(request.messages, first)
     : originalFirst ? requestText(request.messages, true)
-    : continuationWithTranscript(plainMessages(request.messages), checkpoint)) +
-    (readEnabled ? '\n\n' + READ_INSTRUCTIONS : ''))
+    : continuationWithTranscript(plainMessages(request.messages), checkpoint)) + toolInstructions)
   if (text.length > 64000 && !alreadyAdmitted) throw new BridgeError('cos_input_too_large', 413)
   if (originalFirst && firstRecord) turnCustody.verify(firstRecord, messageKey, text)
   const inputID = first || originalFirst ? sessionID : turnID
@@ -189,7 +200,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
         if (delta) {
           evidence('assistant_revision', activeTurnID, event.seq)
           textSoFar = next
-          if (!readEnabled) { await emit(delta); evidence('native_delta_emitted', activeTurnID, event.seq) }
+          if (!toolEnabled) { await emit(delta); evidence('native_delta_emitted', activeTurnID, event.seq) }
         }
       }
       if (event.kind === 'turn_end') {
@@ -217,10 +228,12 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
       }
     }
     if (!seenInput || !complete) throw new BridgeError('cos_turn_unconfirmed', 502)
-    if (readEnabled) {
+    if (toolEnabled) {
       // Delay every byte until the whole CoS turn has completed and the envelope
       // can be validated. Never stream half a forged tool call as user-visible prose.
-      const toolCall = parseReadCall(textSoFar, !result, sessionKey, messageKey)
+      const toolCall = coding
+        ? (result ? null : parseCodingCall(textSoFar, coding.names, sessionKey, messageKey))
+        : parseReadCall(textSoFar, !result, sessionKey, messageKey)
       if (toolCall) return { toolCall }
       await emit(textSoFar)
     }

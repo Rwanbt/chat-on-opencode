@@ -43,7 +43,8 @@ export class GatewayLifecycle {
         CHAT_ON_OPENCODE_RUNTIME_DATA: runtimeData,
         CHAT_ON_OPENCODE_GATEWAY_KEY: key,
         CHAT_ON_OPENCODE_PORT: String(port),
-        CHAT_ON_OPENCODE_NATIVE_TOOLS: nativeTools === 'read' ? 'read' : 'off',
+        CHAT_ON_OPENCODE_NATIVE_TOOLS: nativeTools === 'coding' ? 'coding'
+          : nativeTools === 'read' ? 'read' : 'off',
       },
     })
     traceStage('gateway_child_spawned')

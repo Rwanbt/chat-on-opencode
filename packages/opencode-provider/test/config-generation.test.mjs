@@ -85,6 +85,20 @@ test('explicit native text generates reversible OAuth-only candidate without API
   })
 })
 
+test('native coding mode advertises tools, asks per call and never forces the text-only agent', () => {
+  fixture(opts => {
+    const conf = createOpenCodeConfig({ ...opts, nativeTools: 'coding' })
+    assert.equal(conf.providers['chat-on-opencode'].models['chatgpt-default'].capabilities.tools, true)
+    assert.deepEqual(conf.permissions, [{ action: '*', resource: '*', effect: 'ask' }])
+    assert.equal(conf.agents, undefined, 'coding mode must not force the text-only agent')
+    assert.equal(conf.plugins[0].options.nativeTools, 'coding')
+    assert.equal(JSON.stringify(conf).includes('apiKey'), false)
+    assert.throws(() => createOpenCodeConfig({ ...opts, nativeTools: 'every' }), /native_tools_mode_invalid/)
+    assert.throws(() => createOpenCodeConfig({ ...opts, nativeTools: 'coding', nativeInference: 'text', nativeModelID: 'safe' }),
+      /native_inference_requires_verified_text_model/)
+  })
+})
+
 test('rejects personal alias, invalid profile, missing runtime and unsafe port', () => {
   fixture(opts => {
     assert.throws(() => createOpenCodeConfig({ ...opts, personalCoSData: opts.data }), /profile_overlaps_personal_userdata/)

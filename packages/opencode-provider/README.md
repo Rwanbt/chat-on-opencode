@@ -12,8 +12,8 @@ It follows the OpenCode 2 `providers` convention and uses its native session ide
 translate a subset of Chat Completions into CoS's local control API and now owns a separately
 launched fork process via a service-only flag. The user must still provision that fork binary,
 an independent control-enabled profile and login; no automated login is available. CoS tool-call
-parity beyond the specifically opted-in native read preview and outputs exceeding its
-provider-only redacted 64,000-character limit are not supported.
+parity beyond the explicitly opted-in native tool previews (`read` and `coding`) and outputs
+exceeding its provider-only redacted 64,000-character limit are not supported.
 Do not install this in a real OpenCode profile.
 
 ### Experimental native read tool (OpenCode 2.0.32, offline qualification)
@@ -43,6 +43,39 @@ is explicitly \`allow\`, and a \`deny\` policy blocks native execution. The mode
 side in this test is a deterministic offline fixture, not a real ChatGPT login or
 model; no production inference, authenticated ChatGPT tool decision, arbitrary
 native tools, agent delegation or user-approved sign-in has been qualified.
+
+### Experimental native coding mode (`--native-tools coding`)
+
+`read` alone cannot code. The **`coding`** level generalises the same bridge to the
+tools OpenCode declares for the turn, so the model can ask OpenCode to read a file,
+edit it, or run a command on a real project.
+
+The bridge is one call per turn, in an exact envelope:
+
+```
+<opencode-tool>{"name":"TOOL_NAME","arguments":{...}}</opencode-tool>
+```
+
+The gateway **never executes a tool**. It translates that envelope into an
+OpenAI-compatible `tool_calls` entry; OpenCode executes it under its own permission
+policy and returns the result, which is fed back as **untrusted data** that cannot
+grant permission to run anything else. The generated configuration asks for approval
+on every effect (`action: '*', effect: 'ask'`), so each call is confirmed in
+OpenCode's native permission UI.
+
+Bounds are deliberate and fail closed: at most 32 declared tools, unique names
+matching `^[A-Za-z0-9_-]{1,64}$`, a bounded schema and manifest, exactly one call per
+turn, and a call name that must be one of the tools declared for that turn. A partial,
+malformed, oversized or unauthorised envelope is **refused**, never streamed as prose and
+never silently downgraded into a no-op. Declared tools are always forwarded: dropping
+one would tell the model an effect is impossible when OpenCode would in fact execute it.
+
+This mode is **off by default** and is a capability, not an activation: it does not
+install anything into a personal profile, it does not qualify an authentic ChatGPT
+account, and the official activation path still refuses any configuration whose
+`nativeTools` is not `off`. The full decision record is in
+[`docs/adr/0002-opencode-executed-text-tool-bridge.md`](../../docs/adr/0002-opencode-executed-text-tool-bridge.md)
+and the work is tracked in issue #110.
 
 ## Portable installation layout / isolated configuration
 

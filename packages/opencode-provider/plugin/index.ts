@@ -28,7 +28,10 @@ export default Plugin.define({
     // One unpredictable bearer per plugin instance. Neither Desktop startup nor
     // OpenCode's persisted provider configuration needs an external credential.
     const key = randomBytes(32).toString('hex')
-    const readEnabled = !nativeText && option('nativeTools') === 'read'
+    const requestedTools = option('nativeTools')
+    const toolMode = nativeText ? 'off'
+      : requestedTools === 'coding' ? 'coding'
+      : requestedTools === 'read' ? 'read' : 'off'
     const port = Number(option('port') ?? '45861')
     const service = new GatewayLifecycle({
       entry: fileURLToPath(new URL('../src/server.mjs', import.meta.url)),
@@ -37,7 +40,7 @@ export default Plugin.define({
       node: option('nodeExecutable') ?? '',
       key,
       port,
-      nativeTools: readEnabled ? 'read' : 'off',
+      nativeTools: toolMode,
     })
     // A CoS 503 means the isolated browser is absent, unpaired or unavailable.
     // Repeated model steps cannot sign the user in; fail this provider turn explicitly.
@@ -45,9 +48,9 @@ export default Plugin.define({
     if (!nativeText) await ctx.session.hook('retry', event => {
       stopUnavailableGatewayRetry(event)
     }, { providerID: 'chat-on-opencode' })
-    // Only the opted-in native read definition reaches this provider. Neither CoS
-    // nor the gateway may execute tools; OpenCode's native permissions own execution.
-    await ctx.session.hook('context', event => enforceTextOnlyContext(event, readEnabled), { providerID: 'chat-on-opencode' })
+    // Only the opted-in tool contract reaches this provider. Neither CoS nor the
+    // gateway may execute tools; OpenCode's native permissions own execution.
+    await ctx.session.hook('context', event => enforceTextOnlyContext(event, toolMode), { providerID: 'chat-on-opencode' })
     await ctx.session.hook('prompt', event => {
       identities.remember(event.sessionID, event.messageID)
     })

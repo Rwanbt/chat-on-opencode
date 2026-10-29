@@ -101,6 +101,7 @@ export async function diagnoseInstalledProvider(configFile, {
     configAndBackupHashesVerified: true,
     keyMode, candidateMatches, runtimeAvailable, isolatedConsent,
     nativeReadRequested: own.nativeTools === 'read',
+    nativeCodingRequested: own.nativeTools === 'coding',
     gatewayListening, blockers,
     inferenceAuthenticated: false, activeUpgradePerformed: false,
   }
