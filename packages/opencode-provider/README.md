@@ -111,12 +111,21 @@ unattended use, and the official activation path still refuses any configuration
 `nativeTools` is not `off`. `promotionAllowed` and `activationAuthorized` stay `false`, and the
 personal activation verdict stays NO-GO (ADR-0003).
 
-The capability *has* been observed against the authentic account: the loop
-`read → patch → shell → answer` ran end to end on a disposable fixture project, in an isolated
-profile. The reproducible harness is in [`scripts/coding-smoke/`](./scripts/coding-smoke/README.md);
-it proves its own receipts and reports `SMOKE=PASS` only when the fixture was RED before the run,
-the three tool calls were executed, the test is green afterwards, the CLI exited 0 and the model
-answered.
+**What is synthetic, and what is authentic.** Everything this repository exercises offline is
+synthetic: the CoS fixture, the offline model, the fake control API. Those tests can support a
+transport claim, and nothing else (ADR-0004). Separately, one run against the user's own ChatGPT
+account was observed on a disposable fixture project, in an isolated profile: the loop
+`read → patch → shell → answer` completed end to end, the fixture really changed, and the test was
+re-run independently of the model. That is a **capability proof of one run** — not a qualification
+of the account, not a statement about unattended inference, and not an activation. The reproducible
+harness is in [`scripts/coding-smoke/`](./scripts/coding-smoke/README.md); it proves its own
+receipts and reports `SMOKE=PASS` only when the fixture was RED before the run, the three tool
+calls were executed, the test is green afterwards, the CLI exited 0 and the model answered.
+
+**One known failure is still open.** The Desktop acceptance step `native_new_session_button_not_found`
+(#112) is an intermittent failure whose cause remains **unconfirmed**: the marker its candidate
+fix would print has never appeared in the runs that passed. It is tracked in #112, not fixed, and
+it is not silently omitted here.
 
 The full decision record is in
 [`docs/adr/0002-opencode-executed-text-tool-bridge.md`](../../docs/adr/0002-opencode-executed-text-tool-bridge.md)

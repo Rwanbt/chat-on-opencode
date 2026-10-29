@@ -39,7 +39,7 @@ reference product uses, and it is the acceptance criterion (ADR-0001).
 | O-1 | Native coding mode: the bridge itself | [#110](https://github.com/Rwanbt/chat-on-opencode/issues/110) | Implemented, live-proven | — |
 | O-2 | Real-project coding smoke test (read → edit → run → observe) | [#111](https://github.com/Rwanbt/chat-on-opencode/issues/111) | Done (live, authentic) | — |
 | O-3 | Reproduce and fix the Desktop `native_new_session_button_not_found` flake | [#112](https://github.com/Rwanbt/chat-on-opencode/issues/112) | Open | local reproduction is blocked by the publisher's global process scan |
-| O-4 | Authentic ChatGPT qualification | [#113](https://github.com/Rwanbt/chat-on-opencode/issues/113) | Scopes 1–3 observed | scope 1 (text turn) is still to be recorded separately |
+| O-4 | Authentic ChatGPT qualification | [#113](https://github.com/Rwanbt/chat-on-opencode/issues/113) | Scopes 2–3 observed live | scope 1 (a standalone real text turn) is not yet recorded as such |
 | O-5 | Live promotion contract and activation-capable attestation | [#114](https://github.com/Rwanbt/chat-on-opencode/issues/114) | Open | needs a human decision to commission the contract |
 | O-6 | Native Responses function calling | [#115](https://github.com/Rwanbt/chat-on-opencode/issues/115) | Deferred | needs O-4 to qualify the route |
 | O-7 | Persist the Desktop acceptance proof where it can be re-inspected | [#116](https://github.com/Rwanbt/chat-on-opencode/issues/116) | Open | — |
@@ -70,8 +70,8 @@ Reaching that state required four cause-level fixes, each recorded in an ADR:
 **O-4 is partially observed.** The account qualification has been carried out for the scopes that
 the coding loop exercises — a real account, a real model answering, a real tool call executed by
 OpenCode, over a multi-turn session on a real fixture. What is not yet recorded is scope 1 as a
-standalone qualification record (a real *text* turn, with the account's model answering, outside
-the coding loop).
+standalone qualification record: a real *text* turn, with the account's model answering, outside
+the coding loop.
 
 **O-8 is in progress.** `packages/opencode-provider/README.md` documents the capability, the
 protocol, the ownership boundary and the limits; the harness has its own README.
