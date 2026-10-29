@@ -75,7 +75,7 @@ export async function awaitProviderReady(control, {
 }
 
 export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal,
-  nativeTools = 'off', checkpoint, resumeAfterSeq = 0, previousInput, rememberInput, turnCustody, messageFingerprint, onTerminal, onEvidence, stopReceiptTimeoutMs = 5000 } = {}) {
+  nativeTools = 'off', checkpoint, resumeAfterSeq = 0, previousInput, alreadyAdmitted = false, rememberInput, turnCustody, messageFingerprint, onTerminal, onEvidence, stopReceiptTimeoutMs = 5000 } = {}) {
   traceStage('gateway_turn_received')
   if (!sessionKey || sessionKey.length > 256 || /[\r\n]/.test(sessionKey)) throw new BridgeError('opencode_session_id_required', 422)
   if (!messageKey || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
@@ -103,7 +103,7 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
     : originalFirst ? requestText(request.messages, true)
     : continuationWithTranscript(plainMessages(request.messages), checkpoint)) +
     (readEnabled ? '\n\n' + READ_INSTRUCTIONS : ''))
-  if (text.length > 64000) throw new BridgeError('cos_input_too_large', 413)
+  if (text.length > 64000 && !alreadyAdmitted) throw new BridgeError('cos_input_too_large', 413)
   if (originalFirst && firstRecord) turnCustody.verify(firstRecord, messageKey, text)
   const inputID = first || originalFirst ? sessionID : turnID
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
@@ -128,15 +128,26 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
     sendStarted = true
     if (first && !result) turnCustody?.claimFirst(sessionKey, messageKey, text)
     if (!first && !originalFirst && !result && messageFingerprint) {
-      turnCustody?.claimFollowup(sessionKey, messageKey, messageFingerprint, text)
+      // CoS's own input projection clips a long user text, so an already
+      // admitted follow-up cannot be re-verified byte for byte. Its salted
+      // history digest still binds this native message to the durable record.
+      if (alreadyAdmitted) turnCustody?.verifyFollowup(turnCustody.readFollowup(sessionKey, messageKey), messageFingerprint)
+      else turnCustody?.claimFollowup(sessionKey, messageKey, messageFingerprint, text)
     }
-    rememberInput?.(text)
+    // Record the journal cursor this input was admitted at. A later retry of the
+    // exact same native message must resume there, never past its own terminal
+    // event: the completed-turn anchor has already advanced to that terminal seq.
+    rememberInput?.(text, resumeAfterSeq)
     // A disconnect during POST /inputs must not hold the native session lease
     // indefinitely. The deterministic input id makes a later retry idempotent.
     // Replaying the original first native message after a restart still uses
     // the *original* opening input payload. Adding sessionId on that retry
     // changes the CoS durable outbox record and breaks idempotent enqueue.
-    await abortableRead(control.send({ id: inputID, ...(first || originalFirst ? {} : { sessionId: sessionID }), text }, { signal }), signal)
+    // An already admitted follow-up recovered after restart is likewise owned by
+    // the CoS outbox: POSTing its clipped projection back would conflict.
+    if (!alreadyAdmitted) {
+      await abortableRead(control.send({ id: inputID, ...(first || originalFirst ? {} : { sessionId: sessionID }), text }, { signal }), signal)
+    }
     traceStage('input_admitted')
     evidence('input_admitted')
     if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
@@ -369,6 +380,7 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody, 
       // the same native message ID. The salted local marker binds the full
       // original native history without storing the text or credentials.
       let recoveredInput
+      let recoveredAdmitted = false
       if (!isToolResult && !priorInput && turnCustody) {
         const record = turnCustody.readFollowup(sessionKey, messageKey)
         if (record) {
@@ -379,7 +391,14 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody, 
               typeof stored.text !== 'string' || stored.text.length > 64000) {
             throw new BridgeError('cos_replay_input_unavailable', 409)
           }
-          turnCustody.verifyFollowup(record, messageFingerprint, stored.text)
+          // CoS projects outbox text with a 4000-character cap. A longer
+          // follow-up therefore comes back clipped, and its exact bytes cannot
+          // be re-derived. The input id, session, salted history digest and
+          // durable ownership are still proven, so replay it read-only instead
+          // of failing every restart forever or re-POSTing a different text.
+          recoveredAdmitted = stored.truncated === true ||
+            (Number.isSafeInteger(stored.chars) && stored.chars > stored.text.length)
+          if (!recoveredAdmitted) turnCustody.verifyFollowup(record, messageFingerprint, stored.text)
           recoveredInput = stored.text
         }
       }
@@ -411,11 +430,22 @@ export function createGateway({ control, key, nativeTools = 'off', turnCustody, 
       res.once('finish', () => {
         if (nativeSSETerminated) recordNativeSSE('native_http_response_finished')
       })
+      // A retry of an already admitted native message is a replay, not a new
+      // turn: resume at the cursor its own admission used. The durable anchor
+      // has already advanced to that turn's terminal event, so resuming from it
+      // hides the whole turn and makes every retry fail permanently. A restart
+      // loses the volatile cursor, so the session journal is replayed from its
+      // start instead; that is read-only and idempotent, never a second POST.
+      const resumeAfterSeq = priorInput
+        ? (Number.isSafeInteger(priorInput.resumeAfterSeq) ? priorInput.resumeAfterSeq : 0)
+        : recoveredInput !== undefined ? 0 : priorAnchor?.seq ?? 0
+      const alreadyAdmitted = priorInput ? priorInput.alreadyAdmitted === true : recoveredAdmitted
       const result = await runTurn(control, body, { sessionKey, messageKey, nativeTools, signal: cancel.signal,
-        checkpoint: priorAnchor?.anchor, resumeAfterSeq: priorAnchor?.seq ?? 0, previousInput: priorInput?.text ?? recoveredInput,
-        turnCustody, messageFingerprint, onTerminal: seq => { terminalSeq = seq }, onEvidence:recordGatewayEvidence,
-        rememberInput: isToolResult ? undefined : text => rememberBounded(submittedInputs, inputKey,
-          { text, messageFingerprint }), emit: async (delta) => {
+        checkpoint: priorAnchor?.anchor, resumeAfterSeq, previousInput: priorInput?.text ?? recoveredInput,
+        alreadyAdmitted, turnCustody, messageFingerprint, onTerminal: seq => { terminalSeq = seq }, onEvidence:recordGatewayEvidence,
+        rememberInput: isToolResult ? undefined : (text, admittedFromSeq) => rememberBounded(submittedInputs, inputKey,
+          { text, messageFingerprint, alreadyAdmitted,
+            resumeAfterSeq: Number.isSafeInteger(admittedFromSeq) && admittedFromSeq > 0 ? admittedFromSeq : 0 }), emit: async (delta) => {
         answer += delta
         if (stream) {
           if (!res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'close' })
