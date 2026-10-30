@@ -1,7 +1,7 @@
 # ADR-0011: One CAS owner, scoped edits, and an authorisation receipt
 
-- **Status:** Accepted; P1 (the generalised scoped-edit owner) and P2 (the format-2 scoped
-  manifest) implemented and proven on 2026-10-30
+- **Status:** Accepted; P1 (the generalised scoped-edit owner), P2 (the format-2 scoped
+  manifest) and P3 (the single-use authorisation receipt) implemented and proven on 2026-10-30
 - **Date:** 2026-10-30
 - **Deciders:** provider maintainer
 - **Relates to:** ADR-0003 (the NO-GO verdict), ADR-0004 (evidence scope)
@@ -129,17 +129,24 @@ The implementation plan (P1…P6) is in the contract, each step with the proof i
   generation, that a foreign edit survives a scoped rollback byte for byte, that format 1 keeps
   its strict pin, that an unknown format fails closed, and that a repointed, removed or
   duplicated owned entry is refused rather than repaired.
+- `src/promotion-authorisation.mjs` and `test/promotion-authorisation.test.mjs` — the P3
+  receipt: a challenge is minted and recorded in a reserved authorisation directory; a receipt
+  needs that recorded challenge, a human review, an idle process and an unmoved snapshot; each
+  claim is an exclusive create, so one challenge yields one receipt and one receipt yields one
+  publication. 11 tests cover the refusals named in the contract. The module is separate from
+  `human-draft-attestation.mjs`, whose `REVIEW_ATTESTED_ONLY` semantics are unchanged.
 - Local re-verification on 2026-10-30, with the provider code unchanged since `b9233a0`: the
   five pointer suites are green (13 tests, 12 pass, 1 skipped).
 
 ## Revisit trigger
 
-Revisit when **P3** — the single-use, expiring authorisation receipt bound to the pinned
-snapshot — is implemented and proven, because it is the first piece that can *approve* anything
-and therefore the one that needs the sharpest review. P1 and P2 are already implemented and
-proven: `publishScopedConfigEdits` publishes scoped edits under the same owner, lock, CAS and
-native rename as the pointer publication, which is now a thin caller of the shared owner; and
-the format-2 manifest verifies the config by scoped ownership instead of a whole-file digest, so
-a legitimate publication no longer disables the install's own verifier and rollback. Revisit
-earlier only if the official OpenCode exposes a supported live-reload API, which would change
+Revisit when **P4** — the transition and its `bin/` entry point — is implemented and proven.
+P3 is now implemented and proven: `src/promotion-authorisation.mjs` issues and consumes a
+single-use receipt bound to the pinned snapshot, through exclusive-create claims in a reserved
+authorisation directory, and it authorises a transition without performing one. P1 and P2 are
+also proven: `publishScopedConfigEdits` publishes scoped edits under the same owner, lock, CAS
+and native rename as the pointer publication, and the format-2 manifest verifies the config by
+scoped ownership instead of a whole-file digest. The transition is the first piece that can
+*publish*, so it needs the sharpest review, and it must still refuse while `promotionAllowed`
+is `false`. Revisit earlier only if the official OpenCode exposes a supported live-reload API, which would change
 the restart-handover decision.

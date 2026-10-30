@@ -224,6 +224,30 @@ The receipt authorises **a transition**; it never performs one, and it never set
 which stays `false` until a human authorises the transition itself (ADR-0003, decision step
 4). A receipt therefore cannot activate anything on its own.
 
+**P3 is implemented and proven** (2026-10-30). `src/promotion-authorisation.mjs` owns the
+receipt, as a module of its own: `human-draft-attestation.mjs` keeps its `REVIEW_ATTESTED_ONLY`
+semantics untouched, so review evidence and authorisation remain two distinct artefacts.
+
+The trust boundary is the **authorisation directory**, a reserved path owned by the provider:
+
+| artefact | file | guarantee |
+| --- | --- | --- |
+| the minted challenge | `<challengeId>.challenge.json` | only the process owning the directory can mint a challenge; a hand-made one is `authorisation_challenge_unknown` |
+| the one-receipt claim | `<challengeId>.issued` | at most one receipt per challenge, even under a concurrent race |
+| the receipt | `<authorisationId>.receipt.json` | its recorded bytes are compared byte for byte, so an edited receipt is `authorisation_receipt_tampered` |
+| the one-publication claim | `<authorisationId>.consumed` | at most one publication per receipt, even under a concurrent race |
+
+Every claim is made with an **exclusive create** (`O_EXCL`), so the single-use property is
+durable and race-free rather than a convention. A receipt whose snapshot moved is also voided,
+so it can never be used later. The receipt is not a signature: its authenticity comes from the
+recorded bytes in that directory, and the outer `promotionAllowed` gate still refuses every
+transition until a human authorises it separately.
+
+Its suite (`test/promotion-authorisation.test.mjs`, 11 tests) proves the four refusals the
+contract names — an expired challenge, a live process, a moved snapshot, a reused receipt — plus
+a missing human review, a hand-made challenge, a tampered receipt, an expired receipt, and the
+invariant that the receipt authorises without performing anything.
+
 ## 6. The preflight transition, and the human-authorisation point
 
 The preflight stops refusing by construction and instead refuses by **evidence**:
@@ -282,7 +306,7 @@ Each step is RED → GREEN, on this machine, with no personal profile involved.
 | --- | --- | --- |
 | **P1** | generalise the CAS owner to scoped edits | a competing edit at `before_publish` leaves the competitor's bytes intact and raises `native_cas_changed`; a scoped option edit preserves every foreign byte; an ambiguous reference refuses |
 | **P2** | format-2 manifest and upgrade-aware reader | after a publication, the install still verifies; a foreign edit made in between survives an entry-scoped rollback; an unknown format fails closed |
-| **P3** | the authorisation receipt | an expired challenge, a reused receipt, a moved snapshot and a live process each refuse |
+| **P3** | the authorisation receipt | an expired challenge, a reused receipt, a moved snapshot and a live process each refuse. **Implemented and proven** (§5, 11 tests) |
 | **P4** | the transition and its `bin/` entry point | the command exists and refuses with `promotionAllowed === false`; the refusal is machine-readable and changes nothing on disk |
 | **P5** | the preflight transition path | every pre-existing NO_GO case still returns NO_GO; the new NO_GO cases are evidence-based, not constructed |
 | **P6** | the durable-draft contract | the promotion's touched-byte set is proven to exclude the Desktop's composer state |
