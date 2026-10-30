@@ -31,6 +31,7 @@ reference product uses, and it is the acceptance criterion (ADR-0001).
 | [ADR-0008](adr/0008-bridge-speaks-first-and-the-chain-stays-open.md) | The bridge speaks first, and every turn may carry the next tool call | Accepted |
 | [ADR-0009](adr/0009-a-completed-turn-is-not-finished-until-its-final-row.md) | A completed turn is not finished until its final assistant row has been read | Accepted |
 | [ADR-0010](adr/0010-chatgpt-citation-directive-is-product-metadata.md) | ChatGPT's citation directive is product metadata, not an answer | Accepted |
+| [ADR-0011](adr/0011-one-cas-owner-and-an-authorisation-receipt.md) | One CAS owner, scoped edits, and an authorisation receipt | Accepted |
 
 ## Objectives
 
@@ -40,7 +41,7 @@ reference product uses, and it is the acceptance criterion (ADR-0001).
 | O-2 | Real-project coding smoke test (read → edit → run → observe) | [#111](https://github.com/Rwanbt/chat-on-opencode/issues/111) | Done (live, authentic) | — |
 | O-3 | Reproduce and fix the Desktop `native_new_session_button_not_found` flake | [#112](https://github.com/Rwanbt/chat-on-opencode/issues/112) | Open | local reproduction is blocked by the publisher's global process scan |
 | O-4 | Authentic ChatGPT qualification | [#113](https://github.com/Rwanbt/chat-on-opencode/issues/113) | Scopes 2–3 observed live | scope 1 (a standalone real text turn) is not yet recorded as such |
-| O-5 | Live promotion contract and activation-capable attestation | [#114](https://github.com/Rwanbt/chat-on-opencode/issues/114) | Open | needs a human decision to commission the contract |
+| O-5 | Live promotion contract and activation-capable attestation | [#114](https://github.com/Rwanbt/chat-on-opencode/issues/114) | Design written (ADR-0011, `PROMOTION_CONTRACT.md`) | P1 (the scoped-edit CAS owner) and P2 (the format-2 upgrade-aware manifest) are not implemented |
 | O-6 | Native Responses function calling | [#115](https://github.com/Rwanbt/chat-on-opencode/issues/115) | Deferred | needs O-4 to qualify the route |
 | O-7 | Persist the Desktop acceptance proof where it can be re-inspected | [#116](https://github.com/Rwanbt/chat-on-opencode/issues/116) | Open | — |
 | O-8 | Document the coding capability, its protocol and its limits | [#117](https://github.com/Rwanbt/chat-on-opencode/issues/117) | Done (documented) | — |
@@ -73,6 +74,17 @@ the coding loop exercises — a real account, a real model answering, a real too
 OpenCode, over a multi-turn session on a real fixture. What is not yet recorded is scope 1 as a
 standalone qualification record: a real *text* turn, with the account's model answering, outside
 the coding loop.
+
+**O-5 is designed, not implemented.** The audit behind #114 found that the repository already
+owns a native Win32 CAS publication mechanism, proven end to end against the actual official
+Desktop 2.1.4: it hashes the destination through its own handle and publishes with one
+`MoveFileExW`, it rewrites only the one owned `package` scalar, it refuses while a Desktop is
+running, and it rolls back byte-exactly. What is missing is narrower than the dossier's Lock-2
+wording suggests: no authorisation is bound to a publication, the format-1 manifest pins the
+whole config file (so the first publication would disable the install's own verifier and
+rollback), option-level promotion has no CAS owner, and the preflight has no transition path.
+ADR-0011 and `packages/opencode-provider/PROMOTION_CONTRACT.md` specify the contract and its
+ordered plan (P1…P6). No lock, flag or verdict changed.
 
 **O-8 is documented.** `packages/opencode-provider/README.md` states the three native tool levels,
 the envelope protocol, the ownership boundary, the bounds and how they fail, and the explicit

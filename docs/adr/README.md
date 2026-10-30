@@ -15,10 +15,11 @@ boundary exists so a later session does not re-litigate it from memory or silent
 | [0008](0008-bridge-speaks-first-and-the-chain-stays-open.md) | The bridge speaks first, and every turn may carry the next tool call | Accepted |
 | [0009](0009-a-completed-turn-is-not-finished-until-its-final-row.md) | A completed turn is not finished until its final assistant row has been read | Accepted |
 | [0010](0010-chatgpt-citation-directive-is-product-metadata.md) | ChatGPT's citation directive is product metadata, not an answer | Accepted |
+| [0011](0011-one-cas-owner-and-an-authorisation-receipt.md) | One CAS owner, scoped edits, and an authorisation receipt | Accepted |
 
 Open work that follows from these decisions is tracked in
-[`docs/OPEN-OBJECTIVES.md`](../OPEN-OBJECTIVES.md), because this repository currently has GitHub
-Issues disabled.
+[`docs/OPEN-OBJECTIVES.md`](../OPEN-OBJECTIVES.md) and, as the canonical active work state, in
+the GitHub issues of `Rwanbt/chat-on-opencode` (#110 to #118).
 
 ## Format
 
