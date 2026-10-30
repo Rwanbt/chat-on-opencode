@@ -87,3 +87,25 @@ Revisit only when a live promotion contract has been reviewed **and** an authent
 has produced durable evidence for the scope being activated. The CLI/coding scope has produced
 such evidence (issue #113, closed); the Desktop GUI scope has not. A code change alone never
 satisfies this ADR.
+
+## Amendment (2026-10-30): the transition gate is open, the candidate verdict is not
+
+The owner asked for the four activation locks to be lifted, including the personal
+installation. Done in code, with proof:
+
+- `src/promotion-transition.mjs`: `PROMOTION_ALLOWED` is now `true`. The entry point runs the
+  authorised transition (`executeAuthorisedTransition`), which consumes a single-use P3 receipt and
+  publishes the scoped edits under the P1 CAS owner. Without a receipt it refuses and changes no byte
+  (`test/promotion-transition.test.mjs`, `test/promotion-execute.test.mjs`).
+- The transition never sets `activationAuthorized`; it reports `activationAuthorized: false`.
+
+Not lifted, and why:
+
+- The candidate manifests and the CI gate (`provider-canonical-candidate.yml:39`) still say
+  `promotionAllowed: false` and `activationAuthorized: false`. Those describe the candidate build,
+  not the transition. Rewiring the candidate pipeline is a separate change and is not claimed here.
+- The personal installation has not run. OpenCode Desktop hosts the session that produces it, and
+  the preflight refuses while its processes run. The installation is to be run from a terminal after
+  OpenCode is closed, with its backup and rollback proof.
+
+Revisit: the candidate pipeline and CI gate, and the personal installation proof.

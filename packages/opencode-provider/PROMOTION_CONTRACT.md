@@ -364,7 +364,9 @@ personal profile, and neither can promote anything: the transition in P4 refuses
 ## 10. What this document does not do
 
 * It does not authorise a promotion, an activation or a personal installation.
-* It does not change `promotionAllowed` or `activationAuthorized`, which stay `false`.
+* It does not change the candidate manifests' `promotionAllowed` or `activationAuthorized`, which stay
+  `false`. The transition gate `PROMOTION_ALLOWED` was opened on 2026-10-30 (ADR-0003 amendment); the
+  transition still refuses without a single-use receipt.
 * It does not lift any of the four locks in ADR-0003. B5 and B6 describe how a future
   preflight *could* be evidence-based; the locks stay until a human decides otherwise.
 * It does not change the reference product's parity target, and it does not weaken the
