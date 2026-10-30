@@ -308,8 +308,19 @@ Each step is RED → GREEN, on this machine, with no personal profile involved.
 | **P2** | format-2 manifest and upgrade-aware reader | after a publication, the install still verifies; a foreign edit made in between survives an entry-scoped rollback; an unknown format fails closed |
 | **P3** | the authorisation receipt | an expired challenge, a reused receipt, a moved snapshot and a live process each refuse. **Implemented and proven** (§5, 11 tests) |
 | **P4** | the transition and its `bin/` entry point | the command exists and refuses with `promotionAllowed === false`; the refusal is machine-readable and changes nothing on disk |
-| **P5** | the preflight transition path | every pre-existing NO_GO case still returns NO_GO; the new NO_GO cases are evidence-based, not constructed |
-| **P6** | the durable-draft contract | the promotion's touched-byte set is proven to exclude the Desktop's composer state |
+| **P5** | the preflight transition path | every pre-existing NO_GO case still returns NO_GO; the new NO_GO cases are evidence-based, not constructed. **Blocked by P6** (below) |
+| **P6** | the durable-draft contract | the promotion's touched-byte set is proven to exclude the Desktop's composer state. **Blocked: not established** (below) |
+
+**P5 and P6 status (2026-10-30): blocked, NO-GO.** The preflight still refuses with
+`unsent_gui_drafts_not_proven_durable`, and its suite (`test/activation-preflight.test.mjs`, 5 tests)
+passes unchanged. The touched-byte set of a promotion is measurable: `opencode.jsonc` (two scoped
+entries), the format-2 manifest and the provider's own generation directories. Excluding the
+Desktop's composer state from that set, though, requires locating where the Desktop stores
+unsent composers and proving that a promotion never reads or writes there. That location has not
+been measured. Inspecting the Desktop's personal state to find it is outside the scope this
+contract allows, so the property cannot be established. Under §6 the draft reason therefore
+stays, and the result stays `NO_GO`. Removing the reason on a declared allowlist alone would be
+the construction this contract forbids.
 
 **P1 is implemented and proven** (2026-10-30). `publishScopedConfigEdits`
 (`src/official-versioned-pointer.mjs`) publishes scoped edits under the same lock, the same
