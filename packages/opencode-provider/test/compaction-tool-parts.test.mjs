@@ -23,6 +23,18 @@ test('a coding transcript with tool calls and results is checkpointed verbatim, 
   assert.match(event.result.summary, /Extractive checkpoint, not a model-generated summary/)
 })
 
+test('an unsupported refusal names the role and part kinds, never the text', () => {
+  const event = {
+    model,
+    messages: [{ role: 'tool', content: [{ type: 'reasoning', text: 'SECRET TEXT' }] }],
+  }
+  assert.throws(() => provideExtractiveCompaction(event), error => {
+    assert.match(error.message, /compaction_unsupported_content role=tool contentKinds=reasoning/)
+    assert.ok(!error.message.includes('SECRET TEXT'))
+    return true
+  })
+})
+
 test('an unknown content part still refuses without pretending to summarise', () => {
   const event = {
     model,

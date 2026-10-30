@@ -2,6 +2,15 @@ const PROVIDER = 'chat-on-opencode'
 const ROLES = new Set(['system', 'developer', 'user', 'assistant', 'tool'])
 const TOOL_PARTS = new Set(['tool-call', 'tool-result'])
 
+/** Diagnostic only: the role and the part kinds, never the text. */
+function refusalShape(message) {
+  const content = message?.content
+  const kinds = Array.isArray(content)
+    ? content.map(part => part?.type ?? typeof part).join(',')
+    : typeof content
+  return ` role=${message?.role ?? 'none'} contentKinds=${kinds}`
+}
+
 function literalMessage(message) {
   if (!message || !ROLES.has(message.role)) throw new Error('chat_on_opencode_compaction_unsupported_content')
   let text
@@ -9,7 +18,7 @@ function literalMessage(message) {
   else if (Array.isArray(message.content) && message.content.every(part =>
     part && (part.type === 'text' && typeof part.text === 'string' || TOOL_PARTS.has(part.type)))) {
     text = message.content.map(part => part.type === 'text' ? part.text : `[${part.type}] ${JSON.stringify(part)}`).join('\n')
-  } else throw new Error('chat_on_opencode_compaction_unsupported_content')
+  } else throw new Error('chat_on_opencode_compaction_unsupported_content' + refusalShape(message))
   return `[${message.role}]\n${text}\n[/${message.role}]`
 }
 
