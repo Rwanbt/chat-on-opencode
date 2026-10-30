@@ -4,6 +4,10 @@ import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { additiveSourceDigest, additiveStatus } from './additive-install.mjs'
 import { managedSwapStatus } from '../../bin/official-managed-swap.mjs'
+import { touchedSetDisjointFrom } from '../promotion-touched-set.mjs'
+
+const defaultDesktopUserData = () =>
+  path.join(process.env.APPDATA ?? '', 'ai.opencode.desktop')
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex')
 const knownPlugins = ['Goal', 'Loop', 'Daemon', 'Scheduler']
@@ -109,7 +113,8 @@ export function observeWindows() {
  * snapshot NEVER proves that all unsent GUI composers are saved. No activation
  * is authorized by this function, even when a runner test appears quiescent.
  */
-export function inspectActivation({ config, bundle, observe = observeWindows }) {
+export function inspectActivation({ config, bundle, observe = observeWindows,
+  desktopUserData = defaultDesktopUserData() }) {
   const configPath = safeExisting(config, 'file')
   if (path.basename(configPath).toLowerCase() !== 'opencode.jsonc') {
     throw Error('preflight_config_name_invalid')
@@ -169,8 +174,11 @@ export function inspectActivation({ config, bundle, observe = observeWindows }) 
     reasons.push('additive_integrity_conflict')
   }
   if (overlayState === 'installed') reasons.push('additive_already_installed')
-  // This scope cannot see all unsent GUI composers and does not inspect them.
-  reasons.push('unsent_gui_drafts_not_proven_durable')
+  // P6: the promotion touches only the config root. Unsent composers live in the
+  // Desktop user data (drafts.sqlite). Disjoint paths make the draft question moot.
+  // Otherwise the reason stays, because the overlap cannot be ruled out.
+  const touched = touchedSetDisjointFrom(root, desktopUserData)
+  if (!touched.disjoint) reasons.push('unsent_gui_drafts_not_proven_durable')
   return {
     status: 'NO_GO',
     activationAuthorized: false,
