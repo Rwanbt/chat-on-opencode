@@ -23,7 +23,7 @@ reference product uses, and it is the acceptance criterion (ADR-0001).
 | --- | --- | --- |
 | [ADR-0001](adr/0001-real-project-coding-is-the-acceptance-criterion.md) | Real-project coding is the acceptance criterion | Accepted |
 | [ADR-0002](adr/0002-opencode-executed-text-tool-bridge.md) | Effects travel through an OpenCode-executed text→tool-call bridge | Accepted, amended by 0006, 0008, 0009 and 0010 |
-| [ADR-0003](adr/0003-personal-activation-remains-no-go.md) | Personal activation remains NO-GO | Accepted |
+| [ADR-0003](adr/0003-personal-activation-remains-no-go.md) | Personal activation remains NO-GO | Accepted, amended 2026-10-30 (evidence state only) |
 | [ADR-0004](adr/0004-evidence-scope-and-persistence.md) | Evidence scope and persistence | Accepted |
 | [ADR-0005](adr/0005-native-responses-function-calling-deferred.md) | Native Responses function calling is deferred, not abandoned | Deferred |
 | [ADR-0006](adr/0006-bridge-turn-carries-its-own-context.md) | A bridge turn carries the bridge's own context, not OpenCode's native preface | Accepted |

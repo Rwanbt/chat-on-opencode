@@ -7,7 +7,7 @@ boundary exists so a later session does not re-litigate it from memory or silent
 | --- | --- | --- |
 | [0001](0001-real-project-coding-is-the-acceptance-criterion.md) | Real-project coding is the acceptance criterion | Accepted |
 | [0002](0002-opencode-executed-text-tool-bridge.md) | Carry effects through an OpenCode-executed text→tool-call bridge | Accepted, amended by 0006, 0008, 0009 and 0010 |
-| [0003](0003-personal-activation-remains-no-go.md) | Personal activation remains NO-GO | Accepted |
+| [0003](0003-personal-activation-remains-no-go.md) | Personal activation remains NO-GO | Accepted, amended 2026-10-30 (evidence state only) |
 | [0004](0004-evidence-scope-and-persistence.md) | Evidence scope: synthetic vs authentic, and what is committed | Accepted |
 | [0005](0005-native-responses-function-calling-deferred.md) | Native Responses function calling is deferred, not abandoned | Deferred |
 | [0006](0006-bridge-turn-carries-its-own-context.md) | A bridge turn carries the bridge's own context, not OpenCode's native preface | Accepted |
