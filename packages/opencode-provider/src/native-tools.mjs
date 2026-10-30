@@ -14,9 +14,41 @@ const OPEN = '<opencode-tool>'
 const CLOSE = '</opencode-tool>'
 const TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/
 const MAX_TOOLS = 32
-const MAX_DESCRIPTION = 2048
+// A real profile declares tools with very long descriptions (a skill catalogue,
+// a whole tool catalogue). They are forwarded with an explicitly truncated
+// description rather than refused; only an absurd input stays invalid.
+const MAX_DESCRIPTION_INPUT = 200000
+const MAX_DESCRIPTION = 1024
+const TRUNCATED = ' [truncated]'
 const MAX_SCHEMA = 4096
-const MAX_MANIFEST = 24000
+const MAX_MANIFEST = 40000
+// Purely documentary keywords. Removing them never changes what a valid call is.
+const DOCUMENTARY = new Set(['description', 'examples', 'title', '$schema', '$comment'])
+
+function boundedDescription(description) {
+  if (description.length <= MAX_DESCRIPTION) return description
+  return description.slice(0, MAX_DESCRIPTION - TRUNCATED.length) + TRUNCATED
+}
+
+function withoutDocumentation(value) {
+  if (Array.isArray(value)) return value.map(withoutDocumentation)
+  if (!value || typeof value !== 'object') return value
+  const kept = {}
+  for (const [key, inner] of Object.entries(value)) {
+    // A property *named* "description" under `properties` is data, not documentation.
+    if (DOCUMENTARY.has(key) && typeof inner !== 'object') continue
+    if (key === 'examples') continue
+    kept[key] = withoutDocumentation(inner)
+  }
+  return kept
+}
+
+function boundedSchema(schema) {
+  if (JSON.stringify(schema).length <= MAX_SCHEMA) return schema
+  const compact = withoutDocumentation(schema)
+  if (JSON.stringify(compact).length > MAX_SCHEMA) invalid('native_tool_schema_too_large')
+  return compact
+}
 const MAX_ENVELOPE = 32768
 const MAX_RESULT = 64000
 
@@ -47,13 +79,12 @@ export function validateCodingTools(request) {
     const { name, description, parameters } = tool.function
     if (typeof name !== 'string' || !TOOL_NAME.test(name) || names.has(name)) invalid()
     if (description !== undefined &&
-        (typeof description !== 'string' || description.length > MAX_DESCRIPTION)) invalid()
+        (typeof description !== 'string' || description.length > MAX_DESCRIPTION_INPUT)) invalid()
     if (parameters !== undefined &&
         (parameters === null || typeof parameters !== 'object' || Array.isArray(parameters))) invalid()
-    const schema = parameters === undefined ? { type: 'object' } : parameters
-    if (JSON.stringify(schema).length > MAX_SCHEMA) invalid('native_tool_schema_too_large')
+    const schema = boundedSchema(parameters === undefined ? { type: 'object' } : parameters)
     names.add(name)
-    forwarded.push({ name, description: description ?? '', schema })
+    forwarded.push({ name, description: boundedDescription(description ?? ''), schema })
   }
   const choice = request.tool_choice
   if (choice !== undefined && choice !== 'auto' && choice !== 'required') {

@@ -302,9 +302,9 @@ test('coding instructions stay bounded and name every forwarded tool', () => {
   const text = codingInstructions(validated.tools)
   assert.match(text, /- read: read tool/)
   assert.match(text, /- bash: bash tool/)
-  assert.ok(text.length <= 24000)
+  assert.ok(text.length <= 40000)
   assert.throws(() => codingInstructions(
-    Array.from({ length: 6 }, (_, i) => ({ name: 't' + i, description: 'd', schema: { x: 'y'.repeat(4096) } }))),
+    Array.from({ length: 11 }, (_, i) => ({ name: 't' + i, description: 'd', schema: { x: 'y'.repeat(4096) } }))),
     /native_tools_manifest_too_large/)
 })
 
