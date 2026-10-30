@@ -81,7 +81,7 @@ The design does **not** add a second promotion mechanism. The proven native owne
 "a set of scoped JSONC edits", and the existing pointer publication becomes a thin caller of
 it. The edit computation already exists in `src/official-native-activation.mjs:61-99`; the
 publication half already exists in `src/official-versioned-pointer.mjs:218-244`. The contract
-joins them.
+joins them. **P1 implements this generalisation; P2 does not exist yet.**
 
 ### 3.2 The transition, in order
 
@@ -267,6 +267,17 @@ Each step is RED → GREEN, on this machine, with no personal profile involved.
 | **P4** | the transition and its `bin/` entry point | the command exists and refuses with `promotionAllowed === false`; the refusal is machine-readable and changes nothing on disk |
 | **P5** | the preflight transition path | every pre-existing NO_GO case still returns NO_GO; the new NO_GO cases are evidence-based, not constructed |
 | **P6** | the durable-draft contract | the promotion's touched-byte set is proven to exclude the Desktop's composer state |
+
+**P1 is implemented and proven** (2026-10-30). `publishScopedConfigEdits`
+(`src/official-versioned-pointer.mjs`) publishes scoped edits under the same lock, the same
+quiescence census, the same CAS pin and the same native rename as the pointer publication,
+which is now a thin caller of the shared owner. Its suite
+(`test/official-versioned-pointer-scoped-edits.test.mjs`) proves that a scoped option edit
+preserves every foreign byte and is byte-exactly reversible, that a competing edit at
+`before_publish` leaves the competitor's bytes intact, and that a moved config, an
+overlapping edit, an edit that would break the JSONC, an invalid UTF-8 config, a config
+starting with a BOM (its offsets would otherwise depend on the caller's decoder) and a
+pending managed transition are each refused before a byte is written. P2 remains open.
 
 P1 and P2 are the two that unblock everything else. Neither touches a lock, a flag or a
 personal profile, and neither can promote anything: the transition in P4 refuses until

@@ -41,7 +41,7 @@ reference product uses, and it is the acceptance criterion (ADR-0001).
 | O-2 | Real-project coding smoke test (read → edit → run → observe) | [#111](https://github.com/Rwanbt/chat-on-opencode/issues/111) | Done (live, authentic) | — |
 | O-3 | Reproduce and fix the Desktop `native_new_session_button_not_found` flake | [#112](https://github.com/Rwanbt/chat-on-opencode/issues/112) | Open | local reproduction is blocked by the publisher's global process scan |
 | O-4 | Authentic ChatGPT qualification | [#113](https://github.com/Rwanbt/chat-on-opencode/issues/113) | Scopes 2–3 observed live | scope 1 (a standalone real text turn) is not yet recorded as such |
-| O-5 | Live promotion contract and activation-capable attestation | [#114](https://github.com/Rwanbt/chat-on-opencode/issues/114) | Design written (ADR-0011, `PROMOTION_CONTRACT.md`) | P1 (the scoped-edit CAS owner) and P2 (the format-2 upgrade-aware manifest) are not implemented |
+| O-5 | Live promotion contract and activation-capable attestation | [#114](https://github.com/Rwanbt/chat-on-opencode/issues/114) | Design written (ADR-0011, `PROMOTION_CONTRACT.md`); P1 proven | P2 (the format-2 upgrade-aware manifest) is not implemented |
 | O-6 | Native Responses function calling | [#115](https://github.com/Rwanbt/chat-on-opencode/issues/115) | Deferred | needs O-4 to qualify the route |
 | O-7 | Persist the Desktop acceptance proof where it can be re-inspected | [#116](https://github.com/Rwanbt/chat-on-opencode/issues/116) | Open | — |
 | O-8 | Document the coding capability, its protocol and its limits | [#117](https://github.com/Rwanbt/chat-on-opencode/issues/117) | Done (documented) | — |
@@ -85,6 +85,16 @@ whole config file (so the first publication would disable the install's own veri
 rollback), option-level promotion has no CAS owner, and the preflight has no transition path.
 ADR-0011 and `packages/opencode-provider/PROMOTION_CONTRACT.md` specify the contract and its
 ordered plan (P1…P6). No lock, flag or verdict changed.
+
+**P1 is implemented and proven** (2026-10-30): `publishScopedConfigEdits` publishes scoped
+edits under the same lock, quiescence census, CAS pin and native rename as the pointer
+publication, which is now a thin caller of the shared owner. Its suite proves that a scoped
+option edit preserves every foreign byte and is byte-exactly reversible, that a competing
+edit at the last pre-rename checkpoint leaves the competitor's bytes intact, and that a moved
+config, an overlapping edit, an edit that would break the JSONC, an invalid UTF-8 config, a
+BOM config and a pending managed transition are each refused before a byte is written.
+**P2** — the format-2 upgrade-aware manifest, without which a legitimate publication would
+disable the install's own verifier and rollback — remains open.
 
 **O-8 is documented.** `packages/opencode-provider/README.md` states the three native tool levels,
 the envelope protocol, the ownership boundary, the bounds and how they fail, and the explicit

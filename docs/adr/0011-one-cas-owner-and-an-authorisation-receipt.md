@@ -1,6 +1,6 @@
 # ADR-0011: One CAS owner, scoped edits, and an authorisation receipt
 
-- **Status:** Accepted
+- **Status:** Accepted; P1 (the generalised scoped-edit owner) implemented and proven on 2026-10-30
 - **Date:** 2026-10-30
 - **Deciders:** provider maintainer
 - **Relates to:** ADR-0003 (the NO-GO verdict), ADR-0004 (evidence scope)
@@ -122,7 +122,9 @@ The implementation plan (P1…P6) is in the contract, each step with the proof i
 
 ## Revisit trigger
 
-Revisit when P1 and P2 are implemented and proven — the generalised scoped-edit owner and the
-format-2 manifest — because they are the two steps that unblock the rest. Revisit earlier
-only if the official OpenCode exposes a supported live-reload API, which would change the
-restart-handover decision.
+Revisit when **P2** — the format-2 upgrade-aware manifest — is implemented and proven, because
+together with P1 it unblocks the rest of the transition. P1 is already implemented and proven:
+`publishScopedConfigEdits` publishes scoped edits under the same owner, lock, CAS and native
+rename as the pointer publication, which is now a thin caller of the shared owner. Revisit
+earlier only if the official OpenCode exposes a supported live-reload API, which would change
+the restart-handover decision.

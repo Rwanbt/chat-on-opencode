@@ -121,12 +121,13 @@ function noManagedTransition(config) {
   const dir = path.dirname(config)
   if (managedMarkers.some(name => existsSync(path.join(dir, name)))) refuse('managed_transition_pending')
 }
-function pointer(bytes, expectedPackage) {
-  // Buffer.toString() silently replaces invalid UTF-8. Never turn a foreign
-  // user's malformed byte into U+FFFD while rewriting our one package path.
-  let source
-  try { source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) }
+// Buffer.toString() silently replaces invalid UTF-8. Never turn a foreign
+// user's malformed byte into U+FFFD while rewriting our own scoped entries.
+function configText(bytes) {
+  try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) }
   catch { refuse('invalid_utf8') }
+}
+function packageScalar(source, expectedPackage) {
   const root = readJSONC(source)
   const plugins = root.members.find(item => item.key === 'plugins')?.node
   if (plugins?.type !== 'array') refuse('config_shape')
@@ -142,13 +143,27 @@ function pointer(bytes, expectedPackage) {
     if (value === expectedPackage) matches.push(pkg)
   }
   if (matches.length !== 1) refuse(matches.length ? 'ambiguous_config_reference' : 'pointer_mismatch')
-  return { source, package: expectedPackage, offset: matches[0] }
+  return matches[0]
 }
-function replaced(found, nextPath) {
-  // The JSONC parser captures scalar start/end offsets. Preserve every other
-  // byte, including comments, trailing commas, CRLF and foreign plugin values.
-  const { source, offset } = found
-  return source.slice(0, offset.start) + JSON.stringify(nextPath) + source.slice(offset.end)
+/** Apply scoped edits over one text, highest offset first. Overlapping or
+ * out-of-range edits are refused: the result could not be what the caller meant.
+ */
+function applyEdits(source, edits) {
+  if (!Array.isArray(edits) || !edits.length) refuse('edit_invalid')
+  const ordered = edits.map(edit => {
+    if (!edit || typeof edit.data !== 'string' || !Number.isSafeInteger(edit.at) ||
+        !Number.isSafeInteger(edit.end) || edit.at < 0 || edit.end < edit.at ||
+        edit.end > source.length) refuse('edit_invalid')
+    return edit
+  }).sort((a, b) => b.at - a.at)
+  let cursor = source.length
+  for (const edit of ordered) {
+    if (edit.end > cursor) refuse('edit_invalid')
+    cursor = edit.at
+  }
+  let result = source
+  for (const edit of ordered) result = result.slice(0, edit.at) + edit.data + result.slice(edit.end)
+  return result
 }
 // A PID alone is not a lock identity: Windows can reuse it after the writer
 // crashes. Bind abandoned-lock recovery to the OS process creation timestamp.
@@ -190,7 +205,7 @@ function createLock(file, owner) {
 function releaseOwned(file, owner) {
   if (existsSync(file) && readFileSync(file).equals(Buffer.from(JSON.stringify(owner)))) rmSync(file)
 }
-function abandonedLock(config, lock, recoverLock, configSha, from, to, fromSha, toSha, probe) {
+function abandonedLock(config, lock, recoverLock, configSha, extraCheck, probe) {
   // The recovery marker keeps compliant publishers from acquiring the path
   // during the one stale-lock removal. It is never evidence that a writer died.
   const recoveryOwner = lockOwner()
@@ -208,8 +223,8 @@ function abandonedLock(config, lock, recoverLock, configSha, from, to, fromSha, 
     if (currentStart === owner.start) refuse('lock_owner_active')
     // A different creation timestamp proves PID reuse; MISSING proves exit.
     idle(probe)
-    if (sha(readFileSync(config)) !== configSha || candidateDigest(from) !== fromSha ||
-      candidateDigest(to) !== toSha || !readFileSync(lock).equals(original)) refuse('cas_changed')
+    if (sha(readFileSync(config)) !== configSha || !readFileSync(lock).equals(original)) refuse('cas_changed')
+    extraCheck?.()
     rmSync(lock)
   } finally {
     releaseOwned(recoverLock, recoveryOwner)
@@ -242,14 +257,15 @@ function atomic(file, bytes, expectedSha, probe, fault) {
     fault?.('after_publish')
   } finally { if (fd !== undefined) closeSync(fd); if (existsSync(tmp)) rmSync(tmp) }
 }
-/** Caller supplies versioned immutable directories and an exact config CAS.
- * Both generations remain on disk. No active reload/activation is authorized.
+/** The one publication owner: one lock, one quiescence census, one CAS pin,
+ * one native rename. `plan` turns the pinned bytes into the intended bytes;
+ * `extraCheck` re-proves whatever else the caller owns.
  */
-export function publishRestartOnlyPointer(config, from, to, { configSha, fromSha, toSha,
-  probe = spawnSync, fault } = {}) {
+function publishUnderOwner(config, { configSha, probe, fault, prepare, extraCheck, plan }) {
   if (process.platform !== 'win32') refuse('windows_only')
-  safeFile(config); safeDir(from); safeDir(to)
-  if (![configSha,fromSha,toSha].every(v => hex.test(v ?? ''))) refuse('cas_missing')
+  safeFile(config)
+  prepare?.()
+  if (!hex.test(configSha ?? '')) refuse('cas_missing')
   noManagedTransition(config)
   const lock = path.join(path.dirname(config), '.chat-on-opencode-versioned-pointer.lock')
   const recoverLock = lock + '.recover'
@@ -259,23 +275,71 @@ export function publishRestartOnlyPointer(config, from, to, { configSha, fromSha
     try { createLock(lock, owner) }
     catch (error) {
       if (error?.code !== 'EEXIST') throw error
-      abandonedLock(config, lock, recoverLock, configSha, from, to, fromSha, toSha, probe)
+      abandonedLock(config, lock, recoverLock, configSha, extraCheck, probe)
       createLock(lock, owner)
     }
     if (existsSync(recoverLock)) refuse('recovery_active')
     idle(probe)
     noManagedTransition(config)
     const old = readFileSync(config)
-    if (sha(old) !== configSha || candidateDigest(from) !== fromSha || candidateDigest(to) !== toSha) refuse('cas_changed')
-    const fromPath = path.join(from, 'plugin'), toPath = path.join(to, 'plugin')
-    const next = Buffer.from(replaced(pointer(old, fromPath), toPath))
-    pointer(next, toPath)
+    if (sha(old) !== configSha) refuse('cas_changed')
+    extraCheck?.()
+    const next = plan(old)
     idle(probe)
-    if (sha(readFileSync(config)) !== configSha || candidateDigest(from) !== fromSha || candidateDigest(to) !== toSha) refuse('cas_changed')
+    if (sha(readFileSync(config)) !== configSha) refuse('cas_changed')
+    extraCheck?.()
     atomic(config, next, configSha, probe, fault)
     return { status: 'RESTART_REQUIRED_ONLY', promotionAllowed: false, activationAuthorized: false,
       previousConfigSha256: configSha, publishedConfigSha256: sha(next), publishMethod: PUBLISH_METHOD }
   } finally { releaseOwned(lock, owner) }
+}
+
+/** Caller supplies versioned immutable directories and an exact config CAS.
+ * Both generations remain on disk. No active reload/activation is authorized.
+ */
+export function publishRestartOnlyPointer(config, from, to, { configSha, fromSha, toSha,
+  probe = spawnSync, fault } = {}) {
+  return publishUnderOwner(config, {
+    configSha, probe, fault,
+    prepare: () => {
+      safeDir(from); safeDir(to)
+      if (![configSha,fromSha,toSha].every(v => hex.test(v ?? ''))) refuse('cas_missing')
+    },
+    extraCheck: () => {
+      if (candidateDigest(from) !== fromSha || candidateDigest(to) !== toSha) refuse('cas_changed')
+    },
+    plan: old => {
+      const fromPath = path.join(from, 'plugin'), toPath = path.join(to, 'plugin')
+      const source = configText(old)
+      const scalar = packageScalar(source, fromPath)
+      // The JSONC parser captures scalar start/end offsets. Preserve every
+      // other byte, including comments, trailing commas, CRLF and foreign values.
+      const next = applyEdits(source, [{ at: scalar.start, end: scalar.end, data: JSON.stringify(toPath) }])
+      packageScalar(next, toPath)
+      return Buffer.from(next, 'utf8')
+    },
+  })
+}
+
+/** Publish scoped edits to the config under the same owner, the same lock and
+ * the same CAS. The edits are text offsets over the exact bytes whose digest
+ * is `configSha`; any other config is refused before a byte is written.
+ *
+ * A config that starts with a BOM is refused: the caller's offsets are only
+ * unambiguous when every decoder sees the same text, and the BOM is exactly
+ * the byte whose presence or absence changes those offsets.
+ */
+export function publishScopedConfigEdits(config, edits, { configSha, probe = spawnSync, fault } = {}) {
+  return publishUnderOwner(config, {
+    configSha, probe, fault,
+    plan: old => {
+      const source = configText(old)
+      if (source.startsWith('\uFEFF')) refuse('bom_requires_manual_review')
+      const next = applyEdits(source, edits)
+      try { readJSONC(next) } catch { refuse('edit_invalid') }
+      return Buffer.from(next, 'utf8')
+    },
+  })
 }
 /** Crash recovery is read-only: old or new config, never intermediate bytes. */
 export function inspectRestartOnlyPointer(config, oldSha, newSha) {
