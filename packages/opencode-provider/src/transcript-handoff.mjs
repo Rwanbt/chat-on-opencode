@@ -8,7 +8,24 @@ const hash = text => createHash('sha256').update(text).digest('hex')
 // foreign-provider output simply because it precedes the current user message.
 export function plainMessages(messages) {
   if (!Array.isArray(messages) || !messages.length) throw new BridgeError('messages_required', 400)
+  const plain = plainHistory(messages)
+  // Only history may carry a tool exchange; a request never ends with one here.
+  if (plain.at(-1).role === 'tool') throw new BridgeError('unsupported_chat_content', 422)
+  return plain
+}
+
+function plainHistory(messages) {
   return messages.map(part => {
+    // A coding turn leaves its tool exchange in the history of the next request.
+    // It is kept as a `tool` record: every task and anchor reads only user and
+    // assistant text, so the exchange is carried, never presented as dialogue.
+    if (part?.role === 'tool') {
+      return { role: 'tool', content: typeof part.content === 'string' ? part.content : JSON.stringify(part.content ?? null) }
+    }
+    if (part?.role === 'assistant' && part.content == null && Array.isArray(part.tool_calls) && part.tool_calls.length) {
+      return { role: 'tool', content: part.tool_calls.map(call => '<opencode-tool>' +
+        JSON.stringify({ name: call?.function?.name, arguments: call?.function?.arguments }) + '</opencode-tool>').join('\n') }
+    }
     if (!['system', 'developer', 'user', 'assistant'].includes(part?.role)) throw new BridgeError('unsupported_chat_content', 422)
     const content = typeof part.content === 'string' ? part.content
       : Array.isArray(part.content) && part.content.length > 0 &&
