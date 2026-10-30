@@ -1,13 +1,14 @@
 const PROVIDER = 'chat-on-opencode'
 const ROLES = new Set(['system', 'developer', 'user', 'assistant', 'tool'])
+const TOOL_PARTS = new Set(['tool-call', 'tool-result'])
 
 function literalMessage(message) {
   if (!message || !ROLES.has(message.role)) throw new Error('chat_on_opencode_compaction_unsupported_content')
   let text
   if (typeof message.content === 'string') text = message.content
   else if (Array.isArray(message.content) && message.content.every(part =>
-    part && part.type === 'text' && typeof part.text === 'string')) {
-    text = message.content.map(part => part.text).join('')
+    part && (part.type === 'text' && typeof part.text === 'string' || TOOL_PARTS.has(part.type)))) {
+    text = message.content.map(part => part.type === 'text' ? part.text : `[${part.type}] ${JSON.stringify(part)}`).join('\n')
   } else throw new Error('chat_on_opencode_compaction_unsupported_content')
   return `[${message.role}]\n${text}\n[/${message.role}]`
 }
