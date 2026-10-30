@@ -65,7 +65,7 @@ function listener(port, timeout = 750) {
 export async function diagnoseInstalledProvider(configFile, {
   bundleDir, checkSocket = false, socketProbe = listener,
 } = {}) {
-  const { config, managed, manifest } = inspectInstalledProvider(configFile)
+  const { config, managed, manifest, configDrift } = inspectInstalledProvider(configFile)
   const own = extractOwnedEntry(readFileSync(config, 'utf8'), managed)
   const source = readFileSync(path.join(managed, 'plugin', 'index.ts'), 'utf8')
   const keyMode = classifyGatewayPlugin(source)
@@ -98,9 +98,16 @@ export async function diagnoseInstalledProvider(configFile, {
     status: blockers.length ? 'NO_GO_PROVIDER_NOT_READY' : 'PREFLIGHT_ONLY',
     cliVersionAtInstall: manifest.version,
     providerRegistered: true,
-    configAndBackupHashesVerified: true,
+    // The backup is verified by digest and the config by scoped ownership: the
+    // two entries this provider owns must still be present and still be ours.
+    // A foreign edit elsewhere in the config is reported, never treated as
+    // damage to the installation.
+    backupHashVerified: true,
+    configOwnershipVerified: true,
+    configDrift,
     keyMode, candidateMatches, runtimeAvailable, isolatedConsent,
     nativeReadRequested: own.nativeTools === 'read',
+    nativeCodingRequested: own.nativeTools === 'coding',
     gatewayListening, blockers,
     inferenceAuthenticated: false, activeUpgradePerformed: false,
   }

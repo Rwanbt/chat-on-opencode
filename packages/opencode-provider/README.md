@@ -12,8 +12,8 @@ It follows the OpenCode 2 `providers` convention and uses its native session ide
 translate a subset of Chat Completions into CoS's local control API and now owns a separately
 launched fork process via a service-only flag. The user must still provision that fork binary,
 an independent control-enabled profile and login; no automated login is available. CoS tool-call
-parity beyond the specifically opted-in native read preview and outputs exceeding its
-provider-only redacted 64,000-character limit are not supported.
+parity beyond the explicitly opted-in native tool previews (`read` and `coding`) and outputs
+exceeding its provider-only redacted 64,000-character limit are not supported.
 Do not install this in a real OpenCode profile.
 
 ### Experimental native read tool (OpenCode 2.0.32, offline qualification)
@@ -43,6 +43,93 @@ is explicitly \`allow\`, and a \`deny\` policy blocks native execution. The mode
 side in this test is a deterministic offline fixture, not a real ChatGPT login or
 model; no production inference, authenticated ChatGPT tool decision, arbitrary
 native tools, agent delegation or user-approved sign-in has been qualified.
+
+### Native tool levels (`--native-tools off | read | coding`)
+
+The provider has three native tool levels. The default stays **text-only**.
+
+| Level | What the model may ask OpenCode to do | Envelope |
+| --- | --- | --- |
+| `off` | nothing; the model answers in prose | — |
+| `read` | the single native `read({path})` tool | `<opencode-read>{…}</opencode-read>` |
+| `coding` | every tool OpenCode declared for the turn | `<opencode-tool>{"name":"TOOL_NAME","arguments":{…}}</opencode-tool>` |
+
+`read` alone cannot code: a model that can only read dictates text a human must apply by hand.
+The **`coding`** level generalises the same bridge to the tools OpenCode declares, so the model can
+ask OpenCode to read a file, edit it, or run a command on a real project.
+
+#### The protocol
+
+One call per turn, in an exact envelope, and **nothing else** in the answer:
+
+```
+<opencode-tool>{"name":"TOOL_NAME","arguments":{...}}</opencode-tool>
+```
+
+The envelope keys are exactly `arguments` and `name`. The name must be one of the tools declared
+for that turn. The bridge composes the turn itself — protocol, worked example, manifest, project
+context, then the task — so the model always reads the protocol first; OpenCode's native system
+preface is not forwarded in this mode (ADR-0006, ADR-0008).
+
+#### The ownership boundary
+
+**The gateway never executes a tool.** It translates a completed assistant text into an
+OpenAI-compatible `tool_calls` entry; OpenCode executes that call under its own permission policy
+and returns the result. The result is fed back as **untrusted data**: it cannot grant permission
+to run anything else, and a tool result that arrives without a matching consent is refused with
+`native_tool_result_without_consent`. The generated configuration asks for approval on every
+effect (`action: '*', resource: '*', effect: 'ask'`), so each call is confirmed in OpenCode's native
+permission UI.
+
+#### Bounds, and how they fail
+
+Bounds are deliberate and fail closed:
+
+| Bound | Value |
+| --- | --- |
+| declared tools per turn | ≤ 32, names unique, matching `^[A-Za-z0-9_-]{1,64}$` |
+| tool description | ≤ 2048 characters |
+| parameters schema | an object, ≤ 4096 characters |
+| manifest | ≤ 24 000 characters |
+| envelope arguments | ≤ 32 768 characters |
+| tool result folded back | ≤ 64 000 characters |
+| calls per answer | exactly one |
+
+A partial, malformed, oversized or unauthorised envelope is **refused**, never streamed as prose
+and never silently downgraded into a no-op. Declared tools are always forwarded: dropping one
+would tell the model an effect is impossible when OpenCode would in fact execute it.
+
+Two further rules come from the live account and are recorded in their own ADRs: a completed turn
+is not finished until its final assistant row has been read (ADR-0009), and ChatGPT's own inline
+citation directive is product metadata, not an answer (ADR-0010).
+
+#### What this mode is, and is not
+
+This mode is **off by default** and is a capability, not an activation. It does not install
+anything into a personal profile, it does not qualify an authentic ChatGPT account for
+unattended use, and the official activation path still refuses any configuration whose
+`nativeTools` is not `off`. `promotionAllowed` and `activationAuthorized` stay `false`, and the
+personal activation verdict stays NO-GO (ADR-0003).
+
+**What is synthetic, and what is authentic.** Everything this repository exercises offline is
+synthetic: the CoS fixture, the offline model, the fake control API. Those tests can support a
+transport claim, and nothing else (ADR-0004). Separately, one run against the user's own ChatGPT
+account was observed on a disposable fixture project, in an isolated profile: the loop
+`read → patch → shell → answer` completed end to end, the fixture really changed, and the test was
+re-run independently of the model. That is a **capability proof of one run** — not a qualification
+of the account, not a statement about unattended inference, and not an activation. The reproducible
+harness is in [`scripts/coding-smoke/`](./scripts/coding-smoke/README.md); it proves its own
+receipts and reports `SMOKE=PASS` only when the fixture was RED before the run, the three tool
+calls were executed, the test is green afterwards, the CLI exited 0 and the model answered.
+
+**One known failure is still open.** The Desktop acceptance step `native_new_session_button_not_found`
+(#112) is an intermittent failure whose cause remains **unconfirmed**: the marker its candidate
+fix would print has never appeared in the runs that passed. It is tracked in #112, not fixed, and
+it is not silently omitted here.
+
+The full decision record is in
+[`docs/adr/0002-opencode-executed-text-tool-bridge.md`](../../docs/adr/0002-opencode-executed-text-tool-bridge.md)
+and its amendments 0006, 0008, 0009 and 0010; the work is tracked in issues #110 and #111.
 
 ## Portable installation layout / isolated configuration
 
@@ -77,7 +164,10 @@ and streams a native answer without `CHAT_ON_OPENCODE_GATEWAY_KEY` in the launch
 environment. The plugin generates a fresh 256-bit bearer in memory on setup and passes
 it only to its owned gateway process and the provider-scoped native request hooks.
 The generator deliberately stores neither an `env` credential dependency nor an `apiKey`
-or bearer token in OpenCode configuration. Desktop GUI selection has not yet been tested.
+or bearer token in OpenCode configuration. Desktop GUI selection has been exercised on official
+OpenCode Desktop 2.1.4 against an isolated synthetic profile (no ChatGPT account): first turn,
+same-session follow-up, cold and hot restart, and gateway-to-renderer correlation all passed.
+Authentic ChatGPT credentials have **not** been exercised through the Desktop GUI.
 Any existing personal CoS profile can be explicitly guarded with `--personal-cos-data` pointing
 to its existing directory. The provider service rechecks isolation when launched.
 

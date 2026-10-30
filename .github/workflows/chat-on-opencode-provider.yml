@@ -14,6 +14,7 @@ on:
       - 'scripts/verify-official-desktop-bundle.ps1'
       - 'scripts/probe-official-desktop-window.ps1'
       - 'test/provider-official-desktop-gui.e2e.mjs'
+      - 'test/provider-official-desktop-reader.e2e.mjs'
       - 'test/provider-window-probe-runner.test.mjs'
       - 'test/provider-additive-busy-process-exclusive.test.mjs'
       - 'scripts/verify-provider-packaged-sign-in.mjs'
@@ -130,8 +131,27 @@ jobs:
         run: npm run dist:provider:win:x64
       - name: RED gate - real packaged gateway under standalone CLI-like environment
         run: node test/provider-packaged-gateway-env.e2e.mjs
+      - name: Verify payload-free SSE counter under split TCP chunks
+        run: node --test test/sse-framing.test.mjs
       - name: Qualify hidden service and explicit isolated sign-in against packaged Electron
         run: node scripts/verify-provider-packaged-sign-in.mjs
+      - name: Cold boot real packaged broker in a newly consented disposable profile (offline)
+        run: node scripts/verify-provider-cold-broker.mjs
+      - name: Install official OpenCode 2.2.0 for fresh packaged Electron launch
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:RUNNER_TEMP 'chat-on-opencode-cli-220'
+          npm install --prefix $prefix --no-save --no-audit --no-fund '@opencode/cli@2.2.0'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Official OpenCode 2.2.0 launches the Electron artifact built in this job
+        shell: pwsh
+        run: |
+          $prefix = Join-Path $env:RUNNER_TEMP 'chat-on-opencode-cli-220'
+          $env:COO_OFFLINE_OFFICIAL_CLI = Join-Path $prefix 'node_modules/@opencode/cli/bin/opencode.exe'
+          $env:COO_OFFLINE_PROVIDER_EXE = (Resolve-Path -LiteralPath 'release/provider/win-unpacked/Chat On OpenCode Provider.exe').Path
+          if (-not (Test-Path -LiteralPath $env:COO_OFFLINE_OFFICIAL_CLI)) { throw 'Official CLI 2.2.0 missing' }
+          node --test packages/opencode-provider/test/official-cli-220-packaged-electron.offline.e2e.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install official OpenCode 2.1.4 in runner temp only
         shell: pwsh
         run: |
@@ -186,7 +206,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cli_version: ['2.0.32', '2.1.4']
+        cli_version: ['2.0.32', '2.1.4', '2.2.0']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -233,6 +253,12 @@ jobs:
         run: |
           ./scripts/verify-official-desktop-bundle.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Offline restart-only versioned config pointer through authentic Desktop bundled CLI
+        shell: pwsh
+        run: |
+          $env:CHAT_ON_OPENCODE_TEST_OFFICIAL_CLI = $env:CHAT_ON_OPENCODE_TEST_CLI
+          node --test packages/opencode-provider/test/official-immutable-cli.e2e.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Bundled Desktop CLI 2.1.4 starts real packaged provider Electron (unpaired)
         shell: pwsh
         run: |
@@ -262,5 +288,10 @@ jobs:
         shell: pwsh
         run: |
           node test/provider-official-desktop-gui.e2e.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Real official Desktop GUI proves idle-gated versioned A→B pointer, hot reader and cold rollback
+        shell: pwsh
+        run: |
+          node test/provider-official-desktop-reader.e2e.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

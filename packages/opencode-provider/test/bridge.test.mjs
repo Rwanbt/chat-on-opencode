@@ -3,6 +3,7 @@ import { createServer, request as httpRequest } from 'node:http'
 import { EventEmitter } from 'node:events'
 import { once } from 'node:events'
 import { mkdtemp, writeFile, readFile, rm, mkdir, realpath } from 'node:fs/promises'
+import { writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
@@ -15,6 +16,8 @@ import { startService } from '../src/service.mjs'
 import { MessageIdentity } from '../plugin/message-identity.mjs'
 import { enforceTextOnlyContext } from '../plugin/text-only.mjs'
 import { parseReadCall, readResultPrompt, validateNativeTools } from '../src/native-read.mjs'
+
+const validProviderConfig = JSON.parse(await readFile(new URL('./fixtures/valid-provider-config.json', import.meta.url), 'utf8'))
 
 const request = { model: 'chatgpt-default', messages: [{ role: 'user', content: 'Bonjour' }] }
 
@@ -45,6 +48,98 @@ class FakeCoS {
     yield { seq: this.outputs.length + 3, kind: 'turn_end', turnId: 'fake-current-turn', outcome: 'completed' }
   }
 }
+
+// The CoS recorder closes a generation synchronously, but its final refresh
+// crosses an async hop: `turn_end` can reach one `/events` batch and the
+// matching final assistant row the next one. The gateway must keep reading
+// for that row instead of answering with an empty turn.
+class LateFinalCoS extends FakeCoS {
+  async *events(id) {
+    yield { seq: 1, kind: 'user_message', inputId: this.sent.at(-1).id }
+    yield { seq: 2, kind: 'turn_start', turnId: 'fake-late-turn' }
+    yield { seq: 3, kind: 'turn_end', turnId: 'fake-late-turn', outcome: 'completed' }
+    yield { seq: 4, kind: 'assistant_message', turnId: 'fake-late-turn', final: true, state: 'final',
+      message: { text: 'La réponse complète.', truncated: false } }
+  }
+}
+
+test('a completed turn whose final answer arrives after turn_end is still answered', async () => {
+  const cos = new LateFinalCoS()
+  const emitted = []
+  const text = await runTurn(cos, request, {
+    sessionKey: 'ses_late_final', messageKey: 'msg_late_final_001',
+    emit: (chunk) => { emitted.push(chunk) },
+  })
+  assert.equal(text, 'La réponse complète.')
+  assert.deepEqual(emitted, ['La réponse complète.'])
+})
+
+test('native Stop at terminal handoff must not publish a late successful answer', async () => {
+  const abort = new AbortController()
+  const cos = new FakeCoS(['complete answer'])
+  await assert.rejects(runTurn(cos, request, {
+    sessionKey:'ses_terminal_abort', messageKey:'msg_terminal_abort_001',
+    signal:abort.signal, emit:()=>{}, onTerminal:()=>abort.abort(),
+  }), /opencode_turn_cancelled/)
+})
+
+test('durable input POST inherits native cancellation without changing its idempotent input id', async () => {
+  const abort = new AbortController()
+  const cos = new FakeCoS()
+  let sentSignal
+  let sentID
+  cos.send = (payload, options) => {
+    sentID = payload.id
+    sentSignal = options?.signal
+    abort.abort()
+    return new Promise(() => {})
+  }
+  await assert.rejects(runTurn(cos, request, {
+    sessionKey:'ses_send_abort', messageKey:'msg_send_abort_001',
+    signal:abort.signal, emit:()=>{}, stopReceiptTimeoutMs:10,
+  }), /opencode_turn_cancelled/)
+  assert.equal(sentID, stableUUID('session:ses_send_abort'))
+  assert.equal(sentSignal, abort.signal)
+  assert.equal(sentSignal.aborted, true)
+})
+
+test('control durable input POST passes AbortSignal through its HTTP transport', async () => {
+  let observed
+  const control = new CoSControl({ directory:path.join(os.tmpdir(), 'cos-transport-test'),
+    fetcher:async (_url, init) => {
+      observed = init.signal
+      return new Response(JSON.stringify({ input:{ delivery:'pending' } }), { status:202 })
+    } })
+  control.base='http://127.0.0.1:1'
+  control.token='test-only'
+  const abort = new AbortController()
+  await control.send({ id:'immutable-id', text:'test-only' }, { signal:abort.signal })
+  assert.notEqual(observed, abort.signal, 'native signal must not disable the HTTP deadline')
+  assert.equal(observed.aborted, false)
+  abort.abort()
+  assert.equal(observed.aborted, true, 'native cancellation still interrupts the bounded request')
+})
+
+test('cancelled durable POST does not wait forever for JSON body after headers', async () => {
+  let headersReturned
+  const headers = new Promise(resolve => { headersReturned = resolve })
+  const control = new CoSControl({ directory:path.join(os.tmpdir(), 'cos-stalled-json-test'),
+    fetcher:async () => {
+      headersReturned()
+      return new Response(new ReadableStream({ start() {} }), { status:202 })
+    } })
+  control.base='http://127.0.0.1:1'
+  control.token='test-only'
+  const abort = new AbortController()
+  const sent = control.send({ id:'immutable-id', text:'test-only' }, { signal:abort.signal })
+  await headers
+  abort.abort()
+  const outcome = await Promise.race([
+    sent.then(() => 'unexpected_success', error => error.code),
+    new Promise(resolve => setTimeout(() => resolve('stalled_after_cancel'), 200)),
+  ])
+  assert.equal(outcome, 'opencode_turn_cancelled')
+})
 
 test('follow-up ignores replayed assistant and old terminal after its input receipt', async () => {
   const cos = new FakeCoS()
@@ -116,6 +211,29 @@ test('preserve a CoS session, stream only increasing text and correlate the inpu
   assert.equal(cos.sent[1].sessionId, first)
   assert.notEqual(cos.sent[1].id, first)
   assert.equal(cos.sent[1].text, 'Next')
+})
+
+test('gateway evidence correlates assistant revisions to the admitted turn without exposing text', async () => {
+  const cos = new FakeCoS()
+  const evidence = []
+  const emitted = []
+  const answer = await runTurn(cos, request, {
+    sessionKey:'ses_evidence', messageKey:'msg_evidence_001',
+    emit:delta => emitted.push(delta),
+    onEvidence:entry => { evidence.push(entry); if(entry.stage === 'turn_started') throw Error('observer_must_not_abort') },
+  })
+  assert.equal(answer,'Bonjour')
+  assert.deepEqual(emitted,['Bon','jour'])
+  assert.deepEqual(evidence.map(item => item.stage),[
+    'input_admitted','turn_started','assistant_revision','native_delta_emitted',
+    'assistant_revision','native_delta_emitted','turn_completed',
+  ])
+  assert.ok(evidence.every(entry => entry.sessionID === stableUUID('session:ses_evidence')))
+  assert.ok(evidence.every(entry => entry.messageKey === 'msg_evidence_001'))
+  assert.ok(evidence.slice(1).every(entry => entry.turnId === 'fake-current-turn'))
+  assert.ok(evidence.every(entry => Number.isSafeInteger(entry.atMs)))
+  assert.equal(JSON.stringify(evidence).includes('Bonjour'),false)
+  assert.equal(JSON.stringify(evidence).includes('Bon'),false)
 })
 
 test('refuse tools instead of silently dropping OpenCode tool contracts', async () => {
@@ -215,8 +333,9 @@ test('refuse clipped or rewritten CoS output, never invent a complete reply', as
 test('a cancelled OpenCode request stops only its exact observed CoS turn', async () => {
   const abort = new AbortController()
   const calls = []
+  const evidence = []
   const cos = new FakeCoS()
-  cos.stop = async (session, turn) => { calls.push({ session, turn }) }
+  cos.stop = async (session, turn) => { calls.push({ session, turn }); return { stopped:true } }
   cos.events = async function* () {
     yield { kind: 'user_message', inputId: this.sent.at(-1).id, seq: 1 }
     yield { kind: 'turn_start', turnId: 'proven-turn-42', seq: 2 }
@@ -224,8 +343,134 @@ test('a cancelled OpenCode request stops only its exact observed CoS turn', asyn
     yield { kind: 'turn_end', turnId: 'proven-turn-42', seq: 4, outcome: 'completed' }
   }
   await assert.rejects(runTurn(cos, request, { sessionKey: 'ses_cancel', messageKey: 'msg_cancel_0001', signal: abort.signal,
-    emit: () => { abort.abort() } }), /opencode_turn_cancelled/)
+    emit: () => { abort.abort() }, onEvidence:row => evidence.push(row) }), /opencode_turn_cancelled/)
+  await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(calls, [{ session: stableUUID('session:ses_cancel'), turn: 'proven-turn-42' }])
+  assert.deepEqual(evidence.filter(row => /^(turn_stop_requested|cancel_command_acknowledged)$/.test(row.stage))
+    .map(row => [row.stage,row.turnId]), [
+    ['turn_stop_requested','proven-turn-42'],
+    ['cancel_command_acknowledged','proven-turn-42'],
+  ])
+})
+
+test('synchronous Stop transport failure is recorded as unconfirmed for the exact turn', async () => {
+  const abort = new AbortController()
+  const evidence = []
+  const cos = new FakeCoS()
+  cos.stop = () => { throw Error('test_transport_sync_failure') }
+  cos.events = async function* () {
+    yield { kind:'user_message', inputId:this.sent.at(-1).id, seq:1 }
+    yield { kind:'turn_start', turnId:'owned-turn-sync-fail', seq:2 }
+    yield { kind:'assistant_message', turnId:'owned-turn-sync-fail', seq:3,
+      message:{ text:'partial', truncated:false } }
+  }
+  await assert.rejects(runTurn(cos, request, {
+    sessionKey:'ses_sync_stop', messageKey:'msg_sync_stop_001', signal:abort.signal,
+    emit:() => abort.abort(), onEvidence:row => evidence.push(row),
+  }), /opencode_turn_cancelled/)
+  assert.deepEqual(evidence.filter(row => /^(turn_stop_requested|cancel_command_unconfirmed)$/.test(row.stage))
+    .map(row => [row.stage,row.turnId]), [
+    ['turn_stop_requested','owned-turn-sync-fail'],
+    ['cancel_command_unconfirmed','owned-turn-sync-fail'],
+  ])
+})
+
+test('asynchronous Stop transport rejection is unconfirmed for the owned turn only', async () => {
+  const abort = new AbortController()
+  const evidence = []
+  const cos = new FakeCoS()
+  const stops = []
+  cos.stop = async (session, turn, { signal } = {}) => {
+    stops.push([session, turn, signal instanceof AbortSignal])
+    throw Error('test_async_transport_refusal')
+  }
+  cos.events = async function* () {
+    yield { kind:'user_message', inputId:this.sent.at(-1).id, seq:1 }
+    yield { kind:'turn_start', turnId:'owned-turn-async-fail', seq:2 }
+    yield { kind:'assistant_message', turnId:'owned-turn-async-fail', seq:3,
+      message:{ text:'partial', truncated:false } }
+  }
+  await assert.rejects(runTurn(cos, request, {
+    sessionKey:'ses_async_stop', messageKey:'msg_async_stop_001', signal:abort.signal,
+    emit:() => abort.abort(), onEvidence:row => evidence.push(row),
+  }), /opencode_turn_cancelled/)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(stops, [[stableUUID('session:ses_async_stop'),'owned-turn-async-fail',true]])
+  assert.deepEqual(evidence.filter(row => /^(turn_stop_requested|cancel_command_unconfirmed|cancel_command_acknowledged)$/.test(row.stage))
+    .map(row => [row.stage,row.turnId]), [
+    ['turn_stop_requested','owned-turn-async-fail'],
+    ['cancel_command_unconfirmed','owned-turn-async-fail'],
+  ])
+})
+
+test('unresponsive Stop receipt becomes unconfirmed without retaining the native turn lease', async () => {
+  const abort = new AbortController()
+  const evidence = []
+  const cos = new FakeCoS()
+  cos.stop = () => new Promise(() => {})
+  cos.events = async function* () {
+    yield { kind:'user_message', inputId:this.sent.at(-1).id, seq:1 }
+    yield { kind:'turn_start', turnId:'owned-turn-hung-receipt', seq:2 }
+    yield { kind:'assistant_message', turnId:'owned-turn-hung-receipt', seq:3,
+      message:{ text:'partial', truncated:false } }
+  }
+  await assert.rejects(runTurn(cos, request, {
+    sessionKey:'ses_hung_receipt', messageKey:'msg_hung_receipt_001', signal:abort.signal,
+    stopReceiptTimeoutMs:20,
+    emit:() => abort.abort(), onEvidence:row => evidence.push(row),
+  }), /opencode_turn_cancelled/)
+  await new Promise(resolve => setTimeout(resolve,60))
+  assert.deepEqual(evidence.filter(row => /^(turn_stop_requested|cancel_command_unconfirmed)$/.test(row.stage))
+    .map(row => [row.stage,row.turnId]), [
+    ['turn_stop_requested','owned-turn-hung-receipt'],
+    ['cancel_command_unconfirmed','owned-turn-hung-receipt'],
+  ])
+})
+
+test('late positive Stop receipt cannot overwrite timed-out unconfirmed evidence', async () => {
+  const abort = new AbortController()
+  const evidence = []
+  let releaseStop
+  const cos = new FakeCoS()
+  cos.stop = () => new Promise(resolve => { releaseStop = resolve })
+  cos.events = async function* () {
+    yield { kind:'user_message', inputId:this.sent.at(-1).id, seq:1 }
+    yield { kind:'turn_start', turnId:'owned-turn-late', seq:2 }
+    yield { kind:'assistant_message', turnId:'owned-turn-late', seq:3,
+      message:{ text:'partial', truncated:false } }
+  }
+  await assert.rejects(runTurn(cos, request, {
+    sessionKey:'ses_late_receipt', messageKey:'msg_late_receipt_001', signal:abort.signal,
+    stopReceiptTimeoutMs:10,
+    emit:() => abort.abort(), onEvidence:row => evidence.push(row),
+  }), /opencode_turn_cancelled/)
+  await new Promise(resolve => setTimeout(resolve,40))
+  releaseStop({ stopped:true })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(evidence.filter(row => /^cancel_command_/.test(row.stage))
+    .map(row => row.stage), ['cancel_command_unconfirmed'])
+})
+
+test('timed-out Stop actively aborts its own broker HTTP request', async () => {
+  const abort = new AbortController()
+  const cos = new FakeCoS()
+  let stopSignal
+  cos.stop = (_session, _turn, options) => {
+    stopSignal = options?.signal
+    return new Promise(() => {})
+  }
+  cos.events = async function* () {
+    yield { kind:'user_message', inputId:this.sent.at(-1).id, seq:1 }
+    yield { kind:'turn_start', turnId:'owned-turn-stop-http', seq:2 }
+    yield { kind:'assistant_message', turnId:'owned-turn-stop-http', seq:3,
+      message:{ text:'partial', truncated:false } }
+  }
+  await assert.rejects(runTurn(cos, request, {
+    sessionKey:'ses_stop_http', messageKey:'msg_stop_http_001', signal:abort.signal,
+    stopReceiptTimeoutMs:10, emit:() => abort.abort(),
+  }), /opencode_turn_cancelled/)
+  await new Promise(resolve => setTimeout(resolve,40))
+  assert.equal(stopSignal?.aborted, true, 'stop HTTP must not linger past receipt deadline')
 })
 
 test('abort before admission never sends a prompt; abort before turn proof only attempts outbox cancel', async () => {
@@ -247,7 +492,9 @@ test('abort before admission never sends a prompt; abort before turn proof only 
 })
 
 test('gateway authenticates, binds to local host and yields Chat Completions SSE', async t => {
-  const server = createGateway({ control: new FakeCoS(), key: 't'.repeat(40) })
+  const evidence = []
+  const server = createGateway({ control: new FakeCoS(), key: 't'.repeat(40),
+    onEvidence:entry => evidence.push(entry) })
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
   t.after(() => server.close())
@@ -264,6 +511,35 @@ test('gateway authenticates, binds to local host and yields Chat Completions SSE
   assert.match(body, /"content":"Bon"/)
   assert.match(body, /"content":"jour"/)
   assert.match(body, /data: \[DONE\]/)
+  assert.deepEqual(evidence.map(entry => entry.stage), [
+    'input_admitted','turn_started','assistant_revision','native_sse_frame_written','native_delta_emitted',
+    'assistant_revision','native_sse_frame_written','native_delta_emitted','turn_completed',
+    'native_sse_terminal_written','native_http_response_finished',
+  ])
+  assert.deepEqual(evidence.filter(entry => entry.stage === 'native_sse_frame_written').map(entry => entry.seq),
+    evidence.filter(entry => entry.stage === 'assistant_revision').map(entry => entry.seq),
+    'each native SSE frame must retain its exact source assistant revision sequence')
+  assert.ok(evidence.every(entry => entry.sessionID === stableUUID('session:ses_test')))
+  assert.ok(evidence.every(entry => entry.messageKey === 'msg_http_0001'))
+  assert.ok(evidence.slice(1).every(entry => entry.turnId === 'fake-current-turn'))
+  assert.ok(evidence.every(entry => Number.isSafeInteger(entry.atMs)))
+  assert.equal(JSON.stringify(evidence).includes('Bonjour'), false)
+})
+
+test('non-streaming completion cannot masquerade as a finished native SSE transport', async t => {
+  const evidence=[]
+  const server=createGateway({control:new FakeCoS(),key:'q'.repeat(40),onEvidence:e=>evidence.push(e)})
+  server.listen(0,'127.0.0.1')
+  await once(server,'listening')
+  t.after(()=>server.close())
+  const response=await fetch(`http://127.0.0.1:${server.address().port}/v1/chat/completions`,{
+    method:'POST',headers:{authorization:`Bearer ${'q'.repeat(40)}`,
+      'x-opencode-session-id':'ses_nonstream','x-opencode-message-id':'msg_nonstream_001',
+      'content-type':'application/json'},body:JSON.stringify(request),
+  })
+  assert.equal(response.status,200)
+  await response.text()
+  assert.equal(evidence.some(e=>e.stage==='native_http_response_finished'),false)
 })
 
 test('gateway preserves split UTF-8 and rejects malformed or oversized byte bodies before dispatch', async t => {
@@ -418,9 +694,7 @@ test('runtime launcher only accepts existing, isolated files and directories', a
   await mkdir(personal)
   await assert.rejects(validateRuntime({ executable: process.execPath, profile, personalProfile: personal }),
     /isolated_profile_not_initialized/)
-  await writeFile(path.join(profile, 'config.json'), JSON.stringify({
-    ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
-  }))
+  await writeFile(path.join(profile, 'config.json'), JSON.stringify(validProviderConfig))
   const ok = await validateRuntime({ executable: process.execPath, profile, personalProfile: personal })
   // Windows temp may be an 8.3 alias (RUNNER~1) while realpath expands it.
   assert.equal(ok.folder, await realpath(profile))
@@ -442,7 +716,9 @@ test('runtime refuses unconsented or damaged isolated CoS profile before any pro
   await assert.rejects(validateProfileConsent(profile), /isolated_profile_has_no_provider_consent/)
   await writeFile(config, JSON.stringify({ ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: false } }))
   await assert.rejects(validateProfileConsent(profile), /isolated_profile_has_no_provider_consent/)
-  await writeFile(config, JSON.stringify({ ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true } }))
+  await writeFile(config, JSON.stringify({ ui:{chatBrowser:'cos'}, controlApi:{enabled:true,allowActions:true} }))
+  await assert.rejects(validateProfileConsent(profile), /isolated_profile_config_incomplete/)
+  await writeFile(config, JSON.stringify(validProviderConfig))
   await validateProfileConsent(profile)
 })
 
@@ -458,9 +734,7 @@ test('service launcher uses the fork-only flag, owns exact endpoint PID and stop
   process.env.NODE_OPTIONS = '--inspect=0'
   const profile = await mkdtemp(path.join(os.tmpdir(), 'cos-owned-'))
   t.after(() => rm(profile, { recursive: true, force: true }))
-  await writeFile(path.join(profile, 'config.json'), JSON.stringify({
-    ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
-  }))
+  await writeFile(path.join(profile, 'config.json'), JSON.stringify(validProviderConfig))
   const token = 'z'.repeat(43)
   const server = createServer((req, res) => {
     assert.equal(req.headers.authorization, `Bearer ${token}`)
@@ -476,13 +750,16 @@ test('service launcher uses the fork-only flag, owns exact endpoint PID and stop
   t.after(() => server.close())
   const directory = path.join(profile, 'control-api')
   await mkdir(directory)
-  await writeFile(path.join(directory, 'endpoint.json'), JSON.stringify({ protocol: 1, port: server.address().port, pid: 12345 }))
   await writeFile(path.join(directory, 'token'), token)
   const child = Object.assign(new EventEmitter(), { pid: 12345, exitCode: null, killed: false,
     kill(signal) { assert.equal(signal, 'SIGTERM'); this.killed = true; this.emit('exit', 0) } })
   let launch
   const runtime = new CoSRuntime({ executable: process.execPath, profile }, { launcher: (exe, args, opts) => {
     launch = { exe, args, opts }
+    // The helper publishes its endpoint once it runs. Before that there is no
+    // endpoint file, so the pre-spawn ownership check has nothing to refuse.
+    writeFileSync(path.join(directory, 'endpoint.json'),
+      JSON.stringify({ protocol: 1, port: server.address().port, pid: child.pid }))
     return child
   } })
   const control = await runtime.start()
@@ -494,16 +771,41 @@ test('service launcher uses the fork-only flag, owns exact endpoint PID and stop
   for (const name of inherited) assert.equal(launch.opts.env[name], undefined, `${name} leaked to Electron helper`)
   assert.equal(launch.opts.windowsHide, true)
   assert.equal(launch.opts.shell, false)
+  assert.deepEqual(launch.opts.stdio, ['ignore', 'ignore', 'pipe'])
   runtime.stop()
   assert.equal(child.killed, true)
+})
+
+test('early packaged Electron profile refusal is classified without propagating native stderr', async t => {
+  const profile = await mkdtemp(path.join(os.tmpdir(), 'cos-profile-refusal-'))
+  t.after(() => rm(profile, { recursive: true, force: true }))
+  await writeFile(path.join(profile, 'config.json'), JSON.stringify(validProviderConfig))
+  const stderr = new EventEmitter()
+  const child = Object.assign(new EventEmitter(), { pid: 12345, stderr, exitCode: null, killed: false,
+    kill() { this.killed = true },
+  })
+  const runtime = new CoSRuntime({ executable: process.execPath, profile }, {
+    launcher: () => {
+      queueMicrotask(() => {
+        stderr.emit('data', Buffer.from('Provider service refused: invalid isolated pro'))
+        stderr.emit('data', Buffer.from('file\nSECRET_MUST_NOT_LEAK'))
+        child.exitCode = 1
+        child.emit('exit', 1)
+      })
+      return child
+    },
+  })
+  await assert.rejects(runtime.start(), error => {
+    assert.equal(error.code, 'runtime_profile_refused')
+    assert.ok(!JSON.stringify(error).includes('SECRET_MUST_NOT_LEAK'))
+    return true
+  })
 })
 
 test('service launcher immediately rejects an old advertised API without waiting for readiness timeout', async t => {
   const profile = await mkdtemp(path.join(os.tmpdir(), 'cos-incompatible-'))
   t.after(() => rm(profile, { recursive: true, force: true }))
-  await writeFile(path.join(profile, 'config.json'), JSON.stringify({
-    ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
-  }))
+  await writeFile(path.join(profile, 'config.json'), JSON.stringify(validProviderConfig))
   const server = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ ok: true, protocol: 1, routes: [], actions: { enabled: true, routes: [] } }))
@@ -513,12 +815,16 @@ test('service launcher immediately rejects an old advertised API without waiting
   t.after(() => server.close())
   const directory = path.join(profile, 'control-api')
   await mkdir(directory)
-  await writeFile(path.join(directory, 'endpoint.json'), JSON.stringify({ protocol: 1, port: server.address().port, pid: 12346 }))
   await writeFile(path.join(directory, 'token'), 'z'.repeat(43))
   const child = Object.assign(new EventEmitter(), { pid: 12346, exitCode: null, killed: false,
     kill() { this.killed = true; this.emit('exit', 0) } })
   const runtime = new CoSRuntime({ executable: process.execPath, profile, startupTimeoutMs: 1000 }, {
-    launcher: () => child,
+    launcher: () => {
+      // The helper publishes its endpoint once it runs.
+      writeFileSync(path.join(directory, 'endpoint.json'),
+        JSON.stringify({ protocol: 1, port: server.address().port, pid: child.pid }))
+      return child
+    },
   })
   await assert.rejects(runtime.start(), /cos_provider_runtime_incompatible/)
   assert.equal(child.killed, true)
@@ -643,4 +949,80 @@ test('selected-provider lifecycle refuses incomplete runtime configuration befor
   })
   await assert.rejects(noNode.ensure(), /provider_runtime_not_configured/)
   assert.equal(launches, 0)
+})
+
+test('foreign control endpoint is rejected before any network request or token exposure', async t => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'cos-foreign-owner-'))
+  t.after(() => rm(folder, { recursive:true, force:true }))
+  await writeFile(path.join(folder, 'endpoint.json'), JSON.stringify({ protocol:1, port:54321, pid:7444 }))
+  await writeFile(path.join(folder, 'token'), 'z'.repeat(43))
+  let networkCalls = 0
+  const control = new CoSControl({ directory:folder, fetcher:async () => { networkCalls++; throw Error('foreign network forbidden') } })
+  await assert.rejects(control.connect({expectedPid:12345}), /runtime_endpoint_pid_mismatch/)
+  assert.equal(networkCalls,0)
+  assert.equal(control.base,undefined)
+  assert.equal(control.token,undefined)
+})
+
+test('live isolated endpoint refuses second runtime before a child is launched', async t => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'cos-occupied-owner-'))
+  t.after(() => rm(folder, {recursive:true, force:true}))
+  await writeFile(path.join(folder, 'config.json'), JSON.stringify(validProviderConfig))
+  const controlDir = path.join(folder,'control-api')
+  await mkdir(controlDir)
+  // A live owner is a control API that answers on its recorded port. The
+  // recorded pid alone cannot prove it: Windows reuses pid numbers.
+  const server = createServer((req, res) => res.end('{}'))
+  server.listen(0,'127.0.0.1')
+  await once(server,'listening')
+  t.after(() => server.close())
+  await writeFile(path.join(controlDir,'endpoint.json'), JSON.stringify({protocol:1,pid:process.pid,port:server.address().port}))
+  let launched = false
+  const runtime = new CoSRuntime({executable:process.execPath,profile:folder}, {
+    launcher:() => { launched = true; throw Error('must_not_spawn') },
+  })
+  await assert.rejects(runtime.start(), /runtime_profile_endpoint_occupied/)
+  assert.equal(launched,false)
+  assert.equal(JSON.parse(await readFile(path.join(controlDir,'endpoint.json'),'utf8')).pid,process.pid)
+})
+
+test('dead previous endpoint is never contacted while new owned child publishes its endpoint', async t => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), 'cos-stale-cold-'))
+  t.after(() => rm(folder, {recursive:true,force:true}))
+  await writeFile(path.join(folder,'config.json'),JSON.stringify(validProviderConfig))
+  const controlDir = path.join(folder,'control-api')
+  await mkdir(controlDir)
+  const stalePid = 2147483000
+  const newPid = 2147483001
+  await writeFile(path.join(controlDir,'endpoint.json'),JSON.stringify({protocol:1,pid:stalePid,port:1}))
+  await writeFile(path.join(controlDir,'token'),'z'.repeat(43))
+  let healthReads = 0
+  const server = createServer((req,res) => {
+    healthReads++
+    res.setHeader('content-type','application/json')
+    res.end(JSON.stringify({protocol:1,ok:true,actions:{enabled:true,routes:[
+      'POST /v1/inputs','POST /v1/sessions/{id}/stop','POST /v1/inputs/{id}/cancel']},
+      routes:['/v1/provider/readiness','/v1/sessions/{id}/events/stream']}))
+  })
+  server.listen(0,'127.0.0.1')
+  await once(server,'listening')
+  t.after(() => server.close())
+  const child = new EventEmitter()
+  child.pid = newPid; child.exitCode = null; child.killed = false
+  child.stderr = new EventEmitter()
+  child.kill = () => { child.killed = true }
+  let cycles = 0
+  const runtime = new CoSRuntime({executable:process.execPath,profile:folder,startupTimeoutMs:1500}, {
+    launcher:() => child,
+    clock:async () => {
+      cycles++
+      await writeFile(path.join(controlDir,'endpoint.json'),JSON.stringify({
+        protocol:1,pid:newPid,port:server.address().port}))
+    },
+  })
+  const control = await runtime.start()
+  assert.equal(control.endpointPid,newPid)
+  assert.equal(cycles,1)
+  assert.equal(healthReads,1,'stale endpoint must never receive a request')
+  runtime.stop()
 })

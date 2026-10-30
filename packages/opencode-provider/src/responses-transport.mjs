@@ -40,8 +40,11 @@ export async function sendResponses(request, {
   const identity = JSON.stringify([sessionID, messageID])
   if (active.has(identity)) fail('turn_already_active')
   active.add(identity)
-  const timer = AbortSignal.timeout(timeoutMs)
-  const combined = signal ? AbortSignal.any([signal, timer]) : timer
+  // AbortSignal.timeout uses an unref'd timer: a pending token supplier can
+  // leave no ref'd handles and Node exits before timeout/cancellation settles.
+  const timeout = new AbortController()
+  const timeoutHandle = setTimeout(() => timeout.abort(), timeoutMs)
+  const combined = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal
   let response
   try {
     if (combined.aborted) fail('response_aborted')
@@ -75,6 +78,7 @@ export async function sendResponses(request, {
     if (error instanceof ResponsesContractError || error instanceof ResponsesTransportError) throw error
     fail('responses_transport_failed')
   } finally {
+    clearTimeout(timeoutHandle)
     try { await response?.body?.cancel?.() } catch { /* stream may already be consumed/locked */ }
     active.delete(identity)
   }

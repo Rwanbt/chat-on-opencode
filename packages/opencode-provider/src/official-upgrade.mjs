@@ -6,6 +6,7 @@ import {
 } from 'node:fs'
 import path from 'node:path'
 import { inspectInstalledProvider, validateBundle, payloadDigest } from './official-install.mjs'
+import { validateManifest } from './official-scoped-config.mjs'
 import { readJSONC } from './jsonc-scoped.mjs'
 
 const SHA = /^[a-f0-9]{64}$/
@@ -60,15 +61,22 @@ function configurationOwnsPlugin(config, managed) {
 function installed(config) {
   const file = noLinks(config, 'file')
   noLinks(path.dirname(file), 'directory')
-  const info = inspectInstalledProvider(file)
+  let info
+  try { info = inspectInstalledProvider(file) }
+  catch (error) {
+    // The upgrade keeps its own manifest vocabulary; the shape is still refused.
+    if (error?.message === 'provider_manifest_shape_unknown' ||
+        error?.message === 'provider_rollback_manifest_mismatch') {
+      throw new Error('upgrade_manifest_unqualified')
+    }
+    throw error
+  }
   noLinks(info.managed, 'directory')
   noLinks(path.join(info.managed, 'install-manifest.json'), 'file')
   noLinks(info.manifest.backup, 'file')
   walkSafe(info.managed)
-  if (Object.keys(info.manifest).sort().join() !==
-      ['backup', 'config', 'format', 'installedSha256', 'originalSha256', 'payloadSha256', 'version'].sort().join() ||
-      ![info.manifest.installedSha256, info.manifest.originalSha256, info.manifest.payloadSha256].every(s => SHA.test(s)) ||
-      !SUPPORTED.has(info.manifest.version)) throw new Error('upgrade_manifest_unqualified')
+  try { validateManifest(info.manifest) } catch { throw new Error('upgrade_manifest_unqualified') }
+  if (!SUPPORTED.has(info.manifest.version)) throw new Error('upgrade_manifest_unqualified')
   configurationOwnsPlugin(file, info.managed)
   return info
 }
@@ -119,6 +127,10 @@ export function inspectUpgrade(options, { runner = spawnSync } = {}) {
   if (pack.name !== 'chat-on-opencode-provider' || typeof pack.version !== 'string' ||
       !/^\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.-]+)?$/.test(pack.version)) throw new Error('upgrade_bundle_version_invalid')
   return { config: info.config, managed: info.managed, oldManifest: info.manifest,
+    // The upgrade pins the config bytes it actually observed. It never relies
+    // on the install manifest's whole-file pin, which format 2 deliberately
+    // replaced by scoped ownership.
+    configDigest: info.configSha256,
     job, source, sourceDigest: candidateDigest(source), cliVersion: actualVersion,
     candidateVersion: pack.version, status: 'NO_GO_ATOMIC_PROMOTION_UNPROVEN' }
 }
@@ -127,7 +139,7 @@ function ensurePinned(plan) {
   const now = installed(plan.config)
   if (now.managed !== plan.managed ||
       sha(readFileSync(path.join(now.managed, 'install-manifest.json'))) !== plan.manifestDigest ||
-      now.manifest.installedSha256 !== plan.configDigest ||
+      now.configSha256 !== plan.configDigest ||
       now.manifest.payloadSha256 !== plan.oldDigest) throw new Error('upgrade_installed_changed')
 }
 function writeJournal(location, content) {
@@ -203,7 +215,7 @@ export function stageUpgrade(options, { runner = spawnSync, checkpoint = () => {
   const plan = inspectUpgrade(options, { runner })
   const entry = { format: 1, id: randomUUID(), config: plan.config, managed: plan.managed,
     manifestDigest: sha(readFileSync(path.join(plan.managed, 'install-manifest.json'))),
-    configDigest: plan.oldManifest.installedSha256, oldDigest: plan.oldManifest.payloadSha256,
+    configDigest: plan.configDigest, oldDigest: plan.oldManifest.payloadSha256,
     sourceDigest: plan.sourceDigest, cliVersion: plan.cliVersion, candidateVersion: plan.candidateVersion }
   mkdirSync(plan.job)
   checkpoint('reservation_created')

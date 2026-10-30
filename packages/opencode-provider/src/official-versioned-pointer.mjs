@@ -1,0 +1,350 @@
+// Experimental restart-only config pointer. NOT a live Desktop activation API.
+import { createHash, randomUUID } from 'node:crypto'
+import { closeSync, existsSync, fsyncSync, linkSync, lstatSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import path from 'node:path'
+import { readJSONC } from './jsonc-scoped.mjs'
+import { candidateDigest } from './official-upgrade.mjs'
+
+const sha = b => createHash('sha256').update(b).digest('hex')
+const hex = /^[a-f0-9]{64}$/
+const refuse = reason => { throw Error('versioned_pointer_' + reason) }
+const PUBLISH_METHOD = 'win32_MoveFileExW_REPLACE_EXISTING_WRITE_THROUGH'
+// This invokes the actual Windows kernel32 operation rather than libuv's
+// ordinary rename. The two paths are ALWAYS siblings, and COPY_ALLOWED is
+// intentionally absent; a cross-volume copy/delete must never be substituted
+// for the single rename. The compiler/PowerShell process may fail or be
+// restricted by policy: that is a refusal, not a fallback to renameSync.
+const win32Move = `
+$ErrorActionPreference = 'Stop'
+try {
+  Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+public static class ChatOnOpenCodePointerWin32 {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, EntryPoint = "MoveFileExW", SetLastError = true)]
+  [return: MarshalAs(UnmanagedType.Bool)]
+  public static extern bool Move(string source, string destination, uint flags);
+  public static int Publish(string source, string destination, string expectedSha) {
+    int last = 0;
+    for (int attempt = 0; attempt < 12; attempt++) {
+      try {
+        // FileShare deliberately omits WRITE: no new uncooperative writer can
+        // open the destination while we hash its exact handle. Windows
+        // MoveFileExW cannot replace this file while even this own handle is
+        // open (ERROR_ACCESS_DENIED), so release it IMMEDIATELY before rename.
+        using (var locked = new FileStream(destination, FileMode.Open, FileAccess.Read,
+                                          FileShare.Read | FileShare.Delete)) {
+          using (var sha = SHA256.Create()) {
+            var actual = BitConverter.ToString(sha.ComputeHash(locked)).Replace("-", "").ToLowerInvariant();
+            if (!String.Equals(actual, expectedSha, StringComparison.Ordinal)) return 42;
+          }
+        }
+        if (Move(source, destination, 9)) return 0;
+        last = Marshal.GetLastWin32Error();
+        // A failed MoveFileExW moves nothing: both paths still hold their
+        // previous complete bytes, so retrying the same single rename cannot
+        // produce an intermediate state. A Windows CRT reader, antivirus scan
+        // or search indexer holds the destination without FILE_SHARE_DELETE for
+        // a very short window; that is a transient sharing violation, not a
+        // refusal. Every other native error is reported immediately.
+        if (last != 5 && last != 32) return 1000 + last;
+      } catch { last = 32; }
+      System.Threading.Thread.Sleep(400);
+    }
+    return 1000 + last;
+  }
+}
+'@
+  $result = [ChatOnOpenCodePointerWin32]::Publish($env:COO_POINTER_NATIVE_FROM, $env:COO_POINTER_NATIVE_TO, $env:COO_POINTER_NATIVE_SHA)
+  if ($result -eq 42) { exit 42 }
+  if ($result -ge 1000) {
+    [Console]::Error.WriteLine('WIN32_MOVE_ERROR_' + ($result - 1000))
+    exit 23
+  }
+  if ($result -ne 0) { exit 23 }
+  [Console]::Out.WriteLine('WIN32_MOVEFILEEX_WRITETHROUGH_OK')
+} catch {
+  [Console]::Error.WriteLine('WIN32_MOVE_HELPER_UNAVAILABLE')
+  exit 24
+}
+`
+function publishNativeWin32(tmp, file, expectedSha) {
+  if (process.platform !== 'win32' || path.dirname(tmp) !== path.dirname(file)) refuse('unsafe_native_publish')
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', win32Move], {
+    env: { ...process.env, COO_POINTER_NATIVE_FROM: tmp, COO_POINTER_NATIVE_TO: file,
+      COO_POINTER_NATIVE_SHA: expectedSha },
+    encoding: 'utf8', shell: false, windowsHide: true, timeout: 15000, maxBuffer: 4096,
+  })
+  // A timeout/abrupt helper death could have happened on either side of the
+  // kernel call. Report UNKNOWN; inspectRestartOnlyPointer can classify
+  // either complete content without guessing or automatically replaying.
+  if (result.status === null || result.error) refuse('native_publish_unknown')
+  if (result.status === 42) refuse('native_cas_changed')
+  // Preserve the fail-closed outcome, but report a categorical Win32 code so
+  // sharing violations and access-policy denials are distinguishable in CI.
+  const nativeError = /^WIN32_MOVE_ERROR_(\d+)\s*$/m.exec(result.stderr ?? '')
+  if (result.status === 23 && nativeError) {
+    refuse('native_publish_refused_win32_' + nativeError[1])
+  }
+  if (result.status !== 0 || result.stdout.trim() !== 'WIN32_MOVEFILEEX_WRITETHROUGH_OK') {
+    refuse('native_publish_refused')
+  }
+}
+function idle(probe) {
+  if (process.platform !== 'win32') refuse('windows_only')
+  const r = probe('powershell.exe', ['-NoProfile','-NonInteractive','-Command',
+    '$ErrorActionPreference="Stop"; @([Diagnostics.Process]::GetProcesses() | Where-Object { $_.ProcessName -in @("OpenCode","opencode","opencode-cli","Chat On OpenCode Provider") }).Count'],
+  { encoding: 'utf8', shell: false, windowsHide: true, timeout: 7000 })
+  if (r.status !== 0 || !/^0\s*$/.test(r.stdout ?? '')) refuse('busy_or_unknown')
+}
+function safeFile(file) {
+  if (!path.isAbsolute(file) || !existsSync(file) || !lstatSync(file).isFile() || lstatSync(file).isSymbolicLink()) refuse('unsafe_config')
+}
+function safeDir(dir) {
+  if (!path.isAbsolute(dir) || !existsSync(dir) || !lstatSync(dir).isDirectory() || lstatSync(dir).isSymbolicLink()) refuse('unsafe_generation')
+}
+// The directory-swap and chained-swap protocols retain journals with an
+// exact *original config* digest. Repointing that config would invalidate
+// their CAS rollback and leave active/parked generations stranded. A pointer
+// publisher cannot safely join either protocol, even when no process runs.
+const managedMarkers = [
+  '.chat-on-opencode-directory-switch.json', '.chat-on-opencode-directory-next',
+  '.chat-on-opencode-directory-previous', '.chat-on-opencode-chain-prepare.json',
+  '.chat-on-opencode-chain-next', '.chat-on-opencode-chain-active-previous',
+  '.chat-on-opencode-chain-transition.lock',
+  '.chat-on-opencode-chain-transition.lock.recover',
+]
+function noManagedTransition(config) {
+  const dir = path.dirname(config)
+  if (managedMarkers.some(name => existsSync(path.join(dir, name)))) refuse('managed_transition_pending')
+}
+// Buffer.toString() silently replaces invalid UTF-8. Never turn a foreign
+// user's malformed byte into U+FFFD while rewriting our own scoped entries.
+function configText(bytes) {
+  try { return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) }
+  catch { refuse('invalid_utf8') }
+}
+function packageScalar(source, expectedPackage) {
+  const root = readJSONC(source)
+  const plugins = root.members.find(item => item.key === 'plugins')?.node
+  if (plugins?.type !== 'array') refuse('config_shape')
+  const matches = []
+  for (const item of plugins.members) {
+    if (item.node.type !== 'object') continue // other installed plugins may be strings
+    const pkg = item.node.members.find(member => member.key === 'package')?.node
+    if (!pkg) continue
+    if (pkg.type !== 'scalar') refuse('config_shape')
+    let value
+    try { value = JSON.parse(source.slice(pkg.start, pkg.end)) }
+    catch { refuse('config_shape') }
+    if (value === expectedPackage) matches.push(pkg)
+  }
+  if (matches.length !== 1) refuse(matches.length ? 'ambiguous_config_reference' : 'pointer_mismatch')
+  return matches[0]
+}
+/** Apply scoped edits over one text, highest offset first. Overlapping or
+ * out-of-range edits are refused: the result could not be what the caller meant.
+ */
+function applyEdits(source, edits) {
+  if (!Array.isArray(edits) || !edits.length) refuse('edit_invalid')
+  const ordered = edits.map(edit => {
+    if (!edit || typeof edit.data !== 'string' || !Number.isSafeInteger(edit.at) ||
+        !Number.isSafeInteger(edit.end) || edit.at < 0 || edit.end < edit.at ||
+        edit.end > source.length) refuse('edit_invalid')
+    return edit
+  }).sort((a, b) => b.at - a.at)
+  let cursor = source.length
+  for (const edit of ordered) {
+    if (edit.end > cursor) refuse('edit_invalid')
+    cursor = edit.at
+  }
+  let result = source
+  for (const edit of ordered) result = result.slice(0, edit.at) + edit.data + result.slice(edit.end)
+  return result
+}
+// A PID alone is not a lock identity: Windows can reuse it after the writer
+// crashes. Bind abandoned-lock recovery to the OS process creation timestamp.
+// Retry only the *same* kernel creation-time query. Never infer process identity
+// from a PID, missing timestamp, or a different clock. All failures fail closed.
+export function probeWindowsProcessStart(pid, runner = spawnSync) {
+  if (!Number.isSafeInteger(pid) || pid < 1) refuse('lock_owner_unverifiable')
+  const script = `$ErrorActionPreference='Stop'; $p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($null -eq $p) { 'MISSING' } else { $p.StartTime.ToUniversalTime().Ticks.ToString() }`
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const result = runner('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+      { encoding: 'utf8', shell: false, windowsHide: true, timeout: 7000 })
+    if (result.status === 0 && /^(?:MISSING|\d+)\s*$/.test(result.stdout ?? '')) return result.stdout.trim()
+  }
+  refuse('lock_owner_unverifiable')
+}
+function processStart(pid) { return probeWindowsProcessStart(pid) }
+function lockOwner() {
+  const start = processStart(process.pid)
+  if (start === 'MISSING') refuse('lock_owner_unverifiable')
+  return { version: 1, pid: process.pid, start, nonce: randomUUID() }
+}
+// Materialize the complete owner record before publishing its name. The old
+// O_EXCL -> write window left an empty, permanently unverifiable lock when the
+// process died in between. Hard-link creation fails if another owner won.
+function createLock(file, owner) {
+  const tmp = file + '.' + randomUUID() + '.tmp'
+  let fd
+  try {
+    fd = openSync(tmp, 'wx', 0o600)
+    writeFileSync(fd, JSON.stringify(owner))
+    fsyncSync(fd)
+    closeSync(fd); fd = undefined
+    linkSync(tmp, file)
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+    if (existsSync(tmp)) rmSync(tmp)
+  }
+}
+function releaseOwned(file, owner) {
+  if (existsSync(file) && readFileSync(file).equals(Buffer.from(JSON.stringify(owner)))) rmSync(file)
+}
+function abandonedLock(config, lock, recoverLock, configSha, extraCheck, probe) {
+  // The recovery marker keeps compliant publishers from acquiring the path
+  // during the one stale-lock removal. It is never evidence that a writer died.
+  const recoveryOwner = lockOwner()
+  try {
+    createLock(recoverLock, recoveryOwner)
+    idle(probe)
+    if (!existsSync(lock) || !lstatSync(lock).isFile() || lstatSync(lock).isSymbolicLink()) refuse('lock_unverifiable')
+    const original = readFileSync(lock)
+    let owner
+    try { owner = JSON.parse(original.toString('utf8')) } catch { refuse('lock_unverifiable') }
+    if (owner?.version !== 1 || !Number.isSafeInteger(owner.pid) || owner.pid < 1 ||
+      !/^\d+$/.test(owner.start ?? '') ||
+      typeof owner.nonce !== 'string' || !/^[0-9a-f-]{36}$/.test(owner.nonce)) refuse('lock_unverifiable')
+    const currentStart = processStart(owner.pid)
+    if (currentStart === owner.start) refuse('lock_owner_active')
+    // A different creation timestamp proves PID reuse; MISSING proves exit.
+    idle(probe)
+    if (sha(readFileSync(config)) !== configSha || !readFileSync(lock).equals(original)) refuse('cas_changed')
+    extraCheck?.()
+    rmSync(lock)
+  } finally {
+    releaseOwned(recoverLock, recoveryOwner)
+  }
+}
+function atomic(file, bytes, expectedSha, probe, fault) {
+  const tmp = file + '.versioned-' + randomUUID() + '.tmp'
+  let fd
+  try {
+    fd = openSync(tmp, 'wx', 0o600)
+    writeFileSync(fd, bytes); fsyncSync(fd); closeSync(fd); fd = undefined
+    fault?.('before_publish')
+    // Last possible pre-rename CAS checkpoint: a competing writer may have
+    // changed the existing config after validation while we fsynced the temp.
+    // This does not constitute a cross-process atomic compare-and-swap:
+    // uncooperative writers can still race the final read and rename.
+    if (sha(readFileSync(file)) !== expectedSha) refuse('cas_changed')
+    noManagedTransition(file)
+    // Close the precommit gap introduced by fault injection, temp fsync, and
+    // CAS recheck. Never publish if an official reader appears meanwhile.
+    // This is not an OS-wide atomic reader/writer lock: a new reader starting
+    // *after* this check is outside the protection of this restart-only API.
+    idle(probe)
+    // This is a single-filesystem rename, not a multi-file transaction.
+    // fsync on the temporary file protects its contents against process death,
+    // but Windows does not guarantee that the rename itself survives sudden
+    // power loss without an independently proven directory flush.
+    fault?.('after_preflight_before_native')
+    publishNativeWin32(tmp, file, expectedSha) // one same-volume publication point
+    fault?.('after_publish')
+  } finally { if (fd !== undefined) closeSync(fd); if (existsSync(tmp)) rmSync(tmp) }
+}
+/** The one publication owner: one lock, one quiescence census, one CAS pin,
+ * one native rename. `plan` turns the pinned bytes into the intended bytes;
+ * `extraCheck` re-proves whatever else the caller owns.
+ */
+function publishUnderOwner(config, { configSha, probe, fault, prepare, extraCheck, plan }) {
+  if (process.platform !== 'win32') refuse('windows_only')
+  safeFile(config)
+  prepare?.()
+  if (!hex.test(configSha ?? '')) refuse('cas_missing')
+  noManagedTransition(config)
+  const lock = path.join(path.dirname(config), '.chat-on-opencode-versioned-pointer.lock')
+  const recoverLock = lock + '.recover'
+  const owner = lockOwner()
+  try {
+    if (existsSync(recoverLock)) refuse('recovery_active')
+    try { createLock(lock, owner) }
+    catch (error) {
+      if (error?.code !== 'EEXIST') throw error
+      abandonedLock(config, lock, recoverLock, configSha, extraCheck, probe)
+      createLock(lock, owner)
+    }
+    if (existsSync(recoverLock)) refuse('recovery_active')
+    idle(probe)
+    noManagedTransition(config)
+    const old = readFileSync(config)
+    if (sha(old) !== configSha) refuse('cas_changed')
+    extraCheck?.()
+    const next = plan(old)
+    idle(probe)
+    if (sha(readFileSync(config)) !== configSha) refuse('cas_changed')
+    extraCheck?.()
+    atomic(config, next, configSha, probe, fault)
+    return { status: 'RESTART_REQUIRED_ONLY', promotionAllowed: false, activationAuthorized: false,
+      previousConfigSha256: configSha, publishedConfigSha256: sha(next), publishMethod: PUBLISH_METHOD }
+  } finally { releaseOwned(lock, owner) }
+}
+
+/** Caller supplies versioned immutable directories and an exact config CAS.
+ * Both generations remain on disk. No active reload/activation is authorized.
+ */
+export function publishRestartOnlyPointer(config, from, to, { configSha, fromSha, toSha,
+  probe = spawnSync, fault } = {}) {
+  return publishUnderOwner(config, {
+    configSha, probe, fault,
+    prepare: () => {
+      safeDir(from); safeDir(to)
+      if (![configSha,fromSha,toSha].every(v => hex.test(v ?? ''))) refuse('cas_missing')
+    },
+    extraCheck: () => {
+      if (candidateDigest(from) !== fromSha || candidateDigest(to) !== toSha) refuse('cas_changed')
+    },
+    plan: old => {
+      const fromPath = path.join(from, 'plugin'), toPath = path.join(to, 'plugin')
+      const source = configText(old)
+      const scalar = packageScalar(source, fromPath)
+      // The JSONC parser captures scalar start/end offsets. Preserve every
+      // other byte, including comments, trailing commas, CRLF and foreign values.
+      const next = applyEdits(source, [{ at: scalar.start, end: scalar.end, data: JSON.stringify(toPath) }])
+      packageScalar(next, toPath)
+      return Buffer.from(next, 'utf8')
+    },
+  })
+}
+
+/** Publish scoped edits to the config under the same owner, the same lock and
+ * the same CAS. The edits are text offsets over the exact bytes whose digest
+ * is `configSha`; any other config is refused before a byte is written.
+ *
+ * A config that starts with a BOM is refused: the caller's offsets are only
+ * unambiguous when every decoder sees the same text, and the BOM is exactly
+ * the byte whose presence or absence changes those offsets.
+ */
+export function publishScopedConfigEdits(config, edits, { configSha, probe = spawnSync, fault } = {}) {
+  return publishUnderOwner(config, {
+    configSha, probe, fault,
+    plan: old => {
+      const source = configText(old)
+      if (source.startsWith('\uFEFF')) refuse('bom_requires_manual_review')
+      const next = applyEdits(source, edits)
+      try { readJSONC(next) } catch { refuse('edit_invalid') }
+      return Buffer.from(next, 'utf8')
+    },
+  })
+}
+/** Crash recovery is read-only: old or new config, never intermediate bytes. */
+export function inspectRestartOnlyPointer(config, oldSha, newSha) {
+  safeFile(config)
+  const current = sha(readFileSync(config))
+  if (current !== oldSha && current !== newSha) refuse('unknown_config')
+  return { state: current === oldSha ? 'OLD' : 'NEW', activationAuthorized: false, restartRequired: true }
+}

@@ -118,13 +118,34 @@ try {
         preservedFiles.set(target, sha256(bytes))
       }
       overlayInstaller = path.join(plugin, 'bin', 'additive-context.mjs')
+      // An earlier packaged-CLI smoke in this job can finish its parent before
+      // Windows reaps the last helper. Never bypass the installer's fail-closed
+      // quiescence check: wait for the *same* process-name set to become empty.
+      const processCount = () => {
+        const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+          '$ErrorActionPreference="Stop"; @([Diagnostics.Process]::GetProcesses() | Where-Object { $_.ProcessName -in @("OpenCode","opencode","opencode-cli","Chat On OpenCode Provider") }).Count'],
+        { encoding: 'utf8', windowsHide: true, timeout: 7000 })
+        if (result.status !== 0 || !/^\d+\s*$/.test(result.stdout ?? '')) return null
+        return Number(result.stdout.trim())
+      }
+      let remaining = null
+      for (let attempt = 0; attempt < 24; attempt++) {
+        remaining = processCount()
+        if (remaining === 0) break
+        if (remaining === null) break
+        await pause(500)
+      }
+      assert.equal(remaining, 0, 'additive install requires truly idle official app; count is ' +
+        (remaining === null ? 'unknown' : remaining))
       const additive = (args) => {
         const result = spawnSync(process.execPath, [
           overlayInstaller, ...args, '--config', configFile, '--bundle', plugin,
         ], { cwd: paths.workspace, encoding: 'utf8', timeout: 20000, windowsHide: true })
-        assert.equal(result.status, 0,
-          'transactional additive CLI failed (bounded diagnostic): ' +
-          String(result.error?.code ?? result.stderr).slice(-300))
+        const diagnostic = String(result.error?.code ?? result.stderr)
+        const category = ['additive_opencode_processes_active_or_unknown', 'additive_pin_mismatch',
+          'additive_existing_install_or_journal', 'additive_unsafe_path',
+          'additive_source_or_configuration_changed'].find(value => diagnostic.includes(value)) ?? 'other'
+        assert.equal(result.status, 0, 'transactional additive CLI failed, category=' + category)
         return JSON.parse(result.stdout)
       }
       const digest = spawnSync(process.execPath,
@@ -208,18 +229,31 @@ try {
   let journal = ''
   try { journal = await readFile(path.join(paths.data, 'opencode', 'log', 'opencode.log'), 'utf8') } catch {}
   const eventCounts = {}
+  const errorCategories = {}
   for (const line of stdout.split(/\r?\n/)) {
     try {
       const event = JSON.parse(line)
       const type = typeof event.type === 'string' ? event.type : 'unknown'
       eventCounts[type] = (eventCounts[type] ?? 0) + 1
+      if (type === 'error') {
+        // Only a fixed, non-sensitive category: no error message, prompt,
+        // stack, path, account or provider response leaves the fixture.
+        const code = String(event.error?.data?.code ?? event.error?.name ?? '')
+        const category = /AbortError/i.test(code) ? 'aborted'
+          : /ModelNotFound/i.test(code) ? 'model_not_found'
+          : /ProviderNotFound/i.test(code) ? 'provider_not_found'
+          : /Authentication/i.test(code) ? 'authentication'
+          : /UnknownAgent/i.test(code) ? 'agent_unavailable'
+          : /APIError/i.test(code) ? 'api_error' : 'other'
+        errorCategories[category] = (errorCategories[category] ?? 0) + 1
+      }
     } catch {}
   }
   const has = expression => expression.test(journal)
   process.stdout.write('OFFICIAL_CLI_CATEGORICAL_DIAG=' + JSON.stringify({
     gatewayReached, refusalObserved, exited: child.exitCode !== null,
     stdoutNonempty: !!stdout.length, stderrNonempty: !!stderr.length,
-    events: eventCounts, logModelRequest: has(/model\.request/),
+    events: eventCounts, errorCategories, logModelRequest: has(/model\.request/),
     logHttpRequest: has(/http\.request/), logCompaction: has(/compaction/),
     logError: has(/\b(ERROR|WARN)\b/i), logRefusal: has(/chatgpt_sign_in_required|cos_companion_unpaired/)
   }) + '\n')

@@ -8,6 +8,9 @@ import {
 import path from 'node:path'
 import { createOpenCodeConfig } from './config.mjs'
 import { addScopedProvider, readJSONC } from './jsonc-scoped.mjs'
+import {
+  configText, expectedConfigSha256, removeScopedEntries, SCOPE, validateManifest, verifyScopedConfig,
+} from './official-scoped-config.mjs'
 
 const hash = input => createHash('sha256').update(input).digest('hex')
 const MANAGED = '.chat-on-opencode-managed'
@@ -123,7 +126,7 @@ export function checkInstall(options, { runner } = {}) {
   const relocated = JSON.parse(JSON.stringify(generated))
   relocated.plugins[0].package = path.join(managed, 'plugin')
   const proposed = addScopedProvider(content, relocated)
-  return { config, source, managed, backup, version, original, proposed,
+  return { config, source, managed, backup, version, original, proposed, scope: SCOPE,
     originalSha256: hash(original), installedSha256: hash(Buffer.from(proposed)) }
 }
 
@@ -148,9 +151,12 @@ export function installProvider(options, dependencies = {}) {
     for (const file of ['package.json', 'README.md', 'opencode.example.jsonc']) {
       if (existsSync(path.join(plan.source, file))) copyFileSync(path.join(plan.source, file), path.join(staging, file))
     }
-    const manifest = { format: 1, config: plan.config, backup: plan.backup,
+    // Format 2 owns two scoped entries instead of pinning the whole config
+    // file, so a legitimate publication does not invalidate this installation.
+    const manifest = { format: 2, config: plan.config, backup: plan.backup,
       originalSha256: plan.originalSha256, installedSha256: plan.installedSha256,
-      payloadSha256: payloadDigest(staging), version: plan.version }
+      payloadSha256: payloadDigest(staging), version: plan.version,
+      scope: plan.scope, lineage: [] }
     writeFileSync(path.join(staging, 'install-manifest.json'), JSON.stringify(manifest), { flag: 'wx', mode: 0o600 })
     // Exact-byte backup comes before any personal configuration change.
     writeFileSync(plan.backup, plan.original, { flag: 'wx', mode: mode & 0o777 })
@@ -170,14 +176,20 @@ export function installProvider(options, dependencies = {}) {
   }
 }
 
-/** Read-only integrity gate, shared by rollback and the process-only smoke launcher. */
+/** Read-only integrity gate, shared by rollback and the process-only smoke launcher.
+ *
+ * Format 1 pins the whole config file and refuses any change. Format 2 verifies
+ * the same payload and backup bytes, and verifies the config by **structure**:
+ * the two entries the provider owns must still be there and still be ours. A
+ * foreign edit elsewhere in the file is reported as drift, never as damage.
+ */
 export function inspectInstalledProvider(configFile) {
   const config = regular(configFile, 'opencode_config')
   const { managed } = pathsFor(config)
   directory(managed, 'managed')
   const manifestPath = regular(path.join(managed, 'install-manifest.json'), 'install_manifest')
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
-  if (manifest.format !== 1 || manifest.config !== config ||
+  const manifest = validateManifest(JSON.parse(readFileSync(manifestPath, 'utf8')))
+  if (manifest.config !== config ||
     typeof manifest.backup !== 'string' ||
     !manifest.backup.startsWith(config + '.chat-on-opencode.') ||
     !/^[-a-f0-9]{36}\.bak$/.test(manifest.backup.slice((config + '.chat-on-opencode.').length))) {
@@ -185,20 +197,46 @@ export function inspectInstalledProvider(configFile) {
   }
   const restored = readFileSync(regular(manifest.backup, 'backup'))
   if (hash(restored) !== manifest.originalSha256) throw new Error('provider_backup_modified')
-  if (hash(readFileSync(config)) !== manifest.installedSha256) {
-    throw new Error('provider_config_modified_refuse_rollback')
+  const current = readFileSync(config)
+  let configDrift = null
+  if (manifest.format === 1) {
+    if (hash(current) !== manifest.installedSha256) {
+      throw new Error('provider_config_modified_refuse_rollback')
+    }
+  } else {
+    verifyScopedConfig(configText(current), manifest.scope, path.dirname(config))
+    configDrift = hash(current) === expectedConfigSha256(manifest) ? null : 'foreign_edit'
   }
   if (payloadDigest(managed) !== manifest.payloadSha256) {
     throw new Error('provider_payload_modified_refuse_delete')
   }
-  return { config, managed, manifest }
+  return { config, managed, manifest, configDrift, configSha256: hash(current) }
 }
 
-/** Restore exactly the previously backed up bytes; refuse any intervening change. */
+/** Restore the previous state. A foreign edit is preserved, never overwritten.
+ *
+ * When the config still matches the bytes this installation last published, the
+ * exact original bytes are restored. When a foreign edit landed in between, only
+ * the two owned entries are removed and every foreign byte survives.
+ */
 export function rollbackProvider(configFile) {
-  const { config, managed, manifest } = inspectInstalledProvider(configFile)
+  const { config, managed, manifest, configDrift } = inspectInstalledProvider(configFile)
   const restored = readFileSync(regular(manifest.backup, 'backup'))
-  atomicReplace(config, restored, statSync(config).mode & 0o777)
+  const mode = statSync(config).mode & 0o777
+  if (manifest.format === 1 || configDrift === null) {
+    atomicReplace(config, restored, mode)
+    rmSync(managed, { recursive: true })
+    return { rolledBack: true, mode: 'EXACT_RESTORE',
+      restoredSha256: manifest.originalSha256, backupRetained: true }
+  }
+  const current = readFileSync(config)
+  const next = Buffer.from(
+    removeScopedEntries(configText(current), manifest.scope, path.dirname(config)), 'utf8')
+  // Never overwrite an edit that landed between the inspection and the write.
+  if (hash(readFileSync(config)) !== hash(current)) {
+    throw new Error('provider_config_changed_during_rollback')
+  }
+  atomicReplace(config, next, mode)
   rmSync(managed, { recursive: true })
-  return { rolledBack: true, restoredSha256: manifest.originalSha256, backupRetained: true }
+  return { rolledBack: true, mode: 'SCOPED_REMOVAL', restoredSha256: hash(next), backupRetained: true }
 }

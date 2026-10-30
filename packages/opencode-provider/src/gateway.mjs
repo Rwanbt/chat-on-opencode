@@ -3,7 +3,13 @@ import http from 'node:http'
 import { setTimeout as delay } from 'node:timers/promises'
 import { traceStage } from './stage-trace.mjs'
 import { BridgeError } from './control.mjs'
-import { READ_INSTRUCTIONS, validateNativeTools, readResultPrompt, parseReadCall } from './native-read.mjs'
+import { writeSSE } from './sse-backpressure.mjs'
+import { readInstructions, validateNativeTools, readResultPrompt, parseReadCall } from './native-read.mjs'
+import { validateCodingTools, codingInstructions, codingResultPrompt, parseCodingCall } from './native-tools.mjs'
+import { looksLikeRefusal, refusalCorrection } from './refusal-correction.mjs'
+import { isContentReferenceMarker } from './assistant-row.mjs'
+import { bridgeContextLine, normalizeLocation } from './bridge-context.mjs'
+import { plainMessages, completedTranscriptAnchor, continuationWithTranscript } from './transcript-handoff.mjs'
 
 // Deterministic names survive restart; never infer session identity from prompt text.
 export function stableUUID(value) {
@@ -14,19 +20,36 @@ export function stableUUID(value) {
   return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`
 }
 
+// The CoS recorder closes a generation synchronously, but its final refresh
+// crosses an async hop: `turn_end` can reach one `/events` batch and the
+// matching final assistant row the next one. The bridge therefore keeps
+// reading for a bounded moment after a completed turn instead of answering
+// with an empty turn (or with a half-written revision).
+const FINAL_ANSWER_GRACE_MS = 3_000
+
+/**
+ * The task a bridge turn carries to ChatGPT.
+ *
+ * A bridge turn is not an OpenCode native turn: the model on the other side
+ * has no harness, no native tool syntax and no skills catalogue. It receives
+ * the bridge's own tool contract and the task. OpenCode's native system
+ * preface therefore stays on the OpenCode side - forwarding it duplicated
+ * every tool in prose and overflowed the CoS envelope on a realistic profile.
+ */
+export function bridgeRequestText(messages, first) {
+  const plain = plainMessages(messages)
+  const last = plain.at(-1)
+  if (last.role !== 'user' || !last.content.trim()) throw new BridgeError('last_message_must_be_user', 422)
+  // The task is labelled, so the model cannot mistake it for part of the
+  // protocol that precedes it.
+  const body = !first ? last.content
+    : plain.filter(part => part.role === 'user' || part.role === 'assistant')
+      .map(part => `[${part.role}]\n${part.content}\n[/${part.role}]`).join('\n\n')
+  return 'Task to carry out:\n' + body
+}
+
 export function requestText(messages, first) {
-  if (!Array.isArray(messages) || !messages.length) throw new BridgeError('messages_required', 400)
-  const plain = messages.map(part => {
-    if (!['system', 'developer', 'user', 'assistant'].includes(part?.role)) throw new BridgeError('unsupported_chat_content', 422)
-    // AI SDK/OpenAI-compatible transports can encode a text-only message as content parts.
-    // Image, audio, tool and binary parts must not disappear silently.
-    const content = typeof part.content === 'string' ? part.content
-      : Array.isArray(part.content) && part.content.length > 0 &&
-        part.content.every(entry => entry?.type === 'text' && typeof entry.text === 'string')
-        ? part.content.map(entry => entry.text).join('') : null
-    if (content === null) throw new BridgeError('unsupported_chat_content', 422)
-    return { role: part.role, content }
-  })
+  const plain = plainMessages(messages)
   const last = plain.at(-1)
   if (last.role !== 'user' || !last.content.trim()) throw new BridgeError('last_message_must_be_user', 422)
   if (!first) return last.content
@@ -35,6 +58,47 @@ export function requestText(messages, first) {
   // Only the initial turn carries prior history; later turns use the CoS session itself.
   return [...preface.map(p => `[${p.role} instructions]\n${p.content}\n[/instructions]`),
     ...history.map(p => `[${p.role}]\n${p.content}\n[/${p.role}]`)].join('\n\n')
+}
+
+// The session lookup and readiness checks are read-only. A provider switch may
+// abandon them before CoS responds; the obsolete attempt must release its
+// session lease without waiting for a stale read to finish.
+async function abortableRead(pending, signal) {
+  if (!signal) return pending
+  if (signal.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
+  const onAbort = () => rejectAbort(new BridgeError('opencode_turn_cancelled', 499))
+  let rejectAbort
+  const cancelled = new Promise((_, reject) => { rejectAbort = reject })
+  signal.addEventListener('abort', onAbort, { once: true })
+  try {
+    if (signal.aborted) onAbort()
+    return await Promise.race([pending, cancelled])
+  } finally { signal.removeEventListener('abort', onAbort) }
+}
+
+/**
+ * The next event, bounded by the grace deadline.
+ *
+ * After a completed turn, the recorder may publish the final assistant row in
+ * the next batch. The wait for that row is bounded: when the deadline passes,
+ * the turn ends with what is proven, and the abandoned read is detached so it
+ * can never surface as an unhandled rejection.
+ */
+async function nextEventWithin(iterator, signal, deadline) {
+  const pending = abortableRead(iterator.next(), signal)
+  if (deadline === null) return pending
+  const remaining = deadline - Date.now()
+  if (remaining <= 0) {
+    void pending.catch(() => undefined)
+    return { done: true, value: undefined }
+  }
+  const expiry = delay(remaining).then(() => ({ done: true, value: undefined }))
+  try {
+    return await Promise.race([pending, expiry])
+  } finally {
+    // The loser may still settle later; it must not become an unhandled rejection.
+    void pending.catch(() => undefined)
+  }
 }
 
 /**
@@ -48,16 +112,16 @@ export async function awaitProviderReady(control, {
 } = {}) {
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
   // Older synthetic control fixtures implement assertReady but not readiness.
-  if (typeof control.readiness !== 'function') return control.assertReady()
+  if (typeof control.readiness !== 'function') return abortableRead(control.assertReady({ signal }), signal)
   const deadline = clock() + maxWaitMs
   for (;;) {
     if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
-    const state = await control.readiness()
+    const state = await abortableRead(control.readiness({ signal }), signal)
     if (state.sessionCookie === 'present' && state.extension === 'connected' &&
-        state.paired && state.canAttempt) return control.assertReady()
+        state.paired && state.canAttempt) return abortableRead(control.assertReady({ signal }), signal)
     if (state.sessionCookie === 'absent' ||
         (state.sessionCookie === 'present' && state.extension === 'connected' && !state.paired) ||
-        clock() >= deadline) return control.assertReady()
+        clock() >= deadline) return abortableRead(control.assertReady({ signal }), signal)
     const ms = Math.max(1, Math.min(400, deadline - clock()))
     try { await sleep(ms, undefined, { signal }) }
     catch (error) {
@@ -67,50 +131,159 @@ export async function awaitProviderReady(control, {
   }
 }
 
-export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal, nativeTools = 'off' } = {}) {
+export async function runTurn(control, request, { sessionKey, messageKey, kind = 'primary', emit, signal,
+  nativeTools = 'off', location = null, checkpoint, resumeAfterSeq = 0, previousInput, alreadyAdmitted = false, rememberInput, turnCustody, messageFingerprint, onTerminal, onEvidence, stopReceiptTimeoutMs = 5000, finalAnswerGraceMs = FINAL_ANSWER_GRACE_MS } = {}) {
   traceStage('gateway_turn_received')
   if (!sessionKey || sessionKey.length > 256 || /[\r\n]/.test(sessionKey)) throw new BridgeError('opencode_session_id_required', 422)
   if (!messageKey || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
-  const readEnabled = validateNativeTools(request, nativeTools === 'read')
+  const coding = nativeTools === 'coding' ? validateCodingTools(request) : null
+  const readEnabled = coding ? false : validateNativeTools(request, nativeTools === 'read')
+  const toolEnabled = readEnabled || Boolean(coding?.enabled)
   if (request.model !== 'chatgpt-default') throw new BridgeError('model_not_configured', 422)
   if (kind !== 'primary') throw new BridgeError('auxiliary_calls_not_yet_supported', 501)
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
   const sessionID = stableUUID('session:' + sessionKey)
-  const result = readResultPrompt(request.messages)
-  if (result && !readEnabled) throw new BridgeError('native_tool_result_without_consent', 403)
+  if (!toolEnabled && request.messages?.at(-1)?.role === 'tool') {
+    throw new BridgeError('native_tool_result_without_consent', 403)
+  }
+  const result = !toolEnabled ? null
+    : coding ? codingResultPrompt(request.messages, coding.names) : readResultPrompt(request.messages)
   const turnID = stableUUID('turn:' + sessionKey + ':' + messageKey + (result ? ':' + result.callId : ''))
-  const first = !(await control.hasSession(sessionID))
+  // Optional in-process evidence sink. Never include prompt, tokens or response
+  // bytes; the callback cannot affect admission, streaming or cancellation.
+  const evidence = (stage, eventTurnId = null, seq = null) => {
+    try { onEvidence?.({ stage, sessionID, messageKey, turnId:eventTurnId, seq, atMs:Date.now() }) }
+    catch { /* observational only */ }
+  }
+  const first = !(await abortableRead(control.hasSession(sessionID, { signal }), signal))
   if (result && first) throw new BridgeError('native_tool_result_without_session', 422)
-  const text = result ? result.text : requestText(request.messages, first) +
-    (readEnabled ? '\n\n' + READ_INSTRUCTIONS : '')
-  if (text.length > 64000) throw new BridgeError('cos_input_too_large', 413)
-  const inputID = first ? sessionID : turnID
+  const firstRecord = !result && turnCustody?.read(sessionKey)
+  const originalFirst = !result && turnCustody?.isOriginal(firstRecord, messageKey)
+  if (first && firstRecord && !originalFirst) throw new BridgeError('turn_first_message_pending', 409)
+  const forcedTool = request.tool_choice === 'required' ? 'required'
+    : (request.tool_choice && typeof request.tool_choice === 'object'
+      ? request.tool_choice.function?.name ?? null : null)
+  // The bridge speaks first: the protocol and the project directory come
+  // before the task. A model that reads the task first meets an absolute path
+  // on a machine it cannot reach, and answers that it has no access; the
+  // capability has to be established before the request that needs it.
+  const context = bridgeContextLine(location)
+  const toolInstructions = !toolEnabled ? ''
+    : coding ? codingInstructions(coding.tools, forcedTool, { location }) + (context ? '\n\n' + context : '')
+    : readInstructions({ location }) + (context ? '\n\n' + context : '')
+  // A bridge turn carries the task and the bridge's own tool contract. A plain
+  // text turn keeps OpenCode's native preface: there the model *is* the native
+  // agent answering in prose.
+  const compose = toolEnabled ? bridgeRequestText : requestText
+  // The task is composed lazily: a tool-result turn carries the tool's own
+  // prompt, and the conversation that produced it holds a `tool` role that a
+  // task composition must never try to read.
+  const composeTask = () => first || toolEnabled
+    ? compose(request.messages, first)
+    : originalFirst ? compose(request.messages, true)
+    : continuationWithTranscript(plainMessages(request.messages), checkpoint)
+  const text = previousInput ?? (result ? result.text
+    : toolEnabled ? toolInstructions + '\n\n' + composeTask()
+    : composeTask() + toolInstructions)
+  if (text.length > 64000 && !alreadyAdmitted) throw new BridgeError('cos_input_too_large', 413)
+  if (originalFirst && firstRecord) turnCustody.verify(firstRecord, messageKey, text)
+  const admittedInputID = first || originalFirst ? sessionID : turnID
+  // Every input this bridge owns for this native turn. A user-message row can
+  // be re-published with a newer sequence when the recorder revises it, so the
+  // bridge recognises its own rows by identity, not by position.
+  const ownInputIDs = new Set([admittedInputID])
+  // The input id the current attempt reads, and the journal cursor it starts
+  // from. Both are declared here, outside the turn, because the cancellation
+  // path below names the input it has to cancel.
+  let inputID = admittedInputID
+  let nextFrom = !first && !originalFirst && resumeAfterSeq > 0 ? resumeAfterSeq + 1 : 0
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
   // A hidden provider with no ChatGPT session or browser bridge must not accept
   // a prompt into the durable outbox that no authenticated page can deliver.
   await awaitProviderReady(control, { signal })
   traceStage('control_ready')
   if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
-  await control.send({ id: inputID, ...(first ? {} : { sessionId: sessionID }), text })
-  traceStage('input_admitted')
-
   // A conversation is not considered delivered just because POST returned 202. Follow its
   // exact outbox input id in the durable event journal, including on idempotent retries.
   let seenInput = false
   let complete = false
   let textSoFar = ''
   let activeTurnID = null
+  let sendStarted = false
+  let terminalSeq = null
   try {
-    for await (const event of control.events(sessionID, { signal })) {
+    // Once POST /inputs begins, completion is no longer a read-only operation.
+    // Wait for its bounded response before releasing custody; if the native
+    // request was cancelled during admission, CoS must decide whether the exact
+    // outbox input can still be cancelled.
+    sendStarted = true
+    if (first && !result) turnCustody?.claimFirst(sessionKey, messageKey, text)
+    if (!first && !originalFirst && !result && messageFingerprint) {
+      // CoS's own input projection clips a long user text, so an already
+      // admitted follow-up cannot be re-verified byte for byte. Its salted
+      // history digest still binds this native message to the durable record.
+      if (alreadyAdmitted) turnCustody?.verifyFollowup(turnCustody.readFollowup(sessionKey, messageKey), messageFingerprint)
+      else turnCustody?.claimFollowup(sessionKey, messageKey, messageFingerprint, text)
+    }
+    // Record the journal cursor this input was admitted at. A later retry of the
+    // exact same native message must resume there, never past its own terminal
+    // event: the completed-turn anchor has already advanced to that terminal seq.
+    rememberInput?.(text, resumeAfterSeq)
+    // A disconnect during POST /inputs must not hold the native session lease
+    // indefinitely. The deterministic input id makes a later retry idempotent.
+    // Replaying the original first native message after a restart still uses
+    // the *original* opening input payload. Adding sessionId on that retry
+    // changes the CoS durable outbox record and breaks idempotent enqueue.
+    // An already admitted follow-up recovered after restart is likewise owned by
+    // the CoS outbox: POSTing its clipped projection back would conflict.
+    if (!alreadyAdmitted) {
+      await abortableRead(control.send({ id: admittedInputID, ...(first || originalFirst ? {} : { sessionId: sessionID }), text }, { signal }), signal)
+    }
+    traceStage('input_admitted')
+    evidence('input_admitted')
+    if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
+    // A native provider switch can close the HTTP socket while a remote SSE
+    // iterator is blocked in next(). Relying only on the iterator to notice
+    // AbortSignal leaves this session leased indefinitely, preventing retry.
+    // Race each next() with native cancellation, without abandoning exact
+    // outbox/turn custody or waiting for an unresponsive iterator.return().
+    // One CoS turn per admitted input. A refusal correction reads a second
+    // turn from the same conversation, so the reader restarts with the
+    // correction's own input id and the journal cursor it continues from.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      seenInput = false
+      complete = false
+      textSoFar = ''
+      activeTurnID = null
+      terminalSeq = null
+      const iterator = control.events(sessionID, { signal, from: nextFrom })[Symbol.asyncIterator]()
+      // A completed turn can be followed, in the next `/events` batch, by the
+      // final assistant row of that same turn. `finalSeen` records that the
+      // answer is already whole; `graceDeadline` bounds the wait for it.
+      let finalSeen = false
+      let graceDeadline = null
+      try {
+      for (;;) {
+      const next = await nextEventWithin(iterator, signal, graceDeadline)
+      if (next.done) break
+      const event = next.value
       if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
-      if (event.kind === 'user_message' && (event.inputId === inputID || event.messageId === inputID)) {
-        seenInput = true
+      if (event.kind === 'user_message') {
+        if (event.inputId === inputID || event.messageId === inputID || ownInputIDs.has(event.inputId)) seenInput = true
+        else if (seenInput && !complete) throw new BridgeError('cos_input_superseded', 409)
         continue
       }
       if (!seenInput) continue
       // Ignore other sessions'/earlier turns' events; the exact user-message acknowledgement
       // is the publication boundary. Only an observed turn_start may authorize cancellation.
-      if (event.kind === 'turn_start' && typeof event.turnId === 'string' && event.turnId) activeTurnID = event.turnId
+      if (event.kind === 'turn_start' && typeof event.turnId === 'string' && event.turnId) {
+        // Once the turn is complete, a new turn (the user typing in ChatGPT)
+        // is not a supersession of it.
+        if (!complete && activeTurnID && activeTurnID !== event.turnId) throw new BridgeError('cos_turn_superseded', 409)
+        if (!complete && typeof event.inputId === 'string' && event.inputId !== inputID) throw new BridgeError('cos_input_superseded', 409)
+        if (!complete) activeTurnID = event.turnId
+        evidence('turn_started', activeTurnID, event.seq)
+      }
       // A follow-up's input receipt may precede stale history notifications.
       // Only a newly observed turn and its matching events can supply an answer.
       if (!activeTurnID || event.turnId !== activeTurnID) continue
@@ -118,46 +291,161 @@ export async function runTurn(control, request, { sessionKey, messageKey, kind =
       if (event.kind === 'assistant_message') {
         if (event.message?.truncated || typeof event.message?.text !== 'string') throw new BridgeError('cos_output_incomplete', 502)
         const next = event.message.text
+        if (isContentReferenceMarker(next)) {
+          // ChatGPT's own citation directive, not the model's answer. Holding
+          // it as the answer would make the answer that follows look like a
+          // contradiction of it.
+          evidence('assistant_marker_ignored', activeTurnID, event.seq)
+          continue
+        }
         if (!next.startsWith(textSoFar)) throw new BridgeError('cos_answer_revision_not_streamable', 502)
         const delta = next.slice(textSoFar.length)
-        if (delta) { textSoFar = next; if (!readEnabled) await emit(delta) }
+        if (delta) {
+          evidence('assistant_revision', activeTurnID, event.seq)
+          textSoFar = next
+          if (!toolEnabled) { await emit(delta); evidence('native_delta_emitted', activeTurnID, event.seq) }
+        }
+        // The final row of a turn is the whole answer. When the turn has
+        // already ended, that row closes it; before the turn end it only
+        // proves the answer is complete, and the turn still waits for its
+        // own terminal event.
+        if (event.final === true || event.state === 'final') {
+          finalSeen = true
+          if (complete) break
+        }
       }
       if (event.kind === 'turn_end') {
-        if (event.outcome && /error|fail|stop|abort|cancel|incomplete/.test(event.outcome)) {
+        // The CoS recorder has explicit terminal outcomes: interrupted,
+        // stalled and unknown can carry partial assistant text. Only its
+        // positive completed verdict authorizes final HTTP success, [DONE]
+        // and the persisted native transcript checkpoint.
+        if (event.outcome !== 'completed' && event.outcome !== 'complete') {
           throw new BridgeError('cos_turn_not_completed', 502)
         }
         complete = true
-        break
+        evidence('turn_completed', activeTurnID, event.seq)
+        terminalSeq = Number.isSafeInteger(event.seq) && event.seq > 0 ? event.seq : null
+        // The final assistant row of a completed turn can reach the next
+        // `/events` batch. When an answer is already in hand the turn closes
+        // here; when the turn ended with nothing at all, the reader waits,
+        // bounded, for that row instead of answering with an empty turn.
+        if (finalSeen || textSoFar) break
+        graceDeadline = Date.now() + finalAnswerGraceMs
+        continue
       }
+      }
+      } finally {
+        if (typeof iterator.return === 'function') {
+          if (signal?.aborted) {
+            // CoSControl.events has the same AbortSignal and closes its SSE
+            // reader; never await a transport that ignores cancellation here.
+            try { void Promise.resolve(iterator.return()).catch(() => undefined) }
+            catch { /* cancellation already owns the failure */ }
+          } else await iterator.return()
+        }
+      }
+      if (!seenInput || !complete) throw new BridgeError('cos_turn_unconfirmed', 502)
+      if (attempt === 0 && toolEnabled && looksLikeRefusal(textSoFar)) {
+        // The model refused instead of asking for a tool. Ask once more, with a
+        // corrective message that repeats the protocol and its worked example.
+        // The correction owns a deterministic outbox id, so a crash between the
+        // correction and its answer cannot duplicate it, and a second refusal is
+        // returned as prose: the bridge never fabricates an effect.
+        inputID = stableUUID('correction:' + sessionKey + ':' + messageKey)
+        ownInputIDs.add(inputID)
+        traceStage('refusal_correction')
+        evidence('refusal_correction')
+        await abortableRead(control.send({ id: inputID, sessionId: sessionID, text: refusalCorrection({ location }) }, { signal }), signal)
+        nextFrom = (terminalSeq ?? 0) + 1
+        continue
+      }
+      break
     }
-    if (!seenInput || !complete) throw new BridgeError('cos_turn_unconfirmed', 502)
-    if (readEnabled) {
+    if (toolEnabled) {
       // Delay every byte until the whole CoS turn has completed and the envelope
       // can be validated. Never stream half a forged tool call as user-visible prose.
-      const toolCall = parseReadCall(textSoFar, !result, sessionKey, messageKey)
+      const toolCall = coding
+        ? parseCodingCall(textSoFar, coding.names, sessionKey, messageKey, result?.callId ?? '')
+        : parseReadCall(textSoFar, !result, sessionKey, messageKey)
       if (toolCall) return { toolCall }
       await emit(textSoFar)
     }
+    onTerminal?.(terminalSeq)
+    // A native Stop can win the finalization handoff after the broker has
+    // already recorded turn_end. Never publish success for a closed consumer.
+    if (signal?.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
     return textSoFar
   } finally {
-    if (signal?.aborted && !complete) {
+    if (signal?.aborted && !complete && sendStarted) {
       // Never stop a later or unproven turn. The CoS broker validates exact turn identity;
       // when Send is not proven, its outbox independently decides whether cancellation is safe.
+      const requested = seenInput && activeTurnID ? 'turn_stop_requested' : 'input_cancel_requested'
+      traceStage(requested)
+      evidence(requested, activeTurnID)
       try {
-        if (seenInput && activeTurnID) await control.stop(sessionID, activeTurnID)
-        else await control.cancelInput(inputID)
-      } catch { /* an unconfirmed stop must never be reported as successful */ }
+        const cleanupController = new AbortController()
+        const cleanup = seenInput && activeTurnID
+          ? control.stop(sessionID, activeTurnID, { signal: cleanupController.signal })
+          : control.cancelInput(inputID, { signal: cleanupController.signal })
+        // Never block a cancelled stream or leak another session's lease.
+        // Track only categorical, non-sensitive acknowledgement; a stop failure
+        // remains UNCONFIRMED, not an invented cancellation success.
+        // The stop transport can hang indefinitely. Do not retain a native
+        // lease waiting for its receipt or fabricate a positive acknowledgement.
+        // A late receipt cannot revise the already reported unconfirmed state.
+        let settled = false
+        const record = stage => {
+          if (settled) return
+          settled = true
+          clearTimeout(timeout)
+          traceStage(stage)
+          evidence(stage, activeTurnID)
+        }
+        const deadline = Number.isFinite(stopReceiptTimeoutMs)
+          ? Math.max(1, Math.min(30000, stopReceiptTimeoutMs)) : 5000
+        const timeout = setTimeout(() => {
+          record('cancel_command_unconfirmed')
+          cleanupController.abort()
+        }, deadline)
+        timeout.unref?.()
+        void Promise.resolve(cleanup).then(
+          receipt => {
+            record(cancellationReceiptStage(receipt))
+          },
+          () => {
+            record('cancel_command_unconfirmed')
+          },
+        )
+      } catch {
+        traceStage('cancel_command_unconfirmed')
+        evidence('cancel_command_unconfirmed', activeTurnID)
+      }
     }
   }
 }
 
-export function createGateway({ control, key, nativeTools = 'off' }) {
+export function cancellationReceiptStage(receipt) {
+  return receipt?.stopped === true || receipt?.cancelled === true
+    ? 'cancel_command_acknowledged' : 'cancel_command_unconfirmed'
+}
+
+
+export function createGateway({ control, key, nativeTools = 'off', turnCustody, onEvidence }) {
   if (typeof key !== 'string' || key.length < 32) throw new Error('A strong local gateway bearer token is required')
   const active = new Set()
   // Volatile custody for a *generated* tool call. An authenticated caller may
   // not invent a tool-result message and have it forwarded into ChatGPT.
   // Gateway restart loses custody and intentionally refuses the result.
   const issuedReads = new Map()
+  // Completed CoS turns create session anchors. Volatile anchors retain support
+  // for older controls without journal sequence numbers.
+  const checkpoints = new Map()
+  // Freeze the exact submitted payload per native message for idempotent retry.
+  const submittedInputs = new Map()
+  const rememberBounded = (map, id, value, limit = 128) => {
+    map.delete(id); map.set(id, value)
+    while (map.size > limit) map.delete(map.keys().next().value)
+  }
   const secret = Buffer.from('Bearer ' + key)
   // Protected /health gives only categorical diagnostics. No prompt, path, headers or secrets.
   const diagnostics = { attempted: 0, authRefused: 0, lastFailure: null }
@@ -180,14 +468,19 @@ export function createGateway({ control, key, nativeTools = 'off' }) {
     if (req.method !== 'POST' || req.url !== '/v1/chat/completions') return sendJSON(404, { error: 'not_found' })
     diagnostics.attempted++
     let sessionKey = ''
+    let ownsSession = false
     try {
       const header = req.headers['x-opencode-session-id']
       if (typeof header !== 'string' || !/^[\w.:/-]{1,256}$/.test(header)) throw new BridgeError('opencode_session_id_required', 422)
       sessionKey = header
       const messageKey = req.headers['x-opencode-message-id']
       if (typeof messageKey !== 'string' || !/^[A-Za-z0-9_.:-]{6,256}$/.test(messageKey)) throw new BridgeError('opencode_message_id_required', 422)
+      // The project directory is native context the bridge cannot reconstruct.
+      // An unusable value is dropped, never guessed and never forwarded raw.
+      const location = normalizeLocation(req.headers['x-opencode-location'])
       if (active.has(sessionKey)) throw new BridgeError('session_busy', 409)
       active.add(sessionKey)
+      ownsSession = true
       let raw = ''
       let bodyBytes = 0
       // HTTP buffers may split a multi-byte codepoint at any boundary. Decoding each
@@ -224,13 +517,106 @@ export function createGateway({ control, key, nativeTools = 'off' }) {
       const chunk = (delta, finish = null) => ({ id, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: body.model, choices: [{ index: 0, delta, finish_reason: finish }] })
       let answer = ''
       // Do not announce SSE success until we have validated the request and upstream admission.
-      const result = await runTurn(control, body, { sessionKey, messageKey, nativeTools, signal: cancel.signal, emit: async (delta) => {
+      const inputKey = sessionKey + '\0' + messageKey
+      const messageFingerprint = createHash('sha256').update(JSON.stringify(body.messages ?? null)).digest('hex')
+      const priorInput = !isToolResult && submittedInputs.get(inputKey)
+      if (priorInput && priorInput.messageFingerprint !== messageFingerprint) {
+        throw new BridgeError('opencode_message_identity_reused_with_changed_history', 409)
+      }
+      // A restart loses volatile foreign-provider handoff checkpoints. For an
+      // already admitted follow-up, retrieve the exact prior text from CoS's
+      // own persistent outbox rather than recompose a different prompt under
+      // the same native message ID. The salted local marker binds the full
+      // original native history without storing the text or credentials.
+      let recoveredInput
+      let recoveredAdmitted = false
+      if (!isToolResult && !priorInput && turnCustody) {
+        const record = turnCustody.readFollowup(sessionKey, messageKey)
+        if (record) {
+          turnCustody.verifyFollowup(record, messageFingerprint)
+          const id = stableUUID('turn:' + sessionKey + ':' + messageKey)
+          const stored = await control.readInput?.(id, { signal: cancel.signal })
+          if (!stored || stored.id !== id || stored.sessionId !== stableUUID('session:' + sessionKey) ||
+              typeof stored.text !== 'string' || stored.text.length > 64000) {
+            throw new BridgeError('cos_replay_input_unavailable', 409)
+          }
+          // CoS projects outbox text with a 4000-character cap. A longer
+          // follow-up therefore comes back clipped, and its exact bytes cannot
+          // be re-derived. The input id, session, salted history digest and
+          // durable ownership are still proven, so replay it read-only instead
+          // of failing every restart forever or re-POSTing a different text.
+          recoveredAdmitted = stored.truncated === true ||
+            (Number.isSafeInteger(stored.chars) && stored.chars > stored.text.length)
+          if (!recoveredAdmitted) turnCustody.verifyFollowup(record, messageFingerprint, stored.text)
+          recoveredInput = stored.text
+        }
+      }
+      const persisted = turnCustody?.readAnchor(sessionKey)
+      const memory = checkpoints.get(sessionKey)
+      const priorAnchor = persisted && (!memory || persisted.seq >= memory.seq)
+        ? { seq: persisted.seq, anchor: { salt: persisted.salt,
+          questionSha256: persisted.question, answerSha256: persisted.answer } }
+        : memory
+      let terminalSeq = null
+      let observedTurnID = null
+      let observedRevisionSeq = null
+      let nativeSSETerminated = false
+      const recordGatewayEvidence = entry => {
+        if (entry.turnId) observedTurnID = entry.turnId
+        if (entry.stage === 'assistant_revision') observedRevisionSeq = entry.seq
+        try { onEvidence?.(entry) } catch { /* observational only */ }
+      }
+      const recordNativeSSE = stage => {
+        if (!observedTurnID) return
+        recordGatewayEvidence({ stage, sessionID:stableUUID('session:' + sessionKey),
+          messageKey, turnId:observedTurnID,
+          seq:stage === 'native_sse_terminal_written' || stage === 'native_http_response_finished'
+            ? terminalSeq : observedRevisionSeq,
+          atMs:Date.now() })
+      }
+      // finish signals the local ServerResponse handed off its final bytes;
+      // it is not SDK reception, a visible renderer revision, or a supplier ack.
+      res.once('finish', () => {
+        if (nativeSSETerminated) recordNativeSSE('native_http_response_finished')
+      })
+      // A retry of an already admitted native message is a replay, not a new
+      // turn: resume at the cursor its own admission used. The durable anchor
+      // has already advanced to that turn's terminal event, so resuming from it
+      // hides the whole turn and makes every retry fail permanently. A restart
+      // loses the volatile cursor, so the session journal is replayed from its
+      // start instead; that is read-only and idempotent, never a second POST.
+      const resumeAfterSeq = priorInput
+        ? (Number.isSafeInteger(priorInput.resumeAfterSeq) ? priorInput.resumeAfterSeq : 0)
+        : recoveredInput !== undefined ? 0 : priorAnchor?.seq ?? 0
+      const alreadyAdmitted = priorInput ? priorInput.alreadyAdmitted === true : recoveredAdmitted
+      const result = await runTurn(control, body, { sessionKey, messageKey, nativeTools, location, signal: cancel.signal,
+        checkpoint: priorAnchor?.anchor, resumeAfterSeq, previousInput: priorInput?.text ?? recoveredInput,
+        alreadyAdmitted, turnCustody, messageFingerprint, onTerminal: seq => { terminalSeq = seq }, onEvidence:recordGatewayEvidence,
+        rememberInput: isToolResult ? undefined : (text, admittedFromSeq) => rememberBounded(submittedInputs, inputKey,
+          { text, messageFingerprint, alreadyAdmitted,
+            resumeAfterSeq: Number.isSafeInteger(admittedFromSeq) && admittedFromSeq > 0 ? admittedFromSeq : 0 }), emit: async (delta) => {
         answer += delta
         if (stream) {
           if (!res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'close' })
-          res.write('data: ' + JSON.stringify(chunk({ content: delta })) + '\n\n')
+          await writeSSE(res, 'data: ' + JSON.stringify(chunk({ content: delta })) + '\n\n', cancel.signal)
+          recordNativeSSE('native_sse_frame_written')
         }
       } })
+      if (cancel.signal.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
+      if (!isToolResult && typeof result === 'string' && !cancel.signal.aborted) {
+        const anchor = completedTranscriptAnchor(body.messages, result)
+        if (anchor && (!priorAnchor || terminalSeq === null || terminalSeq > priorAnchor.seq)) {
+          if (terminalSeq !== null && turnCustody) {
+            // Salted digests only; preserve the highest confirmed CoS event
+            // sequence if an older native message is retried after restart.
+            try { turnCustody.rememberAnchor(sessionKey, anchor, terminalSeq) }
+            catch { console.error('Chat On OpenCode: completed transcript anchor could not be persisted') }
+          }
+          if (terminalSeq !== null || !priorAnchor || priorAnchor.seq === 0) {
+            rememberBounded(checkpoints, sessionKey, { seq: terminalSeq ?? 0, anchor })
+          }
+        }
+      }
       if (typeof result === 'object' && result?.toolCall) {
         if (res.headersSent) throw new BridgeError('native_tool_call_after_text', 502)
         const call = result.toolCall
@@ -250,8 +636,11 @@ export function createGateway({ control, key, nativeTools = 'off' }) {
       }
       if (isToolResult) issuedReads.delete(sessionKey)
       if (stream) {
+        if (cancel.signal.aborted) throw new BridgeError('opencode_turn_cancelled', 499)
         if (!res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
+        nativeSSETerminated = true
         res.end('data: ' + JSON.stringify(chunk({}, 'stop')) + '\n\ndata: [DONE]\n\n')
+        recordNativeSSE('native_sse_terminal_written')
       } else sendJSON(200, { id, object: 'chat.completion', created: Math.floor(Date.now() / 1000), model: body.model,
         choices: [{ index: 0, message: { role: 'assistant', content: result }, finish_reason: 'stop' }] })
     } catch (error) {
@@ -260,7 +649,7 @@ export function createGateway({ control, key, nativeTools = 'off' }) {
       diagnostics.lastFailure = code
       if (res.headersSent) res.destroy(new Error(code))
       else sendJSON(status, { error: { message: code, type: 'chat_on_opencode_error' } })
-    } finally { if (sessionKey) active.delete(sessionKey) }
+    } finally { if (ownsSession) active.delete(sessionKey) }
   })
   return server
 }

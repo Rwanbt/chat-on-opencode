@@ -1,0 +1,8 @@
+{
+  "name": "fixture-coding",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node sum.test.js"
+  }
+}

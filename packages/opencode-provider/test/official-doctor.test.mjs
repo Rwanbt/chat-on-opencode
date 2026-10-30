@@ -49,7 +49,9 @@ test('read-only doctor proves intact live format1 install and synthetic 127.0.0.
     bundleDir, checkSocket: true, socketProbe: async port => { probes++; assert.equal(port, 45861); return false },
   })
   assert.equal(report.status, 'NO_GO_PROVIDER_NOT_READY')
-  assert.equal(report.configAndBackupHashesVerified, true)
+  assert.equal(report.backupHashVerified, true)
+  assert.equal(report.configOwnershipVerified, true)
+  assert.equal(report.configDrift, null)
   assert.equal(report.candidateMatches, true)
   assert.equal(report.keyMode, 'ephemeral')
   assert.equal(report.runtimeAvailable, true)
@@ -91,13 +93,19 @@ test('candidate matching covers source gateway implementation, not only plugin i
   assert.ok(report.blockers.includes('installed_bundle_outdated'))
 })
 
-test('tampered user configuration refuses inspection and never exposes private content', async t => {
+test('a foreign config edit is reported as drift and never exposed, and a broken owned scope still refuses', async t => {
   const ctx = await fixture(t)
   const original = await readFile(ctx.args.configFile, 'utf8')
   await writeFile(ctx.args.configFile, original + '\n// PRIVATE_CHAT_CONTENT_AND_TOKEN')
+  // A foreign edit is not damage to the installation: the doctor reports it.
+  const report = await diagnoseInstalledProvider(ctx.args.configFile)
+  assert.equal(report.configDrift, 'foreign_edit')
+  assert.equal(report.configOwnershipVerified, true)
+  assert.doesNotMatch(JSON.stringify(report), /SECRET_DO_NOT_SHOW|runtime-data|coo-doctor-|PRIVATE_CHAT_CONTENT_AND_TOKEN/)
+  // The owned entries are gone: the doctor refuses rather than guessing.
+  await writeFile(ctx.args.configFile, '{}')
   await assert.rejects(() => diagnoseInstalledProvider(ctx.args.configFile),
-    /provider_config_modified_refuse_rollback/)
-  assert.equal(await readFile(ctx.args.configFile, 'utf8'), original + '\n// PRIVATE_CHAT_CONTENT_AND_TOKEN')
+    /provider_scope_mismatch/)
 })
 
 test('missing runtime consent is a specific safe blocker instead of launching browser or network', async t => {

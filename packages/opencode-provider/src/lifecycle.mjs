@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { traceStage } from './stage-trace.mjs'
+import { GATEWAY_FAILURE_MESSAGE } from './owned-failure.mjs'
 
 /** Owned gateway process: never ask OpenCode to find/attach to an unrelated CoS instance. */
 export class GatewayLifecycle {
@@ -43,18 +44,31 @@ export class GatewayLifecycle {
         CHAT_ON_OPENCODE_RUNTIME_DATA: runtimeData,
         CHAT_ON_OPENCODE_GATEWAY_KEY: key,
         CHAT_ON_OPENCODE_PORT: String(port),
-        CHAT_ON_OPENCODE_NATIVE_TOOLS: nativeTools === 'read' ? 'read' : 'off',
+        CHAT_ON_OPENCODE_NATIVE_TOOLS: nativeTools === 'coding' ? 'coding'
+          : nativeTools === 'read' ? 'read' : 'off',
       },
     })
     traceStage('gateway_child_spawned')
     this.child = child
+    // A child that cannot start reports the cause on the IPC channel it
+    // already owns. The parent must surface that cause, not a timeout.
+    let reportedCause = null
+    if (typeof child.on === 'function') {
+      child.on('message', message => {
+        if (message?.type !== GATEWAY_FAILURE_MESSAGE) return
+        const code = typeof message.code === 'string' && /^[a-z0-9_]{1,64}$/.test(message.code) ? message.code : null
+        if (code) reportedCause = code
+      })
+    }
     const signal = new AbortController()
     child.once('exit', () => signal.abort())
     child.once('error', () => signal.abort())
     const url = `http://127.0.0.1:${port}/health`
     const start = Date.now()
     while (Date.now() - start < 90000) {
-      if (signal.signal.aborted || child.exitCode !== null) throw new Error('provider_runtime_exited')
+      if (signal.signal.aborted || child.exitCode !== null) {
+        throw new Error(reportedCause ? 'provider_runtime_exited:' + reportedCause : 'provider_runtime_exited')
+      }
       try {
         const response = await this.fetcher(url, {
           headers: { Authorization: `Bearer ${key}` }, redirect: 'error',

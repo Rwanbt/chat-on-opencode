@@ -64,6 +64,18 @@ against malicious concurrent mutation/Windows file handles. The tool must only b
 quiescent, authorized, isolated test profile; there is intentionally **no
 `--promote` operation**. The existing active installation remains authoritative.
 
+The separate Windows chained-transition and restart-only pointer experiments
+publish their complete process-owner records before making a lock visible,
+using exclusive same-volume NTFS hard links. A later process can automatically
+retire a dead chained-transition owner only after checking the Windows PID and
+process creation time, the original journal/config digests, the retained
+original payload and the exact staged/active/parked generation digests.
+Malformed legacy locks, unverifiable process identities, changed receipts and
+an orphaned `.recover` marker remain fail-closed for explicit reconciliation.
+These protections cover ordinary process crashes; they do not prove safety
+against sudden power loss or a new official reader that starts between the
+last offline process scan and a rename.
+
 Testing (from `packages/opencode-provider`):
 
 ```sh

@@ -1,9 +1,12 @@
 import { createGateway } from './gateway.mjs'
 import { traceStage } from './stage-trace.mjs'
+import { TurnCustody } from './turn-custody.mjs'
+import path from 'node:path'
+import { realpathSync } from 'node:fs'
 
 /** One process owns both the gateway listener and its isolated CoS runtime. */
 export async function startService({ runtime, key, port, owner = process, owned = false,
-  nativeTools = 'off',
+  nativeTools = 'off', onEvidence,
   gatewayFactory = createGateway, exit = code => owner.exit(code) }) {
   // Direct process fixtures keep working without the plugin's ownership lease.
   // A plugin-owned process must never fall back to an unowned listener.
@@ -36,13 +39,22 @@ export async function startService({ runtime, key, port, owner = process, owned 
       if (!stopped) shutdown(0)
       return
     }
-    server = gatewayFactory({ control, key, nativeTools })
+    // runtime.start() has already validated this is the explicitly consented
+    // isolated CoS profile, disjoint from the personal installation.
+    const turnCustody = runtime.options?.profile
+      ? new TurnCustody(path.join(realpathSync(runtime.options.profile), '.chat-on-opencode-turn-custody'))
+      : undefined
+    server = gatewayFactory({ control, key, nativeTools, turnCustody, onEvidence })
     server.once('error', () => {
       console.error('Chat On OpenCode gateway refused to listen on its private port')
       shutdown(1)
     })
     server.listen(port, '127.0.0.1')
-    runtime.child?.once('exit', () => server.close())
+    // A dead broker cannot serve any further turn. Keeping this process alive
+    // would hide the failure from GatewayLifecycle, which treats a live child
+    // as ready, so every later turn would target a closed port until OpenCode
+    // restarts. An owned service must terminate so its parent can respawn both.
+    runtime.child?.once('exit', () => { if (owned) shutdown(1); else server.close() })
   } catch (error) {
     runtime.stop()
     if (!stopped) throw error

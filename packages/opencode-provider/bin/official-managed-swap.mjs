@@ -154,9 +154,23 @@ export function rollbackManagedSwap(config, options) {
 }
 export function managedSwapStatus(config) {
   const state = journalState(config)
-  return { staged: Boolean(stat(state.next)), oldRetained: Boolean(stat(state.previous)),
-    activeCandidate: Boolean(stat(state.previous) && stat(state.managed) &&
-      payloadDigest(state.managed) === state.newPayload), configUnchanged: true }
+  const oldRetained = Boolean(stat(state.previous))
+  if (oldRetained) {
+    safeTree(state.previous)
+    if (payloadDigest(state.previous) !== state.oldPayload ||
+      shaFile(path.join(state.previous, MANIFEST)) !== state.oldManifestSha) {
+      throw Error('managed_switch_previous_changed')
+    }
+  }
+  const activeCandidate = Boolean(oldRetained && stat(state.managed))
+  if (activeCandidate) {
+    safeTree(state.managed)
+    if (payloadDigest(state.managed) !== state.newPayload) {
+      throw Error('managed_switch_candidate_changed')
+    }
+  }
+  return { staged: Boolean(stat(state.next)), oldRetained,
+    activeCandidate, configUnchanged: true }
 }
 const [, entry, command, config, bundle] = process.argv
 if (entry && path.resolve(entry) === fileURLToPath(import.meta.url)) {

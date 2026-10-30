@@ -297,7 +297,17 @@ test('real child-process termination mid-removal preserves foreign agent and ret
 test('Windows CLI performs real pinned install/status/rollback against temporary OpenCode profile', {
   skip: process.platform !== 'win32' ? 'Windows-only process quiescence gate' : false,
   timeout: 65_000,
-}, () => {
+}, t => {
+  // This integration test requires machine-wide quiescence, but Node's test
+  // runner and other CI jobs may concurrently launch an official CLI process.
+  // Never weaken the real install gate or assert success during that window.
+  const gate = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    '$ErrorActionPreference="Stop"; @([Diagnostics.Process]::GetProcesses() | Where-Object { $_.ProcessName -in @("OpenCode","opencode","opencode-cli","Chat On OpenCode Provider") }).Count'],
+  { encoding: 'utf8', shell: false, windowsHide: true, timeout: 7000 })
+  if (gate.status !== 0 || !/^0\s*$/.test(gate.stdout ?? '')) {
+    t.skip('machine-wide OpenCode quiescence not established; installer correctly refuses');
+    return
+  }
   rootFor(({ config, sha, original }) => {
     const cli = fileURLToPath(new URL('../bin/additive-context.mjs', import.meta.url))
     const run = (...args) => spawnSync(process.execPath, [cli, ...args], {

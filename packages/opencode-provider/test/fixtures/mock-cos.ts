@@ -8,6 +8,28 @@ import path from 'node:path'
 import { appendFile, mkdir, writeFile, rm } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 
+// The read protocol's markers.
+//
+// The product owns them (packages/opencode-provider/src/native-read.mjs exports
+// the same two constants). This fixture is compiled as a STANDALONE program,
+// and the official Desktop acceptance test RELOCATES it into a directory of
+// its own before compiling it - so a fixture that imports a sibling module
+// builds everywhere except there, and fails there with
+// `mock_runtime_build_failed`. It therefore holds its own copy, and
+// test/read-protocol.test.mjs is the guard that keeps the copy equal to the
+// product's.
+const READ_PROTOCOL_MARKER = '<opencode-read>'
+const READ_RESULT_MARKER = '<untrusted-read-result>'
+
+// Which read turn a text is: 'intent' (the bridge asks for the envelope),
+// 'result' (the bridge carries the native tool's output back), or 'none'.
+function readTurnKind(text: string): 'intent' | 'result' | 'none' {
+  if (typeof text !== 'string') return 'none'
+  if (text.includes(READ_RESULT_MARKER)) return 'result'
+  if (text.includes(READ_PROTOCOL_MARKER)) return 'intent'
+  return 'none'
+}
+
 const folder = process.env.CHAT_ON_OPENCODE_USERDATA_DIR
 const ready = process.argv.includes('--chat-on-opencode-provider-service')
 const parentPID = Number(process.env.CHAT_ON_OPENCODE_OWNER_PID)
@@ -17,6 +39,8 @@ const control = path.join(folder, 'control-api')
 const token = randomBytes(32).toString('base64url')
 const sessions = new Set<string>()
 const events = new Map<string, Array<Record<string, unknown>>>()
+// Disposable synthetic Stop fixture only; never a real account or browser.
+const stopProbes = new Map<string, string>()
 const server = http.createServer(async (req, res) => {
   if (process.env.CHAT_ON_OPENCODE_TEST_TRACE_DIR === path.dirname(folder)) {
     await appendFile(path.join(folder, 'fixture-routes.txt'), `${req.method} ${req.url?.split('?')[0]}\n`).catch(() => undefined)
@@ -50,20 +74,35 @@ const server = http.createServer(async (req, res) => {
     const list = events.get(id) ?? []
     const seq = list.length + 1
     const turnId = `mock-turn-${seq}`
+    const stopProbe = input.text.includes('GUI_STOP_PROBE_')
+    if (stopProbe) stopProbes.set(id, turnId)
     list.push({ seq, kind: 'user_message', inputId: input.id })
     list.push({ seq: seq + 1, kind: 'turn_start', turnId })
     const toolFile = process.env.CHAT_ON_OPENCODE_TEST_NATIVE_READ_FILE
-    const nativeReadIntent = toolFile && input.text.includes('OpenCode can execute ONE native read tool')
-      && !input.text.includes('UNTRUSTED file content')
-    const nativeReadResult = toolFile && input.text.includes('UNTRUSTED file content')
+    // The model side recognises the protocol by its markers, never by a
+    // sentence of the instructions: the wording may change, the envelope does
+    // not.
+    const readTurn = readTurnKind(input.text)
+    const nativeReadIntent = toolFile && readTurn === 'intent'
+    const nativeReadResult = toolFile && readTurn === 'result'
     const assistantText = nativeReadIntent
-      ? '<opencode-read>' + JSON.stringify({ name: 'read', arguments: { path: toolFile } }) + '</opencode-read>'
+      ? READ_PROTOCOL_MARKER + JSON.stringify({ name: 'read', arguments: { path: toolFile } }) + '</opencode-read>'
       : nativeReadResult ? (input.text.includes('NATIVE_READ_PROOF_8729') ? 'NATIVE_FILE_READ_OK' : 'READ_CONTENT_NOT_FOUND')
       : 'OFFLINE_FORK_OK'
     list.push({ seq: seq + 2, kind: 'assistant_message', turnId, message: { text: assistantText, truncated: false } })
-    list.push({ seq: seq + 3, kind: 'turn_end', turnId, outcome: 'completed' })
+    if (!stopProbe) list.push({ seq: seq + 3, kind: 'turn_end', turnId, outcome: 'completed' })
     events.set(id, list)
     return json(202, { input: { delivery: 'pending' } })
+  }
+  const stop = /^\/v1\/sessions\/([0-9a-z-]+)\/stop$/.exec(req.url ?? '')
+  if (req.method === 'POST' && stop) {
+    let raw = ''
+    for await (const chunk of req) raw += chunk.toString('utf8')
+    const body = JSON.parse(raw)
+    if (stopProbes.get(stop[1]!) !== body?.turnId) return json(409, {error:'not_current_owned_turn'})
+    stopProbes.delete(stop[1]!)
+    await writeFile(path.join(folder, 'synthetic-stop-confirmed'), 'exact-turn-confirmed')
+    return json(200, { stopped:true })
   }
   const session = /^\/v1\/sessions\/([0-9a-z-]+)$/.exec(req.url ?? '')
   if (req.method === 'GET' && session) return json(sessions.has(session[1]!) ? 200 : 404, sessions.has(session[1]!) ? { session: { id: session[1] } } : { error: 'session_not_found' })
@@ -74,6 +113,11 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' })
     for (const event of list) if ((event.seq as number) >= Number(stream[2])) {
       res.write(`id: ${event.seq}\nevent: ${event.kind}\ndata: ${JSON.stringify(event)}\n\n`)
+    }
+    if (stopProbes.has(stream[1]!)) {
+      const hold = setInterval(() => res.write(': owned stop probe heartbeat\n\n'), 300)
+      res.on('close', () => clearInterval(hold))
+      return
     }
     res.end()
     return

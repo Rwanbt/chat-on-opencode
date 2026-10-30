@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
+import { readFile, mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
@@ -30,9 +30,7 @@ test('OS-killed OpenCode parent closes gateway IPC and removes owned runtime pro
   const personal = path.join(root, 'untouched-personal')
   await mkdir(profile)
   await mkdir(personal)
-  await writeFile(path.join(profile, 'config.json'), JSON.stringify({
-    ui: { chatBrowser: 'cos' }, controlApi: { enabled: true, allowActions: true },
-  }))
+  await writeFile(path.join(profile, 'config.json'), await readFile(new URL('./fixtures/valid-provider-config.json', import.meta.url)))
   const executable = path.join(root, process.platform === 'win32' ? 'fixture-cos.exe' : 'fixture-cos')
   const compiled = spawnSync('bun', ['build', fixtureEntry, '--compile', '--outfile', executable], {
     cwd: packageDir, encoding: 'utf8', timeout: 35000, windowsHide: true, shell: false,

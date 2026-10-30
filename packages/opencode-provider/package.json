@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "bin": {
-    "chat-on-opencode-config": "bin/generate-config.mjs"
+    "chat-on-opencode-config": "bin/generate-config.mjs",
+    "chat-on-opencode-promotion": "bin/promotion-transition.mjs"
   },
   "files": ["bin", "plugin", "src", "README.md", "OFFICIAL_INSTALL.md", "opencode.example.jsonc"],
   "scripts": {

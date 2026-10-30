@@ -117,7 +117,9 @@ test('tampered installed config, backup, payload and changed staging block recov
   const old = await snapshot(c.configFile)
   stageUpgrade(c.options, { runner })
   await writeFile(c.configFile, Buffer.concat([old.config, Buffer.from('\n// outside user edit')]))
-  assert.throws(() => recoverStagedUpgrade(c.configFile), /provider_config_modified_refuse_rollback/)
+  // The upgrade pins the config bytes it observed itself; the install manifest
+  // no longer carries a whole-file pin under format 2.
+  assert.throws(() => recoverStagedUpgrade(c.configFile), /upgrade_installed_changed/)
   await writeFile(c.configFile, old.config)
   const active = inspectInstalledProvider(c.configFile)
   await writeFile(active.manifest.backup, 'bad backup')
@@ -184,7 +186,7 @@ test('config drift after staging refuses immutable publication without overwriti
   stageUpgrade(c.options, { runner })
   const changed = Buffer.concat([await readFile(c.configFile), Buffer.from('\n// external edit')])
   await writeFile(c.configFile, changed)
-  assert.throws(() => publishVersionedCandidate(c.configFile), /provider_config_modified_refuse_rollback/)
+  assert.throws(() => publishVersionedCandidate(c.configFile), /upgrade_installed_changed/)
   assert.deepEqual(await readFile(c.configFile), changed)
   assert.ok((await readdir(jobFor(c.configFile))).includes('candidate'))
 })

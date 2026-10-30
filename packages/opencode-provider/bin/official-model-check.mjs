@@ -43,7 +43,7 @@ export function checkOfficialModel(options, { runner = spawnSync } = {}) {
   const version = /^opencode v?(\d+\.\d+\.\d+)\s*$/i.exec(result.stdout?.trim() ?? '')?.[1]
   if (result.status !== 0 || !['2.0.29', '2.0.32', '2.1.4'].includes(version) ||
       version !== manifest.version) throw new Error('official_cli_version_mismatch')
-  return { cli, config, version }
+  return { cli, config, version, configSha256: sha(config) }
 }
 
 /** An actual official CLI model picker smoke, never an AI request or account login. */
@@ -51,6 +51,11 @@ export async function smokeOfficialModel(plan, {
   launcher = spawn, stopper, startupTimeoutMs = 30000, shutdownTimeoutMs = 5000,
 } = {}) {
   inspectInstalledProvider(plan.config)
+  // The plan's premise is the exact config bytes it inspected. A config that
+  // moved since then invalidates the check, whatever the manifest format is.
+  if (!plan.configSha256 || sha(plan.config) !== plan.configSha256) {
+    throw new Error('official_model_config_changed_since_plan')
+  }
   const before = sha(plan.config)
   const key = randomBytes(32).toString('hex')
   const env = {

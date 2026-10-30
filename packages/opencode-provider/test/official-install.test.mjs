@@ -92,17 +92,26 @@ test('scoped install + rollback preserve Goal/Loop/Daemon and every original byt
   rollbackProvider(ctx.configFile)
 })
 
-test('rollback refuses changed config, and install refuses unsupported official CLI', async t => {
+test('rollback preserves a foreign edit, and install refuses unsupported official CLI', async t => {
   const ctx = await synthetic(t)
   assert.throws(() => checkInstall(ctx.options, { runner: version('2.2.0') }),
     /official_cli_plugin_api_unqualified/)
   assert.equal(checkInstall(ctx.options, { runner: version('2.1.4') }).version, '2.1.4')
   assert.equal(await readFile(ctx.configFile, 'utf8'), ctx.original)
   installProvider(ctx.options, { runner: version('2.0.29') })
+  const manifest = JSON.parse(await readFile(path.join(path.dirname(ctx.configFile),
+    '.chat-on-opencode-managed', 'install-manifest.json'), 'utf8'))
   const edited = (await readFile(ctx.configFile, 'utf8')) + '\n// user modified after install\n'
   await writeFile(ctx.configFile, edited)
-  assert.throws(() => rollbackProvider(ctx.configFile), /provider_config_modified_refuse_rollback/)
-  assert.equal(await readFile(ctx.configFile, 'utf8'), edited)
+  // A foreign edit is never destroyed by a rollback: only the owned entries go.
+  const result = rollbackProvider(ctx.configFile)
+  assert.equal(result.rolledBack, true)
+  assert.equal(result.mode, 'SCOPED_REMOVAL')
+  const restored = await readFile(ctx.configFile, 'utf8')
+  assert.ok(restored.includes('// user modified after install'))
+  assert.ok(!restored.includes('chat-on-opencode'))
+  // The immutable backup still holds the exact original bytes.
+  assert.equal(await readFile(manifest.backup, 'utf8'), ctx.original)
 })
 
 test('rollback refuses to delete modified managed payload and keeps config intact', async t => {
@@ -140,10 +149,19 @@ test('official model preflight verifies exact managed manifest and CLI version w
   assert.deepEqual(await readFile(ctx.configFile), prior)
   assert.throws(() => checkOfficialModel({ config: ctx.configFile, cli: ctx.options.officialCli },
     { runner: version('2.0.32') }), /official_cli_version_mismatch/)
+  // A foreign edit no longer invalidates the installation: the preflight pins
+  // the bytes it actually inspected, and the smoke refuses a plan whose bytes
+  // moved underneath it.
   const edited = Buffer.concat([prior, Buffer.from('\n// concurrent user edit\n')])
   await writeFile(ctx.configFile, edited)
-  assert.throws(() => checkOfficialModel({ config: ctx.configFile, cli: ctx.options.officialCli },
-    { runner: version('2.1.4') }), /provider_config_modified_refuse_rollback/)
+  const afterEdit = checkOfficialModel({ config: ctx.configFile, cli: ctx.options.officialCli },
+    { runner: version('2.1.4') })
+  assert.equal(afterEdit.version, '2.1.4')
+  assert.notEqual(afterEdit.configSha256, plan.configSha256)
+  await assert.rejects(async () => smokeOfficialModel(plan, {
+    launcher() { assert.fail('the child must not start on a stale plan') },
+    stopper() {},
+  }), /official_model_config_changed_since_plan/)
   assert.deepEqual(await readFile(ctx.configFile), edited)
   assert.deepEqual(parseOptions(['--smoke', '--config', ctx.configFile, '--cli', ctx.options.officialCli]), {
     smoke: true, config: ctx.configFile, cli: ctx.options.officialCli,
@@ -222,8 +240,10 @@ test('official model smoke refuses absence and accidental config mutation', asyn
   assert.equal(mutated.modelPresent, true)
   assert.equal(mutated.configUnchanged, false)
   assert.equal(smokePassed(mutated), false)
+  // The plan was made against the previous bytes: the smoke refuses it rather
+  // than probing against a config that moved underneath it.
   await assert.rejects(async () => smokeOfficialModel(plan, launch('chat-on-opencode/chatgpt-default\n')),
-    /provider_config_modified_refuse_rollback/)
+    /official_model_config_changed_since_plan/)
 })
 
 test('model smoke distinguishes native CLI crash, child error, and bounded shutdown', async t => {
