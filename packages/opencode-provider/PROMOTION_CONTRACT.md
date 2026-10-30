@@ -44,7 +44,7 @@ Six named blockers. Each one is a *missing* piece, not a broken piece.
 | # | Blocker | Evidence |
 | --- | --- | --- |
 | **B1** | **No authorisation is bound to a publication.** `publishRestartOnlyPointer` is callable by any process; nothing requires a human to have approved that exact generation. | `src/official-versioned-pointer.mjs:248-279` |
-| **B2** | **The manifest reader is not upgrade-aware, and this is the real blocker.** The format-1 manifest pins the digest of the **whole** config file. The first publication changes that file, so `inspectInstalledProvider` then refuses — which disables the install's own verifier, its rollback, the doctor, the managed swap and the chained-swap plan. | `src/official-install.mjs:152`, `:188-190`, `:196-204`; `src/official-upgrade.mjs:60-74` |
+| **B2** | **The manifest reader was not upgrade-aware, and this was the real blocker.** The format-1 manifest pinned the digest of the **whole** config file. The first publication changed that file, so `inspectInstalledProvider` then refused — which disabled the install's own verifier, its rollback, the doctor, the managed swap and the chained-swap plan. **Closed by P2** (§4). | `src/official-install.mjs:152`, `:188-190`, `:196-204`; `src/official-upgrade.mjs:60-74` |
 | **B3** | **Option-level promotion has no CAS owner.** The pointer publisher only swaps the plugin package path; provider options (`nativeTools`, `nativeInference`, model id, `baseURL`) are preserved as-is by design. The only code that computes those edits is a *preview* that explicitly refuses to expose a mutation API. | `test/provider-official-desktop-reader.e2e.mjs:994-997`; `src/official-native-activation.mjs:16-19`, `:100-105` |
 | **B4** | **No operator entry point.** The pointer publisher has no `bin/` command; it is reachable only from tests. | no `bin/*pointer*` exists; the only callers are `test/` and `src/` |
 | **B5** | **No durable-draft contract.** The preflight pushes `unsent_gui_drafts_not_proven_durable` unconditionally. | `src/context-overlay/activation-preflight.mjs:172-176` |
@@ -52,10 +52,11 @@ Six named blockers. Each one is a *missing* piece, not a broken piece.
 
 Two of these deserve emphasis, because they change what the work actually is:
 
-* **B2 is the technical crux.** The dossier describes the missing piece as "a CAS config
-  switch". The CAS config switch already exists and is proven. What is missing is the
-  **format-2 manifest**, so that a legitimate publication does not render the installation
-  unverifiable. Without B2, every promotion would strand the install's own rollback.
+* **B2 is the technical crux — and it is now closed.** The dossier describes the missing piece
+  as "a CAS config switch". The CAS config switch already existed and is proven. What was
+  missing was the **format-2 manifest**, so that a legitimate publication does not render the
+  installation unverifiable. Without B2, every promotion would strand the install's own
+  rollback. P2 implements it (§4, §9).
 * **B5 is over-broad as written.** A promotion rewrites two scoped entries inside
   `opencode.jsonc`. Unsent GUI composers live in the Desktop's own state, not in that file.
   The contract therefore does not need to *prove drafts durable*; it needs to state exactly
@@ -81,7 +82,8 @@ The design does **not** add a second promotion mechanism. The proven native owne
 "a set of scoped JSONC edits", and the existing pointer publication becomes a thin caller of
 it. The edit computation already exists in `src/official-native-activation.mjs:61-99`; the
 publication half already exists in `src/official-versioned-pointer.mjs:218-244`. The contract
-joins them. **P1 implements this generalisation; P2 does not exist yet.**
+joins them. **P1 implements this generalisation; P2 (the format-2 manifest) now exists and is
+proven — see §4 and §9.**
 
 ### 3.2 The transition, in order
 
@@ -150,12 +152,13 @@ install's own verifier (B2). Format 2 replaces that pin with **scoped ownership*
   "config": "…/opencode.jsonc",
   "backup": "…/opencode.jsonc.chat-on-opencode.<uuid>.bak",
   "originalSha256": "<sha256>",
+  "installedSha256": "<sha256>",
   "payloadSha256": "<sha256>",
   "version": "2.1.4",
   "scope": {
-    "pluginPackage": "…/.chat-on-opencode-managed/plugin",
     "providerKey": "chat-on-opencode",
-    "modelKey": "chatgpt-default"
+    "modelKey": "chatgpt-default",
+    "pluginOptionKeys": ["runtimeExecutable", "runtimeData", "nodeExecutable", "port"]
   },
   "lineage": [
     { "at": "2026-10-30T…Z", "configSha256": "<sha256>", "generation": "<sha256>", "authorisation": "<uuid>" }
@@ -163,26 +166,42 @@ install's own verifier (B2). Format 2 replaces that pin with **scoped ownership*
 }
 ```
 
+The scope deliberately holds **no path**. The plugin package path is precisely what a
+publication rewrites, so pinning it in the manifest would re-create the very invalidation
+format 2 exists to remove, and would demand a second manifest write after every publication.
+
 Rules:
 
 * **R1 — the reader accepts format 1 and format 2, and nothing else.** A format-1 install
   keeps today's strict whole-file pin, so existing behaviour does not change. An unknown
   format fails closed with `provider_manifest_shape_unknown`.
 * **R2 — format-2 verification is scoped.** The payload digest and the backup digest are
-  verified exactly as today; the config is verified by *structure*: exactly one plugin
-  registration whose `package` equals `scope.pluginPackage`, and exactly one
-  `providers[scope.providerKey]` entry declaring `scope.modelKey`. A foreign edit anywhere
-  else in the file is irrelevant and does not invalidate the install.
-* **R3 — a foreign edit is preserved, not reverted.** `rollbackProvider` in format 2 removes
-  or repoints **only** the scoped entries and leaves every foreign byte in place. Format 1
-  keeps refusing to roll back a modified config, because restoring the original bytes would
-  destroy the user's later edits.
+  verified exactly as today; the config is verified by *structure*, under two independent and
+  stable conditions: exactly one plugin registration whose `options` object declares our own
+  option keys (`runtimeExecutable`, `runtimeData`, `nodeExecutable`, `port`) **and** whose
+  `package` points at a direct child of the config directory named `.chat-on-opencode-*`; and
+  exactly one `providers[scope.providerKey]` entry declaring `scope.modelKey`. The package
+  condition is a *namespace*, not an exact path: every publication target the provider owns
+  lives there (`.chat-on-opencode-managed`, `.chat-on-opencode-directory-next` /
+  `-previous`, `.chat-on-opencode-version-<sha>`), and a repointed entry outside it is refused
+  rather than repaired. A foreign edit anywhere else in the file is irrelevant and does not
+  invalidate the install.
+* **R3 — a foreign edit is preserved, not reverted.** `rollbackProvider` in format 2 compares
+  the current config digest with the digest the installation last published (the lineage tail,
+  or `installedSha256` before the first publication). On a match it restores the **exact
+  original bytes**; on a mismatch it removes **only** the two scoped entries and leaves every
+  foreign byte in place. Format 1 keeps refusing to roll back a modified config, because
+  restoring the original bytes would destroy the user's later edits.
 * **R4 — the lineage is append-only and owned.** Each publication appends one entry with the
-  resulting config digest, the generation digest and the authorisation id. A lineage entry
-  that does not match the current config means the config changed outside the contract, and
-  the reader says so instead of guessing.
+  resulting config digest, the generation digest and the authorisation id. A lineage entry that
+  does not match the current config means the config changed outside the contract, and the
+  reader says so instead of guessing.
 * **R5 — a scoped entry that does not match is a refusal.** An ambiguous or missing
   registration is `provider_scope_mismatch`, never a best-effort repair.
+* **R6 — no consumer loses a guarantee.** Each consumer that needs a strict pin now takes it on
+  the digest it observed itself: the upgrade pins `plan.configDigest` (the bytes it read), the
+  model-check pins `plan.configSha256` (the bytes it inspected), and the managed swap already
+  carried its own `configSha`. None of them depends on the manifest's whole-file pin any more.
 
 ## 5. The authorisation receipt
 
@@ -277,7 +296,31 @@ preserves every foreign byte and is byte-exactly reversible, that a competing ed
 `before_publish` leaves the competitor's bytes intact, and that a moved config, an
 overlapping edit, an edit that would break the JSONC, an invalid UTF-8 config, a config
 starting with a BOM (its offsets would otherwise depend on the caller's decoder) and a
-pending managed transition are each refused before a byte is written. P2 remains open.
+pending managed transition are each refused before a byte is written.
+
+**P2 is implemented and proven** (2026-10-30). The install manifest is now written in format 2:
+`src/official-scoped-config.mjs` owns the scope model, and `src/official-install.mjs` writes the
+manifest, reads it and rolls back with it. The scope identifies the owned plugin registration by
+two independent stable conditions — our own option keys in its `options` object, and a `package`
+pointing at a direct `.chat-on-opencode-*` child of the config directory — so the manifest pins
+no path that a publication would rewrite. Its suite (`test/official-install-format2.test.mjs`, 7
+tests) proves that the install still verifies after a scoped publication, that a **pointer-style
+repoint to a digest-addressed `.chat-on-opencode-version-<sha>` generation keeps the install
+verifiable** (the production path, and the reason the scope is a namespace rather than a path),
+that a foreign edit made in between survives an entry-scoped rollback byte for byte while the
+two owned entries are removed, that an untouched install still restores the exact original bytes,
+that a format-1 manifest keeps its strict whole-file pin, that an unknown format fails closed
+(`provider_manifest_shape_unknown`), and that a repointed, removed or duplicated owned entry is
+refused (`provider_scope_mismatch`) rather than repaired. The lineage (R4) is the discriminator:
+the expected config digest is the lineage tail, or `installedSha256` before the first
+publication; a match restores the exact original bytes (`EXACT_RESTORE`), a mismatch removes
+only the owned entries (`SCOPED_REMOVAL`).
+
+No consumer lost a guarantee (R6): the upgrade now pins `plan.configDigest`, the model-check
+pins `plan.configSha256` and refuses a stale plan with `official_model_config_changed_since_plan`,
+and the doctor reports `backupHashVerified`, `configOwnershipVerified` and `configDrift` instead
+of one whole-file verdict. The managed swap propagates format 2 unchanged, because it copies the
+manifest as it is.
 
 P1 and P2 are the two that unblock everything else. Neither touches a lock, a flag or a
 personal profile, and neither can promote anything: the transition in P4 refuses until

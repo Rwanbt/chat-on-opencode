@@ -1,6 +1,7 @@
 # ADR-0011: One CAS owner, scoped edits, and an authorisation receipt
 
-- **Status:** Accepted; P1 (the generalised scoped-edit owner) implemented and proven on 2026-10-30
+- **Status:** Accepted; P1 (the generalised scoped-edit owner) and P2 (the format-2 scoped
+  manifest) implemented and proven on 2026-10-30
 - **Date:** 2026-10-30
 - **Deciders:** provider maintainer
 - **Relates to:** ADR-0003 (the NO-GO verdict), ADR-0004 (evidence scope)
@@ -75,8 +76,8 @@ The implementation plan (P1…P6) is in the contract, each step with the proof i
   **is** implemented and proven against official Desktop 2.1.4. What is missing is the
   authorisation, the upgrade-aware manifest, the option scope and the transition. The lock
   itself is unchanged; only its explanation becomes accurate.
-- A promotion can no longer strand the installation: format 2 is the precondition for
-  promoting at all.
+- A promotion can no longer strand the installation: format 2 is implemented and is the
+  precondition for promoting at all.
 - The promotion's touched-byte set is two scoped entries in `opencode.jsonc`. It never
   touches the Desktop's composer state, so the durable-draft question (B5) narrows from
   "prove the drafts durable" to "prove the promotion cannot reach them".
@@ -117,14 +118,28 @@ The implementation plan (P1…P6) is in the contract, each step with the proof i
   computation that exists only as a preview.
 - `src/context-overlay/activation-preflight.mjs:172-177` — the unconditional reason and the
   hardcoded `NO_GO`.
+- `src/official-scoped-config.mjs` — the format-2 scope model: the owned plugin registration is
+  identified by our own option keys **and** by a `package` under the `.chat-on-opencode-`
+  namespace, never by an exact path that a publication would rewrite.
+- `src/official-install.mjs` — the format-2 writer, the upgrade-aware reader and the scoped
+  rollback (`EXACT_RESTORE` when the config still matches the published digest,
+  `SCOPED_REMOVAL` when a foreign edit landed in between).
+- `test/official-install-format2.test.mjs` — 7 tests proving the install still verifies after a
+  scoped publication and after a pointer-style repoint to a digest-addressed versioned
+  generation, that a foreign edit survives a scoped rollback byte for byte, that format 1 keeps
+  its strict pin, that an unknown format fails closed, and that a repointed, removed or
+  duplicated owned entry is refused rather than repaired.
 - Local re-verification on 2026-10-30, with the provider code unchanged since `b9233a0`: the
   five pointer suites are green (13 tests, 12 pass, 1 skipped).
 
 ## Revisit trigger
 
-Revisit when **P2** — the format-2 upgrade-aware manifest — is implemented and proven, because
-together with P1 it unblocks the rest of the transition. P1 is already implemented and proven:
-`publishScopedConfigEdits` publishes scoped edits under the same owner, lock, CAS and native
-rename as the pointer publication, which is now a thin caller of the shared owner. Revisit
+Revisit when **P3** — the single-use, expiring authorisation receipt bound to the pinned
+snapshot — is implemented and proven, because it is the first piece that can *approve* anything
+and therefore the one that needs the sharpest review. P1 and P2 are already implemented and
+proven: `publishScopedConfigEdits` publishes scoped edits under the same owner, lock, CAS and
+native rename as the pointer publication, which is now a thin caller of the shared owner; and
+the format-2 manifest verifies the config by scoped ownership instead of a whole-file digest, so
+a legitimate publication no longer disables the install's own verifier and rollback. Revisit
 earlier only if the official OpenCode exposes a supported live-reload API, which would change
 the restart-handover decision.

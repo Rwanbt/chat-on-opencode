@@ -41,7 +41,7 @@ reference product uses, and it is the acceptance criterion (ADR-0001).
 | O-2 | Real-project coding smoke test (read → edit → run → observe) | [#111](https://github.com/Rwanbt/chat-on-opencode/issues/111) | Done (live, authentic) | — |
 | O-3 | Reproduce and fix the Desktop `native_new_session_button_not_found` flake | [#112](https://github.com/Rwanbt/chat-on-opencode/issues/112) | Open | local reproduction is blocked by the publisher's global process scan |
 | O-4 | Authentic ChatGPT qualification | [#113](https://github.com/Rwanbt/chat-on-opencode/issues/113) | Scopes 2–3 observed live | scope 1 (a standalone real text turn) is not yet recorded as such |
-| O-5 | Live promotion contract and activation-capable attestation | [#114](https://github.com/Rwanbt/chat-on-opencode/issues/114) | Design written (ADR-0011, `PROMOTION_CONTRACT.md`); P1 proven | P2 (the format-2 upgrade-aware manifest) is not implemented |
+| O-5 | Live promotion contract and activation-capable attestation | [#114](https://github.com/Rwanbt/chat-on-opencode/issues/114) | Design written (ADR-0011, `PROMOTION_CONTRACT.md`); P1 and P2 proven | P3 (the single-use authorisation receipt) is not implemented |
 | O-6 | Native Responses function calling | [#115](https://github.com/Rwanbt/chat-on-opencode/issues/115) | Deferred | needs O-4 to qualify the route |
 | O-7 | Persist the Desktop acceptance proof where it can be re-inspected | [#116](https://github.com/Rwanbt/chat-on-opencode/issues/116) | Open | — |
 | O-8 | Document the coding capability, its protocol and its limits | [#117](https://github.com/Rwanbt/chat-on-opencode/issues/117) | Done (documented) | — |
@@ -93,8 +93,18 @@ option edit preserves every foreign byte and is byte-exactly reversible, that a 
 edit at the last pre-rename checkpoint leaves the competitor's bytes intact, and that a moved
 config, an overlapping edit, an edit that would break the JSONC, an invalid UTF-8 config, a
 BOM config and a pending managed transition are each refused before a byte is written.
-**P2** — the format-2 upgrade-aware manifest, without which a legitimate publication would
-disable the install's own verifier and rollback — remains open.
+**P2 is implemented and proven** (2026-10-30): the install manifest is written in format 2 and
+verifies the config by **scoped ownership** instead of a whole-file digest, so a legitimate
+publication no longer disables the install's own verifier, rollback, doctor or upgrade path. The
+owned plugin registration is identified by two independent stable conditions — our own option
+keys in its `options` object, and a `package` pointing at a direct `.chat-on-opencode-*` child
+of the config directory — so the manifest pins no path that a publication would rewrite. A
+rollback restores the exact original bytes when the config still matches the digest the
+installation last published, and otherwise removes **only** the two owned entries, leaving every
+foreign byte in place. Each consumer that needs a strict pin now takes it on the digest it
+observed itself (the upgrade on `plan.configDigest`, the model-check on `plan.configSha256`),
+so none of them lost a guarantee. **P3** — the single-use, expiring authorisation receipt bound
+to the pinned snapshot — remains open, and it is the first piece that can approve anything.
 
 **O-8 is documented.** `packages/opencode-provider/README.md` states the three native tool levels,
 the envelope protocol, the ownership boundary, the bounds and how they fail, and the explicit

@@ -28,7 +28,9 @@ test('direct G attestation never authorizes and fails closed on stale evidence',
   assert.equal(inspectAttestedDirectGeneration(v.config, v.next, v.expected, { probe,
     challenge, input: { ...input, nonce: '0'.repeat(48) } }).status, 'NO_GO')
   writeFileSync(v.config, '{}')
-  assert.throws(() => inspectAttestedDirectGeneration(v.config, v.next, v.expected, { probe, challenge, input }), /chained_swap|provider_config_modified/)
+  // The owned entries are gone: the scoped reader refuses, as the whole-file
+  // pin used to.
+  assert.throws(() => inspectAttestedDirectGeneration(v.config, v.next, v.expected, { probe, challenge, input }), /chained_swap|provider_scope_mismatch|provider_config_modified/)
 })
 import { prepareChainedGeneration, recoverPreparedChainedGeneration, transitionChainedGeneration, recoverChainedTransition, rollbackChainedTransition, inspectChainedTransitionLock, proveDeadChainedLock } from '../src/official-chained-swap-stage.mjs'
 import { parseChainArgs } from '../bin/official-chained-swap-plan.mjs'

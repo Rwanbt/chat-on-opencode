@@ -39,10 +39,15 @@ export function readJSONC(source) {
       const members = []
       const keys = new Set()
       let trailingComma = false
+      // Separator offsets let a caller remove exactly one member of a container
+      // without touching a single foreign byte around it. `commaAt` is the comma
+      // that follows this member, `leadCommaAt` the one that precedes it, and
+      // `colonAt` the colon between an object member's key and its value.
+      let leadCommaAt = -1
       skip()
       while (source[i] !== close) {
         if (i >= source.length) throw new Error('unterminated_jsonc_container')
-        let key, keyStart, keyEnd
+        let key, keyStart = -1, keyEnd = -1, colonAt = -1
         if (object) {
           keyStart = i
           key = string()
@@ -50,12 +55,16 @@ export function readJSONC(source) {
           if (keys.has(key)) throw new Error('duplicate_jsonc_key')
           keys.add(key)
           skip()
+          colonAt = i
           if (source[i++] !== ':') throw new Error('invalid_jsonc_colon')
         }
         const child = value()
-        members.push({ key, keyStart, keyEnd, node: child })
+        const member = { key, keyStart, keyEnd, colonAt, node: child, commaAt: -1, leadCommaAt }
+        members.push(member)
         skip()
         if (source[i] === ',') {
+          member.commaAt = i
+          leadCommaAt = i
           i++
           trailingComma = true
           skip()

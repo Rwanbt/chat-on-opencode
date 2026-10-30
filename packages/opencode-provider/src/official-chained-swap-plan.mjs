@@ -2,12 +2,12 @@ import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { inspectInstalledProvider, payloadDigest, validateBundle } from './official-install.mjs'
+import { expectedConfigSha256, validateManifest } from './official-scoped-config.mjs'
 import { candidateDigest } from './official-upgrade.mjs'
 
 const hash = value => createHash('sha256').update(value).digest('hex')
 const SHA = /^[a-f0-9]{64}$/
 const fields = ['config', 'configSha', 'newPayload', 'oldManifestSha', 'oldPayload', 'version']
-const manifestFields = ['backup', 'config', 'format', 'installedSha256', 'originalSha256', 'payloadSha256', 'version']
 const stat = file => {
   try { return lstatSync(file) } catch (error) { if (error.code === 'ENOENT') return null; throw error }
 }
@@ -78,19 +78,19 @@ export function planChainedManagedSwap(configFile, candidateDir, expectedDigest)
   }
   const configBytes = captured(info.config)
   if (hash(configBytes) !== record.configSha ||
-      record.configSha !== info.manifest.installedSha256) {
+      record.configSha !== expectedConfigSha256(info.manifest)) {
     throw Error('chained_swap_config_changed')
   }
   tree(previous)
   tree(info.managed)
   const oldManifestBytes = captured(path.join(previous, 'install-manifest.json'))
   const oldManifest = metadata(oldManifestBytes, 'chained_swap_previous_manifest_invalid')
-  if (!exactKeys(oldManifest, manifestFields) ||
-      hash(oldManifestBytes) !== record.oldManifestSha ||
-      oldManifest.format !== 1 || oldManifest.config !== info.config ||
+  try { validateManifest(oldManifest) } catch { throw Error('chained_swap_previous_manifest_invalid') }
+  if (hash(oldManifestBytes) !== record.oldManifestSha ||
+      oldManifest.config !== info.config ||
       oldManifest.backup !== info.manifest.backup ||
       oldManifest.originalSha256 !== info.manifest.originalSha256 ||
-      oldManifest.installedSha256 !== record.configSha ||
+      expectedConfigSha256(oldManifest) !== record.configSha ||
       oldManifest.payloadSha256 !== record.oldPayload ||
       oldManifest.version !== info.manifest.version) {
     throw Error('chained_swap_previous_manifest_invalid')
